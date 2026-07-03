@@ -708,6 +708,10 @@ class WritingPanel(QWidget):
             polished=result.get("polished_text", ""),
             citation_notes=result.get("citation_notes", []),
             supervisor_notes=result.get("supervisor_notes", []),
+            write_client=self._write_client,
+            coach=self._coach,
+            zotero=self._zotero,
+            writing_type=self._current_writing_type,
             parent=self,
         )
         if dialog.exec():

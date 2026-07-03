@@ -120,7 +120,7 @@ class LitSearchDialog(QDialog):
     5. 随时导出 CSV 或关闭
     """
 
-    ANALYSIS_PROMPT = """你是学术文献检索专家。请分析以下综述草稿，找出可能遗漏的研究方向并生成 PubMed 检索关键词。
+    ANALYSIS_PROMPT = """你是学术文献检索专家。请分析以下综述草稿，找出可能遗漏的研究方向、列出你已知的相关文献、并生成 PubMed 检索关键词。
 
 【草稿】
 {draft_text}
@@ -128,8 +128,9 @@ class LitSearchDialog(QDialog):
 ## 任务
 
 1. 归纳草稿覆盖的研究方向（列出具体方向名称、大致文献数量、最新年份）
-2. 找出草稿可能遗漏的研究方向（横向遗漏：完全没覆盖的领域；纵向遗漏：已覆盖但缺少的最新文献）
-3. 为每个遗漏方向生成 3-5 条 PubMed 检索用的英文关键词
+2. **列出你已知的、与遗漏方向直接相关的具体文献**（如果你脑海中有明确的论文，直接写出标题、作者、年份、DOI 和为什么推荐它）
+3. 找出草稿可能遗漏的研究方向（横向遗漏：完全没覆盖的领域；纵向遗漏：已覆盖但缺少的最新文献）
+4. 为每个遗漏方向生成 3-5 条 PubMed 检索用的英文关键词
 
 ## 输出格式
 
@@ -137,10 +138,12 @@ class LitSearchDialog(QDialog):
 
 {
   "covered_domains": [{"domain": "方向名", "paper_count": 0, "latest_year": ""}],
+  "known_papers": [{"title": "论文标题", "authors": "Author et al.", "year": 2024, "doi": "10.xxx/xxx", "relevance": "此文献与遗漏方向X直接相关，提供了xxx证据"}],
   "gaps": [{"domain": "遗漏方向名", "reason": "为什么需要补充", "search_queries": ["关键词1", "关键词2"]}]
 }
 
 注意：
+- known_papers: 只列你确实知道的具体论文（标题不能编造），没有把握就留空数组 []
 - 每个 gap 的 search_queries 应该是能直接在 PubMed 搜索框中使用的英文关键词
 - 关键词要具体而非泛泛，如 "avian melanocyte scRNA-seq" 而非 "bird color"
 - 如果有长关键词，拆分为 2-3 条互补的短关键词"""
@@ -156,7 +159,7 @@ class LitSearchDialog(QDialog):
 【用户反馈】
 {user_feedback}
 
-请重新生成完整的 JSON 分析结果（格式不变）。特别注意用户指出的理解错误，务必修正。"""
+请重新生成完整的 JSON 分析结果（格式不变，包含 covered_domains、known_papers、gaps）。特别注意用户指出的理解错误，务必修正。"""
 
     def __init__(self, client, coach=None, parent=None):
         super().__init__(parent)
@@ -237,6 +240,12 @@ class LitSearchDialog(QDialog):
         self._search_btn.clicked.connect(self._on_search)
         self._search_btn.setEnabled(False)
         btn_row.addWidget(self._search_btn)
+
+        self._export_known_btn = QPushButton("导出LLM推断文献列表")
+        self._export_known_btn.setToolTip("将 LLM 直接推荐的文献导出为 CSV")
+        self._export_known_btn.clicked.connect(self._export_known_csv)
+        self._export_known_btn.setVisible(False)
+        btn_row.addWidget(self._export_known_btn)
 
         btn_row.addStretch()
 
@@ -319,9 +328,30 @@ class LitSearchDialog(QDialog):
                 f"<span style='color: #8a8ea6;'>({d.get('paper_count', 0)} 篇, 最新 {d.get('latest_year', '?')})</span>"
             )
 
+        known = data.get("known_papers", [])
+        if known:
+            lines.append("<br><b style='color: #bb9af7;'>📚 LLM 推断推荐的文献（可导出）:</b>")
+            for i, p in enumerate(known):
+                title = p.get("title", "?")
+                authors = p.get("authors", "?")
+                year = p.get("year", "")
+                doi = p.get("doi", "")
+                relevance = p.get("relevance", "")
+                doi_str = f" DOI: {doi}" if doi else ""
+                lines.append(
+                    f"  <b style='color: #cfd2e3;'>{i+1}. {authors} ({year}) {title}</b>"
+                    f"<span style='color: #636688;'>{doi_str}</span><br>"
+                    f"  <span style='color: #8a8ea6;'>  → {relevance}</span><br>"
+                )
+            self._known_papers = known
+            self._export_known_btn.setVisible(True)
+        else:
+            self._known_papers = []
+            self._export_known_btn.setVisible(False)
+
         gaps = data.get("gaps", [])
         if gaps:
-            lines.append("<br><b style='color: #e0af68;'>遗漏方向:</b>")
+            lines.append("<br><b style='color: #e0af68;'>遗漏方向 + 搜索关键词:</b>")
             for i, g in enumerate(gaps):
                 queries = g.get("search_queries", [])
                 kw_str = ", ".join(f"<span style='color: #9ece6a;'><i>{q}</i></span>" for q in queries[:5])
@@ -443,6 +473,33 @@ class LitSearchDialog(QDialog):
                     writer.writerow([
                         p.title, p.authors, p.year, p.journal,
                         p.doi, p.pmid, p.url,
+                    ])
+        except Exception as e:
+            QMessageBox.warning(self, "导出失败", f"导出 CSV 时出错：{e}")
+
+    def _export_known_csv(self):
+        """导出 LLM 推断的已知文献列表为 CSV。"""
+        papers = getattr(self, '_known_papers', [])
+        if not papers:
+            QMessageBox.information(self, "提示", "当前分析中 LLM 没有列出已知文献。")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出 LLM 推断文献列表", "llm_inferred_papers.csv",
+            "CSV 文件 (*.csv)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                writer.writerow(["title", "authors", "year", "doi", "relevance"])
+                for p in papers:
+                    writer.writerow([
+                        p.get("title", ""),
+                        p.get("authors", ""),
+                        p.get("year", ""),
+                        p.get("doi", ""),
+                        p.get("relevance", ""),
                     ])
         except Exception as e:
             QMessageBox.warning(self, "导出失败", f"导出 CSV 时出错：{e}")
