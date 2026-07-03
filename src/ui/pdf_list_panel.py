@@ -19,6 +19,7 @@ from ..utils.config import (
     load_config, save_config, load_library, save_library,
     add_pdf_to_library, remove_pdf_from_library, get_library_folders,
     delete_chat_history, delete_doc_state, delete_page_cache,
+    get_library_dir,
 )
 
 
@@ -70,11 +71,6 @@ class PDFListPanel(QWidget):
         self.import_btn.setToolTip("导入 PDF 论文到图书馆")
         self.import_btn.clicked.connect(self._import_pdf)
         action_bar.addWidget(self.import_btn)
-
-        self.lib_path_btn = QPushButton("📂 路径")
-        self.lib_path_btn.setToolTip("设置图书馆存储路径")
-        self.lib_path_btn.clicked.connect(self._set_library_path)
-        action_bar.addWidget(self.lib_path_btn)
 
         layout.addLayout(action_bar)
 
@@ -151,26 +147,23 @@ class PDFListPanel(QWidget):
         self._footer_label.setText(f"共 {total} 篇论文")
 
     def _import_pdf(self):
-        config = load_config()
-        lib_path = config.get("library_path", str(Path.home() / "Documents" / "PDFasker_Library"))
+        lib_dir = str(get_library_dir())
         files, _ = QFileDialog.getOpenFileNames(
-            self, "导入 PDF 论文", "", "PDF 文件 (*.pdf);;所有文件 (*.*)"
+            self, "导入 PDF 论文", lib_dir, "PDF 文件 (*.pdf);;所有文件 (*.*)"
         )
         if files:
             self._import_files(files)
 
     def _import_files(self, files: list[str]):
-        config = load_config()
-        lib_path = config.get("library_path", str(Path.home() / "Documents" / "PDFasker_Library"))
-        os.makedirs(lib_path, exist_ok=True)
+        lib_dir = str(get_library_dir())
         imported_paths: list[str] = []
         for file_path in files:
             fname = os.path.basename(file_path)
-            dest = os.path.join(lib_path, fname)
+            dest = os.path.join(lib_dir, fname)
             counter = 1
             name, ext = os.path.splitext(fname)
             while os.path.exists(dest):
-                dest = os.path.join(lib_path, f"{name}_{counter}{ext}")
+                dest = os.path.join(lib_dir, f"{name}_{counter}{ext}")
                 counter += 1
             try:
                 shutil.copy2(file_path, dest)
@@ -193,15 +186,6 @@ class PDFListPanel(QWidget):
         name, ok = QInputDialog.getText(self, "新建文件夹", "文件夹名称：")
         if ok and name.strip():
             self._refresh()
-
-    def _set_library_path(self):
-        config = load_config()
-        current = config.get("library_path", "")
-        path = QFileDialog.getExistingDirectory(self, "选择图书馆路径", current)
-        if path:
-            config["library_path"] = path
-            save_config(config)
-            QMessageBox.information(self, "已设置", f"图书馆路径：\n{path}")
 
     def _on_item_clicked(self, item: QTreeWidgetItem, col: int):
         data = item.data(0, Qt.ItemDataRole.UserRole)

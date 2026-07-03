@@ -7,8 +7,9 @@ import os
 from PySide6.QtCore import Qt, QThread, Signal as QtSignal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QLabel, QMainWindow, QMessageBox,
-    QSplitter, QStatusBar, QTabWidget,
+    QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
+    QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
+    QSplitter, QStatusBar, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .core.context_manager import ContextManager
@@ -23,7 +24,8 @@ from .ui.settings_dialog import SettingsDialog
 from .ui.styles import STYLESHEET
 from .utils.config import (
     delete_chat_history, get_parse_api, get_translate_api, get_write_api,
-    load_chat_history, load_config, save_chat_history,
+    has_data_root, load_chat_history, load_config, save_chat_history,
+    save_config, save_draft,
 )
 
 
@@ -46,14 +48,108 @@ class LLMWorker(QThread):
             self.error.emit(str(e))
 
 
+class FirstLaunchDialog(QDialog):
+    """首次启动：设置数据根目录。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("PDFasker — 首次设置")
+        self.setMinimumWidth(500)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+
+        title = QLabel("欢迎使用 PDFasker")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #7aa2f7;")
+        layout.addWidget(title)
+
+        desc = QLabel(
+            "请选择一个文件夹作为数据根目录。\n"
+            "所有 PDF 论文、阅读缓存、写作知识库和草稿都将存储在这个目录下。\n\n"
+            "后续可在菜单「设置 → 数据目录...」中更改。"
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #cfd2e3; font-size: 13px; line-height: 1.6;")
+        layout.addWidget(desc)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        from pathlib import Path
+        default_path = str(Path.home() / "Documents" / "PDFasker_Data")
+
+        self._path_edit = QLineEdit(default_path)
+        self._path_edit.setStyleSheet(
+            "QLineEdit { background-color: #1e2030; color: #cfd2e3; "
+            "border: 1px solid #3b3d54; border-radius: 6px; padding: 8px 12px; font-size: 14px; }"
+            "QLineEdit:focus { border-color: #7aa2f7; }"
+        )
+        browse_btn = QPushButton("浏览...")
+        browse_btn.clicked.connect(self._browse)
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(self._path_edit)
+        row_layout.addWidget(browse_btn)
+        form.addRow("数据根目录：", row)
+        layout.addLayout(form)
+
+        note = QLabel("该目录将自动创建所需的子目录结构。")
+        note.setStyleSheet("color: #636688; font-size: 11px;")
+        layout.addWidget(note)
+
+        layout.addStretch()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("开始使用")
+        buttons.accepted.connect(self._accept)
+        buttons.setStyleSheet(
+            "QPushButton { background: #7aa2f7; color: #1a1b26; font-weight: bold; "
+            "border-radius: 6px; padding: 8px 32px; font-size: 14px; }"
+            "QPushButton:hover { background: #89b4fa; }"
+        )
+        layout.addWidget(buttons)
+
+    def _browse(self):
+        path = QFileDialog.getExistingDirectory(self, "选择数据根目录", self._path_edit.text())
+        if path:
+            self._path_edit.setText(path)
+
+    def _accept(self):
+        path = self._path_edit.text().strip()
+        if not path:
+            QMessageBox.warning(self, "提示", "请选择或输入数据根目录。")
+            return
+        from pathlib import Path
+        try:
+            Path(path).mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            QMessageBox.critical(self, "错误", f"无法创建目录：{e}")
+            return
+        self._selected_path = path
+        self.accept()
+
+    @property
+    def selected_path(self) -> str:
+        return getattr(self, '_selected_path', self._path_edit.text().strip())
+
+
 class MainWindow(QMainWindow):
     """PDFasker 主窗口 v2 —— 阅读 + 写作。"""
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("PDFasker — AI 论文解读助手")
-        self.resize(1280, 800)
-        self.setMinimumSize(900, 600)
+
+        # 首次启动检测：如果未设置数据根目录，弹窗让用户选择
+        if not has_data_root():
+            dialog = FirstLaunchDialog()
+            if dialog.exec():
+                config = load_config()
+                config["data_root"] = dialog.selected_path
+                save_config(config)
+            else:
+                pass  # 用户关闭了对话框，使用默认路径
 
         self._config = load_config()
         self._llm_parse: LLMClient | None = None
@@ -92,6 +188,10 @@ class MainWindow(QMainWindow):
         api_action.setShortcut("Ctrl+,")
         api_action.triggered.connect(self._on_open_settings)
         settings_menu.addAction(api_action)
+        settings_menu.addSeparator()
+        data_dir_action = QAction("数据目录...", self)
+        data_dir_action.triggered.connect(self._on_change_data_dir)
+        settings_menu.addAction(data_dir_action)
 
         help_menu = menubar.addMenu("帮助(&H)")
         about_action = QAction("关于", self)
@@ -271,6 +371,14 @@ class MainWindow(QMainWindow):
     def _on_processor_progress(self, pdf_path: str, current: int, total: int):
         self.pdf_list.update_pdf_progress(pdf_path, current, total)
 
+    def _cancel_llm_worker(self) -> None:
+        if self._llm_worker and self._llm_worker.isRunning():
+            self._llm_worker.quit()
+            if not self._llm_worker.wait(3000):
+                self._llm_worker.terminate()
+                self._llm_worker.wait()
+        self._llm_worker = None
+
     def _on_follow_up_from_reader(self, context: str):
         if not self._llm_parse:
             QMessageBox.warning(self, "未配置", "请先配置阅读-解析 API")
@@ -280,6 +388,7 @@ class MainWindow(QMainWindow):
         self._context_manager.add_to_history("user", context)
         messages = self._context_manager.build_messages(context)
         self.chat_panel.start_ai_response()
+        self._cancel_llm_worker()
         self._llm_worker = LLMWorker(self._llm_parse, messages)
         self._llm_worker.chunk_received.connect(self._on_ai_chunk)
         self._llm_worker.finished.connect(self._on_ai_finished)
@@ -301,6 +410,7 @@ class MainWindow(QMainWindow):
         messages = self._context_manager.build_messages(text)
         self.chat_panel.start_ai_response()
         self.status_bar.showMessage("AI 正在思考...")
+        self._cancel_llm_worker()
         self._llm_worker = LLMWorker(self._llm_parse, messages)
         self._llm_worker.chunk_received.connect(self._on_ai_chunk)
         self._llm_worker.finished.connect(self._on_ai_finished)
@@ -342,7 +452,29 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self._config = load_config()
             self._init_all_clients()
+            self._init_write()
             self.status_bar.showMessage("API 配置已更新")
+
+    def _on_change_data_dir(self):
+        """更改数据根目录。"""
+        from pathlib import Path
+        current = self._config.get("data_root", "")
+        path = QFileDialog.getExistingDirectory(self, "选择数据根目录", current)
+        if path:
+            try:
+                Path(path).mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                QMessageBox.critical(self, "错误", f"无法使用该目录：{e}")
+                return
+            self._config["data_root"] = path
+            save_config(self._config)
+            QMessageBox.information(
+                self, "已更新",
+                f"数据根目录已更改为：\n{path}\n\n"
+                "注意：已有的 PDF 论文和缓存不会自动迁移，\n"
+                "如需迁移请手动复制文件到新目录的 library/ 文件夹下。"
+            )
+            self.pdf_list._refresh()
 
     def _on_about(self) -> None:
         QMessageBox.about(
@@ -356,6 +488,15 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._save_current_chat()
+        # 保存写作编辑器草稿
+        try:
+            coach = self._writing_panel._coach
+            if coach and coach.current_profile:
+                text = self._writing_panel.get_editor_text()
+                if text.strip():
+                    save_draft(coach.current_profile.name, text)
+        except Exception:
+            pass
         self._writing_panel.shutdown()
         for proc in self._processors.values():
             if hasattr(proc, 'cancel'):

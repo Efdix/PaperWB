@@ -779,6 +779,11 @@ class PDFViewerPanel(QWidget):
     def _on_translate_request(self, idx: int, text: str):
         if not self._translate_client:
             return
+        if self._trans_worker and self._trans_worker.isRunning():
+            self._trans_worker.quit()
+            if not self._trans_worker.wait(2000):
+                self._trans_worker.terminate()
+                self._trans_worker.wait()
         self._trans_worker = TranslationWorker(self._translate_client, idx, text)
         self._trans_worker.finished.connect(self._on_translation_done)
         self._trans_worker.error.connect(self._on_translation_error)
@@ -802,9 +807,6 @@ class PDFViewerPanel(QWidget):
 
     def _on_scroll(self):
         pass
-
-    def get_current_path(self) -> str:
-        return self._current_path
 
     @property
     def structured_document(self) -> "StructuredDocument | None":

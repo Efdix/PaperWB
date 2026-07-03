@@ -1,8 +1,8 @@
 """写作教练 —— 写作辅助的主引擎，管理知识库、分析风格、驱动润色/改写/文献推荐。
 
-Phase 1: 知识库 CRUD — 创建 profile，添加个人论文（提取写作习惯）和期刊范文（提取期刊格式）
+Phase 1: 知识库 CRUD — 创建 profile，添加写作范文（提取写作习惯）和期刊范文（提取期刊格式）
 Phase 2: 风格分析（双轨并行）
-  - writing_habits ← 个人论文: 用词偏好 / 句式模板 / 段落大小 / 引用详略度 / 论述逻辑
+  - writing_habits ← 写作范文: 用词偏好 / 句式模板 / 段落大小 / 引用详略度 / 论述逻辑
   - journal_style  ← 期刊范文: 引用格式 / 章节结构 / 图表惯例 / 摘要格式
 Phase 3: AI 辅助写作 — 润色选中文字、基于引文改写、Semantic Scholar 遗漏文献检测
 """
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 class WritingProfile:
     """写作知识库配置。
 
-    个人论文 → 分析 writing_habits（用词/句式/段落/引用详略度）
+    写作范文 → 分析 writing_habits（用词/句式/段落/引用详略度）
     期刊范文 → 分析 journal_style（引用格式/章节结构/图表惯例）
     """
 
@@ -136,11 +136,8 @@ class WritingCoach:
 
     @staticmethod
     def _resolve_kb_dir() -> Path:
-        from ..utils.config import load_config, _resolve_data_dir
-        config = load_config()
-        d = _resolve_data_dir(config) / "writing_kb"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        from ..utils.config import get_writing_kb_dir
+        return get_writing_kb_dir()
 
     def _profile_dir(self, name: str) -> Path:
         return self._kb_dir / name
@@ -251,8 +248,8 @@ class WritingCoach:
 
     # ---- 公共 API: 论文管理 ----
 
-    def add_personal_paper(self, pdf_path: str) -> dict | None:
-        """添加一篇个人参考论文到当前知识库。
+    def add_sample_paper(self, pdf_path: str) -> dict | None:
+        """添加一篇写作范文到当前知识库。
 
         Returns:
             {"filename": str, "text": str} 或 None（失败时）
@@ -263,16 +260,16 @@ class WritingCoach:
         """添加一篇目标期刊范文到当前知识库。"""
         return self._add_paper(pdf_path, "journal")
 
-    def remove_personal_paper(self, filename: str) -> None:
-        """移除一篇个人参考论文。"""
+    def remove_sample_paper(self, filename: str) -> None:
+        """移除一篇写作范文。"""
         self._remove_paper(filename, "personal")
 
     def remove_journal_paper(self, filename: str) -> None:
         """移除一篇期刊范文。"""
         self._remove_paper(filename, "journal")
 
-    def clear_personal_papers(self) -> None:
-        """清空所有个人参考论文。"""
+    def clear_sample_papers(self) -> None:
+        """清空所有写作范文。"""
         if self._current_profile:
             self._current_profile.personal_papers.clear()
             self._save_profile(self._current_profile)
@@ -356,8 +353,8 @@ class WritingCoach:
 
     # ---- 公共 API: 获取拼接文本 ----
 
-    def get_personal_paper_texts(self) -> str:
-        """获取当前知识库中个人论文的拼接文本（供写作习惯分析用）。"""
+    def get_sample_paper_texts(self) -> str:
+        """获取当前知识库中写作范文的拼接文本（供写作习惯分析用）。"""
         if not self._current_profile:
             return ""
         parts = []
@@ -380,7 +377,7 @@ class WritingCoach:
             return ""
         parts = []
         for p in self._current_profile.personal_papers:
-            parts.append(f"--- 个人论文: {p['filename']} ---\n{p.get('text', '')}")
+            parts.append(f"--- 写作范文: {p['filename']} ---\n{p.get('text', '')}")
         for p in self._current_profile.journal_papers:
             parts.append(f"--- 期刊范文: {p['filename']} ---\n{p.get('text', '')}")
         return "\n\n".join(parts)
@@ -440,7 +437,7 @@ class WritingCoach:
         if not self._current_profile:
             return prompt
 
-        # 写作习惯（来自个人论文分析）
+        # 写作习惯（来自写作范文分析）
         if self._current_profile.has_writing_habits:
             habits = self._current_profile.writing_habits
             parts = []
@@ -527,7 +524,7 @@ class WritingCoach:
 
     @staticmethod
     def _analyze_citation_detail(profile: "WritingProfile") -> dict | None:
-        """从个人论文中计算平均每引用字数/句数/分布（纯统计指标）。
+        """从写作范文中计算平均每引用字数/句数/分布（纯统计指标）。
 
         提取所有引文标记 [n] 或 [n,m]，取标记前后各 2 句作为引用上下文，
         统计字符数和句子数，输出均值、中位数、四分位数、分布描述。
@@ -644,11 +641,11 @@ class WritingCoach:
             "sample_count": n,
         }
 
-    # ---- Phase 2a: 写作习惯分析（基于个人论文） ----
+    # ---- Phase 2a: 写作习惯分析（基于写作范文） ----
 
     WRITING_HABITS_PROMPT = """你是一位学术写作风格分析专家。请分析以下综述论文的写作习惯。
 
-这些论文是你自己撰写的，请从以下角度提取你的个人写作风格：
+这些论文是你自己撰写的，请从以下角度提取你的写作风格：
 
 1. **术语偏好**: 高频术语、固定搭配、学科特有表达
 2. **句式模板**: 摘录 5-8 个你常用的中文句式（如开头句、过渡句、总结句、引用句）
@@ -674,7 +671,7 @@ class WritingCoach:
 {paper_texts}"""
 
     def generate_writing_habits(self, parse_client: "LLMClient") -> dict | None:
-        """分析个人论文的写作习惯 —— 仅基于 personal_papers。
+        """分析写作范文的写作习惯 —— 仅基于 personal_papers。
 
         Returns:
             writing_habits dict（含 LLM 分析结果 + 计算性引用详略度指标）。
@@ -684,7 +681,7 @@ class WritingCoach:
         if self._current_profile.personal_count == 0:
             return None
 
-        all_text = self.get_personal_paper_texts()
+        all_text = self.get_sample_paper_texts()
         if not all_text.strip():
             return None
 
@@ -980,10 +977,6 @@ class WritingCoach:
             .replace("{citation_texts}", "\n\n".join(all_citation_texts)))
         messages = [
             {"role": "system", "content": system_prompt or "你是学术综述写作专家。请根据提供的文献内容，判断选中的文字引用了哪些文献，并据此改写。"},
-            {"role": "user", "content": prompt},
-        ]
-        messages = [
-            {"role": "system", "content": system_prompt or "你是学术综述写作专家。"},
             {"role": "user", "content": prompt},
         ]
         try:

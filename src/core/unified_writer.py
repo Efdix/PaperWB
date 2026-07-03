@@ -64,23 +64,23 @@ c) 如果批注意见与引文原文明显矛盾，标注 flagged 但仍按批�
 
 ## 输出格式
 
-{{
+{
   "polished_text": "润色后的完整文字（不含批注原文）",
   "citation_notes": [
-    {{
+    {
       "marker": "Author et al., Year",
       "status": "accurate/corrected/partial/unchecked",
       "note": "简短说明"
-    }}
+    }
   ],
   "supervisor_notes": [
-    {{
+    {
       "suggestion": "批注的关键内容摘要",
       "action": "applied/modified/flagged",
       "note": "1句话说明如何处理"
-    }}
+    }
   ]
-}}
+}
 
 ## 字段说明
 - polished_text: 不含批注原文的润色后完整文字
@@ -151,9 +151,6 @@ class UnifiedWriter:
         try:
             response = write_client.chat_sync(messages, timeout=180.0, max_tokens=4000)
             result = self._parse_response(response)
-            if result is None:
-                return {"polished_text": selected_text, "citation_notes": [],
-                        "supervisor_notes": [], "error": "无法解析 LLM 返回结果"}
             return {"polished_text": result.get("polished_text", selected_text),
                     "citation_notes": result.get("citation_notes", []),
                     "supervisor_notes": result.get("supervisor_notes", []),
@@ -275,35 +272,64 @@ class UnifiedWriter:
             return "(PDF 读取失败)"
 
     @staticmethod
-    def _parse_response(raw: str) -> dict | None:
-        """解析 LLM 返回的 JSON（三层容错）。"""
-        if not raw or not raw.strip():
-            return None
-
-        text = raw.strip()
-
-        # 尝试 1: 直接解析
+    def _try_parse_json(text: str) -> dict | None:
         try:
             return _json.loads(text)
         except (_json.JSONDecodeError, TypeError):
-            pass
+            return None
+
+    @staticmethod
+    def _parse_response(raw: str) -> dict:
+        """解析 LLM 返回的 JSON（五层容错 + 兜底降级）。"""
+        if not raw or not raw.strip():
+            return {"polished_text": "", "citation_notes": [], "supervisor_notes": []}
+
+        text = raw.strip()
+
+        parse = UnifiedWriter._try_parse_json
+
+        # 尝试 1: 直接解析
+        obj = parse(text)
+        if obj is not None:
+            return obj
 
         # 尝试 2: 提取 ```json ... ```
         for pattern in [r'```json\s*\n?(.*?)\n?```', r'```\s*\n?(.*?)\n?```']:
             m = re.search(pattern, text, re.DOTALL)
             if m:
-                try:
-                    return _json.loads(m.group(1).strip())
-                except (_json.JSONDecodeError, TypeError):
-                    pass
+                obj = parse(m.group(1).strip())
+                if obj is not None:
+                    return obj
 
         # 尝试 3: 提取 { ... }
         first = text.find('{')
         last = text.rfind('}')
         if first >= 0 and last > first:
+            json_str = text[first:last + 1]
+            obj = parse(json_str)
+            if obj is not None:
+                return obj
+            # 尝试 3b: 清洗文本中未转义的换行符（LLM 常见错误）
             try:
-                return _json.loads(text[first:last + 1])
-            except (_json.JSONDecodeError, TypeError):
+                cleaned = re.sub(r'(?<!\\)"\s*\n\s*', r'\\n', json_str)
+                cleaned = re.sub(r'(?<!\\)\n\s*"', r'\\n"', cleaned)
+                obj = parse(cleaned)
+                if obj is not None:
+                    return obj
+            except Exception:
                 pass
 
-        return None
+        # 尝试 4: 用中文全角花括号替换后重试
+        try:
+            alt = text.replace('\uff5b', '{').replace('\uff5d', '}')
+            first_a = alt.find('{')
+            last_a = alt.rfind('}')
+            if first_a >= 0 and last_a > first_a:
+                obj = parse(alt[first_a:last_a + 1])
+                if obj is not None:
+                    return obj
+        except Exception:
+            pass
+
+        # 兜底降级: 所有 JSON 解析都失败，将整个原始返回作为 polished_text
+        return {"polished_text": text, "citation_notes": [], "supervisor_notes": []}

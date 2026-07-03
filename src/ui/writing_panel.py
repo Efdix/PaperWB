@@ -18,9 +18,9 @@ from PySide6.QtWidgets import (
     QScrollArea, QLabel, QFrame, QSplitter, QProgressBar,
     QMessageBox, QFileDialog, QComboBox, QGroupBox, QInputDialog,
     QSizePolicy, QListWidget, QListWidgetItem, QApplication, QMenu,
-    QLineEdit,
+    QLineEdit, QDialog, QDialogButtonBox,
 )
-from PySide6.QtCore import Qt, Signal, QThread, QSize
+from PySide6.QtCore import Qt, Signal, QThread, QSize, QTimer
 from PySide6.QtGui import QFont, QTextCursor
 
 if TYPE_CHECKING:
@@ -28,6 +28,129 @@ if TYPE_CHECKING:
     from ..core.zotero_parser import ZoteroLibrary
     from ..core.review_checker import ReviewChecker
     from ..core.writing_coach import WritingCoach, WritingProfile
+
+
+# ============================================================
+# 风格指南展示对话框
+# ============================================================
+
+class StyleGuideDialog(QDialog):
+    """风格指南滚动展示对话框 —— 可滚动的完整分析结果。"""
+
+    def __init__(self, profile, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("风格分析完成")
+        self.resize(560, 500)
+        self.setMinimumSize(420, 350)
+        self._setup_ui(profile)
+
+    def _setup_ui(self, profile):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(
+            "QScrollArea { border: none; background: #1a1b26; }"
+            "QScrollBar:vertical { background: #1a1b26; width: 8px; }"
+            "QScrollBar::handle:vertical { background: #3b3d54; border-radius: 4px; min-height: 30px; }"
+            "QScrollBar::handle:vertical:hover { background: #565a7a; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+        )
+
+        container = QWidget()
+        container.setStyleSheet("background: #1a1b26;")
+        cl = QVBoxLayout(container)
+        cl.setContentsMargins(24, 20, 24, 20)
+        cl.setSpacing(12)
+
+        def _section(title, content, color="#7aa2f7"):
+            if not content:
+                return
+            header = QLabel(title)
+            header.setStyleSheet(
+                f"color: {color}; font-size: 15px; font-weight: bold; "
+                f"border-left: 3px solid {color}; padding-left: 10px; margin-top: 8px;"
+            )
+            cl.addWidget(header)
+            body = QLabel(content)
+            body.setWordWrap(True)
+            body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            body.setStyleSheet(
+                "color: #cfd2e3; font-size: 13px; line-height: 1.8; "
+                "padding: 6px 12px; background: #1e2030; border-radius: 6px;"
+            )
+            cl.addWidget(body)
+
+        # 写作习惯部分
+        if profile and profile.has_writing_habits:
+            h = profile.writing_habits
+            if h.get("citation_detail_level"):
+                cd = h["citation_detail_level"]
+                _section("引用详略度",
+                    f"平均 {cd['avg_sentences_per_citation']} 句话 / {cd['avg_chars_per_citation']} 字  "
+                    f"(共 {cd['sample_count']} 个样本)\n"
+                    f"中位数: {cd['med_chars_per_citation']} 字  "
+                    f"四分位: {cd['q25_chars']}-{cd['q75_chars']} 字\n"
+                    f"分布: {cd['distribution_description']}",
+                    "#e0af68")
+            if h.get("argumentation_style"):
+                _section("论述逻辑", h["argumentation_style"], "#7aa2f7")
+            if h.get("paragraph_patterns"):
+                _section("段落组织", h["paragraph_patterns"], "#7aa2f7")
+            if h.get("terminology_preferences"):
+                _section("术语偏好", h["terminology_preferences"], "#9ece6a")
+            st = h.get("sentence_templates")
+            if st:
+                if isinstance(st, list):
+                    _section("句式模板", "\n".join(f"· {s}" for s in st), "#bb9af7")
+                else:
+                    _section("句式模板", st, "#bb9af7")
+            if h.get("transition_phrases"):
+                _section("过渡方式", h["transition_phrases"], "#7aa2f7")
+            if h.get("tone_voice"):
+                _section("语气风格", h["tone_voice"], "#7aa2f7")
+
+        # 期刊格式部分
+        if profile and profile.has_journal_style:
+            sep = QFrame()
+            sep.setFrameShape(QFrame.Shape.HLine)
+            sep.setStyleSheet("background-color: #2a2c3d; max-height: 1px;")
+            cl.addWidget(sep)
+
+            j = profile.journal_style
+            if j.get("citation_format"):
+                _section("引用格式", j["citation_format"], "#e0af68")
+            if j.get("section_structure"):
+                _section("章节结构", j["section_structure"], "#e0af68")
+            if j.get("reference_list_format"):
+                _section("参考文献格式", j["reference_list_format"], "#e0af68")
+            if j.get("figure_conventions"):
+                _section("图表惯例", j["figure_conventions"], "#e0af68")
+            if j.get("abstract_format"):
+                _section("摘要格式", j["abstract_format"], "#e0af68")
+            if j.get("general_formatting"):
+                _section("其他格式", j["general_formatting"], "#e0af68")
+
+        cl.addStretch()
+        scroll.setWidget(container)
+        layout.addWidget(scroll)
+
+        btn_row = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        btn_row.accepted.connect(self.accept)
+        btn_row.setStyleSheet(
+            "QPushButton { background: #7aa2f7; color: #1a1b26; font-weight: bold; "
+            "border-radius: 6px; padding: 6px 24px; font-size: 13px; }"
+            "QPushButton:hover { background: #89b4fa; }"
+        )
+        btn_container = QWidget()
+        btn_container.setStyleSheet("background: #1a1b26;")
+        btn_lo = QHBoxLayout(btn_container)
+        btn_lo.setContentsMargins(24, 10, 24, 16)
+        btn_lo.addStretch()
+        btn_lo.addWidget(btn_row)
+        layout.addWidget(btn_container)
 
 
 # ============================================================
@@ -103,6 +226,11 @@ class WritingPanel(QWidget):
 
         self._setup_ui()
         self._refresh_kb_dropdown()
+
+        # 自动保存定时器：每 30 秒保存一次编辑器草稿
+        self._auto_save_timer = QTimer(self)
+        self._auto_save_timer.timeout.connect(self._auto_save_draft)
+        self._auto_save_timer.start(30_000)
 
     @staticmethod
     def _create_coach():
@@ -248,10 +376,10 @@ class WritingPanel(QWidget):
         self._kb_status_label.setStyleSheet("color: #8a8ea6; font-size: 12px;")
         kb_layout.addWidget(self._kb_status_label)
 
-        self._personal_btn = QPushButton("📄 添加参考论文")
-        self._personal_btn.setToolTip("上传你自己的论文 PDF 供风格分析")
-        self._personal_btn.clicked.connect(self._on_add_personal_paper)
-        kb_layout.addWidget(self._personal_btn)
+        self._sample_btn = QPushButton("📄 添加写作范文")
+        self._sample_btn.setToolTip("上传你自己的论文 PDF 供风格分析")
+        self._sample_btn.clicked.connect(self._on_add_sample_paper)
+        kb_layout.addWidget(self._sample_btn)
 
         self._journal_btn = QPushButton("📰 添加期刊范文")
         self._journal_btn.setToolTip("上传目标期刊的综述 PDF 供风格分析")
@@ -382,6 +510,8 @@ class WritingPanel(QWidget):
             self._on_new_kb()
             return
         if data and data in self._coach.profile_names:
+            # 保存当前草稿
+            self._auto_save_draft()
             self._coach.switch_profile(data)
             profile = self._coach.current_profile
             if profile and profile.writing_type:
@@ -391,6 +521,8 @@ class WritingPanel(QWidget):
                     self._type_combo.setCurrentIndex(type_idx)
                     self._type_combo.blockSignals(False)
                     self._current_writing_type = profile.writing_type
+            # 加载新知识库的草稿
+            self._load_draft()
         else:
             self._coach._current_profile = None
         self._update_kb_status()
@@ -452,17 +584,17 @@ class WritingPanel(QWidget):
             self._refresh_kb_dropdown()
             self._status_label.setText(f"已删除知识库: {name}")
 
-    def _on_add_personal_paper(self):
+    def _on_add_sample_paper(self):
         if not self._coach.current_profile:
             QMessageBox.warning(self, "提示", "请先选择或创建一个知识库")
             return
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "选择参考论文 PDF", "", "PDF 文件 (*.pdf);;所有文件 (*.*)"
+            self, "选择写作范文 PDF", "", "PDF 文件 (*.pdf);;所有文件 (*.*)"
         )
         for path in paths:
-            result = self._coach.add_personal_paper(path)
+            result = self._coach.add_sample_paper(path)
             if result:
-                self._status_label.setText(f"已添加个人论文: {result['filename']}")
+                self._status_label.setText(f"已添加写作范文: {result['filename']}")
             else:
                 self._status_label.setText(f"添加失败: {os.path.basename(path)}")
         self._refresh_kb_dropdown()
@@ -487,7 +619,7 @@ class WritingPanel(QWidget):
         if not self._coach.current_profile:
             return
         if self._coach.current_profile.total_papers == 0:
-            QMessageBox.warning(self, "提示", "请先添加参考论文或期刊范文")
+            QMessageBox.warning(self, "提示", "请先添加写作范文或期刊范文")
             return
         if not self._write_client:
             QMessageBox.warning(self, "提示", "请先配置写作 API")
@@ -514,30 +646,8 @@ class WritingPanel(QWidget):
         self._status_label.setText("风格分析完成")
 
         profile = self._coach.current_profile
-        lines = []
-        if profile:
-            if profile.has_writing_habits:
-                h = profile.writing_habits
-                if h.get("citation_detail_level"):
-                    cd = h["citation_detail_level"]
-                    lines.append(f"引用详略度: 平均 {cd['avg_sentences_per_citation']} 句 / {cd['avg_chars_per_citation']} 字 (共 {cd['sample_count']} 个样本)")
-                if h.get("argumentation_style"):
-                    lines.append(f"论述逻辑: {h['argumentation_style'][:80]}")
-                if h.get("paragraph_patterns"):
-                    lines.append(f"段落: {h['paragraph_patterns'][:80]}")
-            if profile.has_journal_style:
-                j = profile.journal_style
-                if j.get("citation_format"):
-                    lines.append(f"引用格式: {j['citation_format'][:80]}")
-                if j.get("section_structure"):
-                    lines.append(f"结构: {j['section_structure'][:80]}")
-
-        QMessageBox.information(
-            self, "风格分析完成",
-            "AI 已完成知识库分析。\n\n"
-            + "\n".join(lines) +
-            "\n\n后续写作时将自动遵循这些规范。"
-        )
+        dialog = StyleGuideDialog(profile, parent=self)
+        dialog.exec()
 
     def _on_style_guide_error(self, err: str):
         self._progress_bar.setVisible(False)
@@ -560,6 +670,11 @@ class WritingPanel(QWidget):
             return
 
         text = cursor.selectedText().strip()
+        # 存储原始文本和光标位置，避免异步处理期间选中丢失
+        self._pending_original = text
+        self._pending_cursor_pos = cursor.selectionStart()
+        self._pending_cursor_end = cursor.selectionEnd()
+
         self._polish_btn.setEnabled(False)
         self._polish_btn.setText("⏳ 处理中...")
         self._progress_bar.setVisible(True)
@@ -586,19 +701,27 @@ class WritingPanel(QWidget):
             QMessageBox.warning(self, "处理失败", result["error"])
             return
 
+        original = getattr(self, '_pending_original', '')
         from .diff_dialog import DiffDialog
         dialog = DiffDialog(
-            original=self.editor.textCursor().selectedText(),
+            original=original,
             polished=result.get("polished_text", ""),
             citation_notes=result.get("citation_notes", []),
             supervisor_notes=result.get("supervisor_notes", []),
             parent=self,
         )
         if dialog.exec():
-            # 用户点击了"替换原文"
+            # 恢复原始光标位置并替换文本
             cursor = self.editor.textCursor()
+            start = getattr(self, '_pending_cursor_pos', cursor.position())
+            end = getattr(self, '_pending_cursor_end', cursor.position())
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            self.editor.setTextCursor(cursor)
             cursor.insertText(dialog.get_polished_text())
             self._status_label.setText("润色文本已替换")
+            # 用户确认后保存润色历史
+            self._save_polish_history(result, original)
 
     def _on_unified_error(self, err: str):
         self._progress_bar.setVisible(False)
@@ -652,7 +775,7 @@ class WritingPanel(QWidget):
             lines = [
                 f"名称: {profile.name}",
                 f"类型: {profile.writing_type}",
-                f"个人论文: {profile.personal_count} 篇",
+                f"写作范文: {profile.personal_count} 篇",
                 f"期刊范文: {profile.journal_count} 篇",
                 f"写作习惯: {habits_ok}",
                 f"期刊格式: {journal_ok}",
@@ -666,13 +789,54 @@ class WritingPanel(QWidget):
     # ---- 生命周期 ----
 
     def shutdown(self):
-        """清理后台线程。"""
+        """清理后台线程并保存草稿。"""
+        self._auto_save_draft()
+        self._auto_save_timer.stop()
         if self._style_worker and self._style_worker.isRunning():
             self._style_worker.quit()
             self._style_worker.wait(2000)
         if self._unified_worker and self._unified_worker.isRunning():
             self._unified_worker.quit()
             self._unified_worker.wait(2000)
+
+    def _auto_save_draft(self):
+        """自动保存编辑器草稿到磁盘。"""
+        try:
+            if self._coach and self._coach.current_profile:
+                text = self.editor.toPlainText()
+                from ..utils.config import save_draft
+                save_draft(self._coach.current_profile.name, text)
+        except Exception:
+            pass
+
+    def _load_draft(self):
+        """加载当前知识库的编辑器草稿。"""
+        try:
+            if self._coach and self._coach.current_profile:
+                from ..utils.config import load_draft
+                text = load_draft(self._coach.current_profile.name)
+                if text and not self.editor.toPlainText().strip():
+                    self.editor.setPlainText(text)
+                    self._status_label.setText("已恢复上次草稿")
+        except Exception:
+            pass
+
+    def _save_polish_history(self, result: dict, original: str = ""):
+        """保存润色结果到历史记录。"""
+        try:
+            if self._coach and self._coach.current_profile and not result.get("error"):
+                from datetime import datetime
+                from ..utils.config import save_polish_entry
+                entry = {
+                    "timestamp": datetime.now().isoformat(),
+                    "original": original,
+                    "polished_text": result.get("polished_text", ""),
+                    "citation_notes": result.get("citation_notes", []),
+                    "supervisor_notes": result.get("supervisor_notes", []),
+                }
+                save_polish_entry(self._coach.current_profile.name, entry)
+        except Exception:
+            pass
 
     def get_editor_text(self) -> str:
         return self.editor.toPlainText()

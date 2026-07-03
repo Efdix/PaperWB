@@ -199,7 +199,7 @@ class DiffDialog(QDialog):
 
     def _render_notes(self):
         """渲染引文核查备注列表。"""
-        if not hasattr(self, '_notes_layout'):
+        if self._notes_layout is None:
             return
 
         for note in self._citation_notes:
