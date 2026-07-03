@@ -180,7 +180,9 @@ class DiffDialog(QDialog):
         chat_label.setStyleSheet(
             "color: #7aa2f7; font-weight: bold; font-size: 13px; padding: 2px 8px;"
         )
+        chat_label.setVisible(False)
         chat_lo.addWidget(chat_label)
+        self._chat_label = chat_label
 
         self._chat_scroll = QScrollArea()
         self._chat_scroll.setWidgetResizable(True)
@@ -203,6 +205,7 @@ class DiffDialog(QDialog):
         self._chat_placeholder = chat_placeholder
 
         self._chat_scroll.setWidget(self._chat_widget)
+        self._chat_scroll.setVisible(False)
         chat_lo.addWidget(self._chat_scroll)
 
         # 聊天输入行
@@ -439,9 +442,12 @@ class DiffDialog(QDialog):
         if not text:
             return
         if not self._write_client:
+            # 显示聊天区以便看到系统消息
+            self._reveal_chat()
             self._add_chat_bubble("system", "未配置写作 API，无法发起对话。")
             return
 
+        self._reveal_chat()
         self._chat_input.setEnabled(False)
         self._chat_input.setText("")
         self._add_chat_bubble("user", text)
@@ -503,6 +509,11 @@ class DiffDialog(QDialog):
             role = "用户" if m["role"] == "user" else "AI"
             lines.append(f"{role}: {m['content'][:500]}")
         return "\n".join(lines)
+
+    def _reveal_chat(self):
+        """首次发送消息时显示聊天记录区域。"""
+        self._chat_scroll.setVisible(True)
+        self._chat_label.setVisible(True)
 
     def _add_chat_bubble(self, role: str, text: str):
         if role == "user":

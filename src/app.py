@@ -56,6 +56,10 @@ class FirstLaunchDialog(QDialog):
         self.setWindowTitle("PDFasker — 首次设置")
         self.setMinimumWidth(500)
         self.setModal(True)
+        self.setStyleSheet(
+            "QDialog { background-color: #1a1b26; }"
+            "QLabel { background-color: transparent; }"
+        )
 
         layout = QVBoxLayout(self)
         layout.setSpacing(16)

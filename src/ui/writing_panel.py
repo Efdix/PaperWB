@@ -670,8 +670,12 @@ class WritingPanel(QWidget):
             return
 
         text = cursor.selectedText().strip()
+        # 裁剪尾部参考文献列表（仅用于DiffDialog对比展示，不影响引文核查）
+        import re
+        ref_stripped = re.split(r'\n\s*(参考文献|References|REFERENCES)\s*\n', text)
+        display_text = ref_stripped[0] if ref_stripped else text
         # 存储原始文本和光标位置，避免异步处理期间选中丢失
-        self._pending_original = text
+        self._pending_original = display_text
         self._pending_cursor_pos = cursor.selectionStart()
         self._pending_cursor_end = cursor.selectionEnd()
 

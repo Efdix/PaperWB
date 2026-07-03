@@ -36,7 +36,7 @@ class LitAnalysisWorker(QThread):
             {"role": "user", "content": prompt},
         ]
         try:
-            response = self._client.chat_sync(messages, timeout=120.0, max_tokens=4000)
+            response = self._client.chat_sync(messages, timeout=120.0, max_tokens=8000)
             if not response or not response.strip():
                 self.error.emit("LLM 返回空响应，请稍后重试")
                 return
@@ -71,7 +71,7 @@ class LitRefineWorker(QThread):
             {"role": "user", "content": prompt},
         ]
         try:
-            response = self._client.chat_sync(messages, timeout=120.0, max_tokens=4000)
+            response = self._client.chat_sync(messages, timeout=120.0, max_tokens=8000)
             if not response or not response.strip():
                 self.error.emit("LLM 返回空响应，请稍后重试")
                 return
@@ -538,8 +538,27 @@ class LitSearchDialog(QDialog):
         first = text.find('{')
         last = text.rfind('}')
         if first >= 0 and last > first:
+            json_str = text[first:last + 1]
             try:
-                return _json.loads(text[first:last + 1])
+                return _json.loads(json_str)
+            except (_json.JSONDecodeError, TypeError):
+                pass
+            # 尝试 3b: 清洗未转义换行符
+            try:
+                cleaned = re.sub(r'(?<!\\)"\s*\n\s*', r'\\n', json_str)
+                cleaned = re.sub(r'(?<!\\)\n\s*"', r'\\n"', cleaned)
+                cleaned = cleaned.replace('\uff5b', '{').replace('\uff5d', '}')
+                return _json.loads(cleaned)
+            except Exception:
+                pass
+
+        # 尝试 4: 中文花括号替换后重试
+        alt = text.replace('\uff5b', '{').replace('\uff5d', '}')
+        first_a = alt.find('{')
+        last_a = alt.rfind('}')
+        if first_a >= 0 and last_a > first_a and (first_a != first or last_a != last):
+            try:
+                return _json.loads(alt[first_a:last_a + 1])
             except (_json.JSONDecodeError, TypeError):
                 pass
 
