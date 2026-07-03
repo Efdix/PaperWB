@@ -1,4 +1,4 @@
-"""PDFasker 主窗口 v2 —— 阅读（两阶段管线） + 写作（引文核查）。"""
+"""PDFasker 主窗口 v2 —— 阅读（两阶段视觉 LLM 管线） + 写作（知识库/引文核查/风格分析/文献推荐）。"""
 
 from __future__ import annotations
 
@@ -350,8 +350,8 @@ class MainWindow(QMainWindow):
             "<h3>PDFasker</h3>"
             "<p>AI 论文解读助手 v2.0</p>"
             "<p>支持 DeepSeek V4、Mimo 及所有 OpenAI 兼容接口。</p>"
-            "<p>三套 API：阅读-解析（视觉解析+整合+问答）、阅读-翻译、写作（引文核查）</p>"
-            "<p>🆕 视觉 LLM 两阶段管线 · 结构化阅读视图 · 右键分开重跑</p>"
+            "<p>三套 API：阅读-解析（视觉解析+整合+问答）、阅读-翻译、写作（引文核查+风格分析+文献推荐）</p>"
+            "<p>🆕 视觉 LLM 两阶段管线 · 结构化阅读视图 · 知识库驱动写作辅助 · Semantic Scholar 集成</p>"
         )
 
     def closeEvent(self, event) -> None:

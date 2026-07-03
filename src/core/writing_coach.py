@@ -1,8 +1,10 @@
-"""写作教练 —— 知识库管理 + 风格分析 + 引用感知改写 + 遗漏文献检测。
+"""写作教练 —— 写作辅助的主引擎，管理知识库、分析风格、驱动润色/改写/文献推荐。
 
-Phase 1: 知识库 CRUD + 参考论文/期刊范文管理
-Phase 2: LLM 风格指南生成
-Phase 3: Zotero 引用感知改写 + S2 遗漏文献检测
+Phase 1: 知识库 CRUD — 创建 profile，添加个人论文（提取写作习惯）和期刊范文（提取期刊格式）
+Phase 2: 风格分析（双轨并行）
+  - writing_habits ← 个人论文: 用词偏好 / 句式模板 / 段落大小 / 引用详略度 / 论述逻辑
+  - journal_style  ← 期刊范文: 引用格式 / 章节结构 / 图表惯例 / 摘要格式
+Phase 3: AI 辅助写作 — 润色选中文字、基于引文改写、Semantic Scholar 遗漏文献检测
 """
 
 from __future__ import annotations
@@ -24,7 +26,11 @@ if TYPE_CHECKING:
 
 @dataclass
 class WritingProfile:
-    """写作知识库配置。"""
+    """写作知识库配置。
+
+    个人论文 → 分析 writing_habits（用词/句式/段落/引用详略度）
+    期刊范文 → 分析 journal_style（引用格式/章节结构/图表惯例）
+    """
 
     name: str = ""                         # 知识库名称
     writing_type: str = "综述"              # 写作类型 key
@@ -32,7 +38,10 @@ class WritingProfile:
     updated_at: str = ""
     personal_papers: list[dict] = field(default_factory=list)    # [{filename, original_path, text}]
     journal_papers: list[dict] = field(default_factory=list)     # 同上
-    style_guide: dict | None = None        # Phase 2: LLM 生成的风格指南
+    writing_habits: dict | None = None     # 个人论文分析结果（用词/句式/段落/引用详略度/论述逻辑）
+    journal_style: dict | None = None      # 期刊范文分析结果（引用格式/章节结构/图表惯例）
+    # 兼容旧格式（v1 的 style_guide 不再写入，读取时自动迁移）
+    _legacy_style_guide: dict | None = field(default=None, repr=False)
 
     @property
     def personal_count(self) -> int:
@@ -48,10 +57,21 @@ class WritingProfile:
 
     @property
     def has_style_guide(self) -> bool:
-        return self.style_guide is not None and bool(self.style_guide)
+        """是否有任何风格指南（兼容旧 code）。"""
+        return (self.writing_habits is not None and bool(self.writing_habits)) or \
+               (self.journal_style is not None and bool(self.journal_style)) or \
+               (self._legacy_style_guide is not None and bool(self._legacy_style_guide))
+
+    @property
+    def has_writing_habits(self) -> bool:
+        return self.writing_habits is not None and bool(self.writing_habits)
+
+    @property
+    def has_journal_style(self) -> bool:
+        return self.journal_style is not None and bool(self.journal_style)
 
     def to_dict(self) -> dict:
-        return {
+        d: dict = {
             "name": self.name,
             "writing_type": self.writing_type,
             "created_at": self.created_at,
@@ -64,11 +84,27 @@ class WritingProfile:
                 {"filename": p["filename"], "original_path": p.get("original_path", ""), "text": p["text"]}
                 for p in self.journal_papers
             ],
-            "style_guide": self.style_guide,
+            "writing_habits": self.writing_habits,
+            "journal_style": self.journal_style,
         }
+        # 兼容旧版本读取：如果存在 legacy 数据，也序列化（但不鼓励）
+        if self._legacy_style_guide:
+            d["style_guide"] = self._legacy_style_guide
+        return d
 
     @staticmethod
     def from_dict(d: dict) -> "WritingProfile":
+        writing_habits = d.get("writing_habits")
+        journal_style = d.get("journal_style")
+        legacy_guide = d.get("style_guide")  # 旧格式
+
+        # 兼容迁移：旧 style_guide → 拆分为 journal_style（格式部分）+ 清空 writing_habits
+        if legacy_guide and not journal_style:
+            journal_style = legacy_guide
+        if legacy_guide and not writing_habits:
+            # 旧 style_guide 可能是混合数据，不自动迁移到 writing_habits
+            writing_habits = None
+
         return WritingProfile(
             name=d.get("name", ""),
             writing_type=d.get("writing_type", "综述"),
@@ -76,7 +112,9 @@ class WritingProfile:
             updated_at=d.get("updated_at", ""),
             personal_papers=d.get("personal_papers", []),
             journal_papers=d.get("journal_papers", []),
-            style_guide=d.get("style_guide"),
+            writing_habits=writing_habits,
+            journal_style=journal_style,
+            _legacy_style_guide=legacy_guide if not journal_style and legacy_guide else None,
         )
 
 
@@ -318,8 +356,26 @@ class WritingCoach:
 
     # ---- 公共 API: 获取拼接文本 ----
 
+    def get_personal_paper_texts(self) -> str:
+        """获取当前知识库中个人论文的拼接文本（供写作习惯分析用）。"""
+        if not self._current_profile:
+            return ""
+        parts = []
+        for p in self._current_profile.personal_papers:
+            parts.append(f"--- {p['filename']} ---\n{p.get('text', '')}")
+        return "\n\n".join(parts)
+
+    def get_journal_paper_texts(self) -> str:
+        """获取当前知识库中期刊范文的拼接文本（供期刊格式分析用）。"""
+        if not self._current_profile:
+            return ""
+        parts = []
+        for p in self._current_profile.journal_papers:
+            parts.append(f"--- {p['filename']} ---\n{p.get('text', '')}")
+        return "\n\n".join(parts)
+
     def get_all_paper_texts(self) -> str:
-        """获取当前知识库中所有论文的拼接文本（供风格分析用）。"""
+        """获取当前知识库中所有论文的拼接文本（兼容旧代码）。"""
         if not self._current_profile:
             return ""
         parts = []
@@ -329,16 +385,119 @@ class WritingCoach:
             parts.append(f"--- 期刊范文: {p['filename']} ---\n{p.get('text', '')}")
         return "\n\n".join(parts)
 
-    def build_writing_system_prompt(self, writing_type: str = "综述") -> str:
-        """构建完整的写作 system prompt（硬编码原则 + 风格指南）。"""
+    def build_polish_system_prompt(self, writing_type: str = "综述") -> str:
+        """构建精简版润色 system prompt —— 仅含润色和核查需要的字段，不含期刊格式。
+
+        用于 UnifiedWriter 润色+核查流程，避免无关的期刊格式信息干扰 LLM。
+        """
         from .writing_prompts import get_writing_type_config
 
         cfg = get_writing_type_config(writing_type)
         prompt = cfg["system_prompt"]
 
-        # 附加风格指南
-        if self._current_profile and self._current_profile.has_style_guide:
-            guide = self._current_profile.style_guide
+        if not self._current_profile:
+            return prompt
+
+        parts = []
+
+        if self._current_profile.has_writing_habits:
+            habits = self._current_profile.writing_habits
+            if habits.get("sentence_templates"):
+                st = habits["sentence_templates"]
+                if isinstance(st, list):
+                    parts.append("【句式模板】\n" + "\n".join(f"· {s}" for s in st))
+                else:
+                    parts.append(f"【句式模板】\n{st}")
+            if habits.get("terminology_preferences"):
+                parts.append(f"【术语偏好】\n{habits['terminology_preferences']}")
+            if habits.get("transition_phrases"):
+                parts.append(f"【过渡方式】\n{habits['transition_phrases']}")
+            if habits.get("tone_voice"):
+                parts.append(f"【语气风格】\n{habits['tone_voice']}")
+            cd = habits.get("citation_detail_level", {})
+            if cd and cd.get("sample_count", 0) > 0:
+                parts.append(
+                    f"【引用详略度约束（极其重要）】\n"
+                    f"你的参考综述在描述每篇引用文献时，平均使用 {cd.get('avg_sentences_per_citation', '?')} 句话、"
+                    f"约 {cd.get('avg_chars_per_citation', '?')} 字。"
+                    f"分布范围：{cd.get('distribution_description', '?')}。\n"
+                    f"请严格按照这个详略尺度来写，不要对某篇文献进行过度详细的描述。"
+                )
+
+        if parts:
+            prompt += "\n\n---\n以下是根据你的历史论文分析出的写作习惯（仅描述风格，不限制学术主题），请在写作中保持一致的风格：\n\n" + "\n\n".join(parts)
+
+        return prompt
+
+    def build_writing_system_prompt(self, writing_type: str = "综述") -> str:
+        """构建完整的写作 system prompt（原则 + 写作习惯 + 引用详略度 + 期刊格式）。"""
+        from .writing_prompts import get_writing_type_config
+
+        cfg = get_writing_type_config(writing_type)
+        prompt = cfg["system_prompt"]
+        has_extra = False
+
+        if not self._current_profile:
+            return prompt
+
+        # 写作习惯（来自个人论文分析）
+        if self._current_profile.has_writing_habits:
+            habits = self._current_profile.writing_habits
+            parts = []
+            if habits.get("terminology_preferences"):
+                parts.append(f"【术语偏好】\n{habits['terminology_preferences']}")
+            if habits.get("sentence_templates"):
+                st = habits["sentence_templates"]
+                if isinstance(st, list):
+                    parts.append("【句式模板】\n" + "\n".join(f"· {s}" for s in st))
+                else:
+                    parts.append(f"【句式模板】\n{st}")
+            if habits.get("paragraph_patterns"):
+                parts.append(f"【段落组织】\n{habits['paragraph_patterns']}")
+            if habits.get("transition_phrases"):
+                parts.append(f"【过渡方式】\n{habits['transition_phrases']}")
+            if habits.get("argumentation_style"):
+                parts.append(f"【论述逻辑】\n{habits['argumentation_style']}")
+            if habits.get("tone_voice"):
+                parts.append(f"【语气风格】\n{habits['tone_voice']}")
+            # 引用详略度约束（计算性指标，非 LLM 生成）
+            cd = habits.get("citation_detail_level", {})
+            if cd and cd.get("sample_count", 0) > 0:
+                parts.append(
+                    f"【引用详略度约束（极其重要）】\n"
+                    f"你的参考综述在描述每篇引用文献时，平均使用 {cd.get('avg_sentences_per_citation', '?')} 句话、"
+                    f"约 {cd.get('avg_chars_per_citation', '?')} 字。"
+                    f"分布范围：{cd.get('distribution_description', '?')}。\n"
+                    f"请严格按照这个详略尺度来写，不要对某篇文献进行过度详细的描述。"
+                    f"综述是概括性的，应在有限的字数内向读者传达关键发现即可。"
+                )
+            if parts:
+                prompt += "\n\n---\n以下是根据你的历史论文分析出的写作习惯（仅描述风格，不限制学术主题），请在写作中保持一致的风格：\n\n" + "\n\n".join(parts)
+                has_extra = True
+
+        # 期刊格式（来自期刊范文分析）
+        if self._current_profile.has_journal_style:
+            js = self._current_profile.journal_style
+            parts = []
+            if js.get("citation_format"):
+                parts.append(f"【引用格式】\n{js['citation_format']}")
+            if js.get("reference_list_format"):
+                parts.append(f"【参考文献列表格式】\n{js['reference_list_format']}")
+            if js.get("section_structure"):
+                parts.append(f"【章节结构】\n{js['section_structure']}")
+            if js.get("figure_conventions"):
+                parts.append(f"【图表惯例】\n{js['figure_conventions']}")
+            if js.get("abstract_format"):
+                parts.append(f"【摘要格式】\n{js['abstract_format']}")
+            if js.get("general_formatting"):
+                parts.append(f"【其他格式】\n{js['general_formatting']}")
+            if parts:
+                section_title = "" if has_extra else "---\n以下是你需要遵循的期刊格式规范：\n\n"
+                prompt += f"\n\n{section_title}" + "\n\n".join(parts)
+
+        # 兼容旧格式 style_guide（fallback）
+        if not has_extra and self._current_profile._legacy_style_guide:
+            guide = self._current_profile._legacy_style_guide
             guide_text = self._format_style_guide(guide)
             if guide_text:
                 prompt += "\n\n---\n以下是你需要遵循的具体格式和风格规范（基于真实论文分析）：\n\n" + guide_text
@@ -347,7 +506,7 @@ class WritingCoach:
 
     @staticmethod
     def _format_style_guide(guide: dict) -> str:
-        """将风格指南 dict 格式化为 prompt 可用的文字。"""
+        """兼容旧格式：将风格指南 dict 格式化为 prompt 可用的文字。"""
         parts = []
         if guide.get("citation_style"):
             parts.append(f"【引用格式】\n{guide['citation_style']}")
@@ -364,79 +523,301 @@ class WritingCoach:
             parts.append(f"【其他注意事项】\n{guide['general_notes']}")
         return "\n\n".join(parts)
 
-    # ---- Phase 2: 风格指南生成 ----
+    # ---- Phase 2: 引用详略度计算（纯统计，不用 LLM） ----
 
-    STYLE_ANALYSIS_PROMPT = """你是一位学术写作风格分析专家。请分析以下论文的写作风格，提炼出可操作的写作规范。
+    @staticmethod
+    def _analyze_citation_detail(profile: "WritingProfile") -> dict | None:
+        """从个人论文中计算平均每引用字数/句数/分布（纯统计指标）。
 
-## 分析要点
+        提取所有引文标记 [n] 或 [n,m]，取标记前后各 2 句作为引用上下文，
+        统计字符数和句子数，输出均值、中位数、四分位数、分布描述。
 
-1. **引用格式**: 文中引用是 [1] 编号制还是 (Author, Year)？参考文献列表格式？
-2. **结构模板**: 论文/综述的典型章节结构是什么？每个章节有没有特定的开头/结尾套路？
-3. **术语偏好**: 有哪些高频术语或固定搭配？有没有明显的用词偏好（如 nervous system vs neural system）？
-4. **句式模板**: 摘录 5-10 个常见句式模板（如开头句、过渡句、总结句）
-5. **图表描述惯例**: 图表标题格式（Figure 1. vs Fig. 1.）？正文中如何引用图表？
-6. **段落组织**: 段落长度偏好？主题句位置？段落间过渡方式？
+        Returns:
+            {
+                "avg_chars_per_citation": int, "med_chars_per_citation": int,
+                "avg_sentences_per_citation": float,
+                "q25_chars": int, "q75_chars": int,
+                "distribution_description": str, "sample_count": int
+            }
+        """
+        import re
+
+        all_texts = []
+        for paper in profile.personal_papers:
+            all_texts.append(paper.get("text", ""))
+        if not all_texts:
+            return None
+
+        joined = "\n\n".join(all_texts)
+
+        # 提取所有引文标记及其位置（支持 [1]、[2,3]、[4-7]、[4,5,6]）
+        cite_pattern = re.compile(r'\[(\d+(?:[,\-]\d+)*)\]')
+        markers = list(cite_pattern.finditer(joined))
+        if not markers:
+            return None
+
+        # 句子切分：以句号、问号、感叹号后跟空白或行尾为界
+        sentences = re.split(r'(?<=[。！？.!?])\s*', joined)
+        # 重新定位每个句子的起止位置
+        sent_spans: list[tuple[int, int]] = []
+        pos = 0
+        for s in sentences:
+            if s:
+                start = joined.index(s, pos) if s in joined[pos:] else pos
+                end = start + len(s)
+                sent_spans.append((start, end))
+                pos = end
+
+        # 对每个引文标记，找到包含它的句子，然后取前后各 2 句作为上下文
+        char_counts: list[int] = []
+        sent_counts: list[int] = []
+
+        for m in markers:
+            m_start = m.start()
+            # 找到包含此标记的句子索引
+            sent_idx = -1
+            for si, (ss, se) in enumerate(sent_spans):
+                if ss <= m_start < se:
+                    sent_idx = si
+                    break
+            if sent_idx < 0:
+                continue
+
+            # 取前后各 2 句（但不超过前后引文标记边界或文章边界）
+            ctx_start_idx = max(0, sent_idx - 2)
+            ctx_end_idx = min(len(sent_spans), sent_idx + 3)  # +3 = 当前句 + 后面2句
+
+            # 检查上下文是否被其他引文标记污染：如果前/后2句范围内有另一个引文标记，则缩小到那个标记
+            for si in range(sent_idx - 1, max(0, sent_idx - 3), -1):
+                if si < 0:
+                    break
+                ss, se = sent_spans[si]
+                other = cite_pattern.search(joined, ss, se)
+                if other:
+                    ctx_start_idx = max(ctx_start_idx, si + 1)
+                    break
+
+            for si in range(sent_idx + 1, min(len(sent_spans), sent_idx + 3)):
+                if si >= len(sent_spans):
+                    break
+                ss, se = sent_spans[si]
+                other = cite_pattern.search(joined, ss, se)
+                if other:
+                    ctx_end_idx = min(ctx_end_idx, si)
+                    break
+
+            ctx_text = "".join(
+                joined[ss:se]
+                for ss, se in sent_spans[ctx_start_idx:ctx_end_idx]
+            )
+            if ctx_text.strip():
+                char_counts.append(len(ctx_text))
+                ctx_sents = [s for s in sent_spans[ctx_start_idx:ctx_end_idx]]
+                sent_counts.append(len(ctx_sents))
+
+        if not char_counts:
+            return None
+
+        sorted_chars = sorted(char_counts)
+        n = len(sorted_chars)
+        avg_chars = round(sum(char_counts) / n)
+        med_chars = sorted_chars[n // 2]
+        q25_chars = sorted_chars[n // 4]
+        q75_chars = sorted_chars[3 * n // 4]
+        avg_sents = round(sum(sent_counts) / n, 1)
+
+        # 生成分布描述
+        if avg_sents <= 2:
+            dist_desc = f"典型引用用 1-2 句话、{q25_chars}-{q75_chars} 字概括，平均 {avg_sents} 句 {avg_chars} 字"
+        elif avg_sents <= 4:
+            dist_desc = f"典型引用用 {max(1, avg_sents - 1).__round__()}-{avg_sents.__round__() + 1} 句话、{q25_chars}-{q75_chars} 字，平均 {avg_sents} 句 {avg_chars} 字"
+        else:
+            dist_desc = f"典型引用用 {avg_sents.__round__() - 1}-{avg_sents.__round__() + 1} 句话、{q25_chars}-{q75_chars} 字，平均 {avg_sents} 句 {avg_chars} 字"
+
+        return {
+            "avg_chars_per_citation": avg_chars,
+            "med_chars_per_citation": med_chars,
+            "avg_sentences_per_citation": avg_sents,
+            "q25_chars": q25_chars,
+            "q75_chars": q75_chars,
+            "distribution_description": dist_desc,
+            "sample_count": n,
+        }
+
+    # ---- Phase 2a: 写作习惯分析（基于个人论文） ----
+
+    WRITING_HABITS_PROMPT = """你是一位学术写作风格分析专家。请分析以下综述论文的写作习惯。
+
+这些论文是你自己撰写的，请从以下角度提取你的个人写作风格：
+
+1. **术语偏好**: 高频术语、固定搭配、学科特有表达
+2. **句式模板**: 摘录 5-8 个你常用的中文句式（如开头句、过渡句、总结句、引用句）
+3. **段落大小**: 平均每段几句话？每段约多少字？段落是围绕单一主题还是多主题？
+4. **过渡方式**: 段落间如何过渡？（如"此外…""相比之下…""更重要的是…""例如…"）
+5. **论述逻辑**: 是归纳式（先罗列研究后总结）还是演绎式（先给观点再引用证据）？还是两者混合？
+6. **语气风格**: 主动/被动语态偏好？第一人称使用频率？评价性语言的强弱？
 
 ## 输出格式
 
 请严格返回 JSON（不要加 Markdown 标记）：
 
 {
-  "citation_style": "引用格式描述",
-  "structure_template": "结构模板描述",
   "terminology_preferences": "术语偏好描述",
   "sentence_templates": ["句式1", "句式2", "..."],
-  "figure_conventions": "图表惯例描述",
-  "paragraph_patterns": "段落组织模式描述",
-  "general_notes": "其他值得注意的风格特征"
+  "paragraph_patterns": "段落大小和组织方式描述",
+  "transition_phrases": "段落间过渡方式描述",
+  "argumentation_style": "论述逻辑描述（归纳/演绎/混合）",
+  "tone_voice": "语气和语态描述"
 }
 
-以下是需要分析的论文文本：
+以下是你的历史综述论文文本：
 {paper_texts}"""
 
-    def generate_style_guide(self, parse_client: "LLMClient") -> dict | None:
-        """生成风格指南 —— 读取知识库中所有论文文本，发给 LLM 分析。
+    def generate_writing_habits(self, parse_client: "LLMClient") -> dict | None:
+        """分析个人论文的写作习惯 —— 仅基于 personal_papers。
 
         Returns:
-            风格指南 dict，失败返回 None。
+            writing_habits dict（含 LLM 分析结果 + 计算性引用详略度指标）。
         """
         if not self._current_profile:
             return None
-        if self._current_profile.total_papers == 0:
+        if self._current_profile.personal_count == 0:
             return None
 
-        all_text = self.get_all_paper_texts()
+        all_text = self.get_personal_paper_texts()
         if not all_text.strip():
             return None
 
-        # 截断过长的文本（保留前 30000 字符 + 后 5000）
-        max_chars = 35000
+        # 截断过长的文本
+        max_chars = 30000
         if len(all_text) > max_chars:
-            all_text = (
-                all_text[:25000]
-                + "\n\n...(中间内容已省略)...\n\n"
-                + all_text[-10000:]
-            )
+            all_text = all_text[:20000] + "\n\n...(中间内容已省略)...\n\n" + all_text[-10000:]
 
-        prompt = self.STYLE_ANALYSIS_PROMPT.replace("{paper_texts}", all_text)
+        prompt = self.WRITING_HABITS_PROMPT.replace("{paper_texts}", all_text)
         messages = [
             {"role": "system", "content": "你是学术写作风格分析专家。只返回 JSON，不要加解释。"},
             {"role": "user", "content": prompt},
         ]
 
         try:
-            response = parse_client.chat_sync(messages, timeout=180.0, max_tokens=4000)
-            guide = self._parse_style_guide_response(response)
-            if guide:
-                self._current_profile.style_guide = guide
+            response = parse_client.chat_sync(messages, timeout=180.0, max_tokens=3000)
+            habits = self._parse_style_guide_response(response)
+            if habits:
+                # 附加计算性引用详略度指标
+                habits["citation_detail_level"] = self._analyze_citation_detail(self._current_profile)
+                self._current_profile.writing_habits = habits
                 from datetime import datetime
                 self._current_profile.updated_at = datetime.now().isoformat()
                 self._save_profile(self._current_profile)
-                return guide
+                return habits
+        except Exception:
+            pass
+
+        # 即使 LLM 失败，也尝试计算纯统计指标
+        if self._current_profile.personal_count > 0:
+            detail = self._analyze_citation_detail(self._current_profile)
+            if detail:
+                minimal_habits = {"citation_detail_level": detail}
+                self._current_profile.writing_habits = minimal_habits
+                from datetime import datetime
+                self._current_profile.updated_at = datetime.now().isoformat()
+                self._save_profile(self._current_profile)
+                return minimal_habits
+
+        return None
+
+    # ---- Phase 2b: 期刊格式分析（基于期刊范文） ----
+
+    JOURNAL_STYLE_PROMPT = """你是一位学术期刊格式分析专家。请分析以下目标期刊的范文，提炼其格式规范。
+
+这些范文全部来自同一本目标期刊，请提取：
+
+1. **引用格式**: 文中引用是 [1] 编号制还是 (Author, Year)？参考文献列表的具体格式？
+2. **章节结构**: 综述/论文的典型章节结构是什么？每个章节的名称和排列顺序？
+3. **参考文献列表格式**: 作者、年份、标题、期刊、卷、页码的排序和标点规范（给出具体示例）
+4. **图表惯例**: 图表标题格式（Figure 1. vs Fig. 1.）？正文中如何引用？
+5. **摘要格式**: 摘要是否有结构化标签（Background/Methods/Results）？长度限制？
+6. **其他格式**: 标题格式、作者署名、关键词数量等
+
+## 输出格式
+
+请严格返回 JSON（不要加 Markdown 标记）：
+
+{
+  "citation_format": "引用格式描述（文中引用 + 参考文献列表格式，给出具体示例）",
+  "section_structure": "章节结构描述",
+  "reference_list_format": "参考文献列表具体格式和示例",
+  "figure_conventions": "图表引用惯例描述",
+  "abstract_format": "摘要格式描述",
+  "general_formatting": "其他格式注意事项"
+}
+
+以下是目标期刊的范文文本：
+{paper_texts}"""
+
+    def generate_journal_style(self, parse_client: "LLMClient") -> dict | None:
+        """分析期刊范文的格式规范 —— 仅基于 journal_papers。
+
+        Returns:
+            journal_style dict。
+        """
+        if not self._current_profile:
+            return None
+        if self._current_profile.journal_count == 0:
+            return None
+
+        all_text = self.get_journal_paper_texts()
+        if not all_text.strip():
+            return None
+
+        # 截断过长的文本
+        max_chars = 35000
+        if len(all_text) > max_chars:
+            all_text = all_text[:25000] + "\n\n...(中间内容已省略)...\n\n" + all_text[-10000:]
+
+        prompt = self.JOURNAL_STYLE_PROMPT.replace("{paper_texts}", all_text)
+        messages = [
+            {"role": "system", "content": "你是学术期刊格式分析专家。只返回 JSON，不要加解释。"},
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            response = parse_client.chat_sync(messages, timeout=180.0, max_tokens=3000)
+            style = self._parse_style_guide_response(response)
+            if style:
+                self._current_profile.journal_style = style
+                from datetime import datetime
+                self._current_profile.updated_at = datetime.now().isoformat()
+                self._save_profile(self._current_profile)
+                return style
         except Exception:
             pass
 
         return None
+
+    # ---- 兼容旧 API：generate_style_guide（会调用两个新方法） ----
+
+    def generate_style_guide(self, parse_client: "LLMClient") -> dict | None:
+        """生成完整的风格指南 —— 同时运行写作习惯和期刊格式分析。
+
+        兼容旧版调用者。新版建议直接调用 generate_writing_habits() 和 generate_journal_style()。
+
+        Returns:
+            journal_style dict（用于向后兼容，完整指南存在 profile 的 writing_habits + journal_style 中）。
+        """
+        if not self._current_profile:
+            return None
+
+        habits = None
+        style = None
+
+        if self._current_profile.personal_count > 0:
+            habits = self.generate_writing_habits(parse_client)
+        if self._current_profile.journal_count > 0:
+            style = self.generate_journal_style(parse_client)
+
+        # 返回 journal_style 用于向后兼容
+        return style or habits
 
     @staticmethod
     def _parse_style_guide_response(raw: str) -> dict | None:
@@ -486,7 +867,8 @@ class WritingCoach:
 1. 提升学术表达的清晰度和流畅度
 2. 修正语法错误和不当用词
 3. 保持原有的引用标记不变
-4. 输出润色后的完整文字，不要加解释"""
+4. 输出语言必须与输入文字的语言保持一致（输入中文则输出中文，输入英文则输出英文）
+5. 输出润色后的完整文字，不要加解释"""
 
     CITE_REWRITE_PROMPT = """你是学术综述写作专家。请根据提供的文献内容，改写以下文字。
 
@@ -504,7 +886,8 @@ class WritingCoach:
 3. 如果原文不支持当前表述，请指出并提供更准确的版本
 4. 保持综述应有的概括性风格，不要逐字照抄原文
 5. 保持原有的引用标记不变
-6. 输出改写后的文字"""
+6. 输出语言必须与输入文字的语言保持一致（输入中文则输出中文，输入英文则输出英文）
+7. 输出改写后的文字"""
 
     MISSING_LIT_PROMPT = """你是学术文献检索专家。分析以下综述草稿和已引用文献，找出可能遗漏的重要文献。
 
@@ -683,41 +1066,53 @@ class WritingCoach:
         """
         import urllib.request
         import urllib.parse
+        import urllib.error
         import json as _json
+        import time as _time
 
         all_papers = []
         seen_titles = set()
 
-        for query in queries[:8]:  # 最多 8 个查询
-            try:
-                params = urllib.parse.urlencode({"query": query, "limit": limit})
-                url = f"https://api.semanticscholar.org/graph/v1/paper/search?{params}&fields=title,authors,year,citationCount,externalIds,url"
-                req = urllib.request.Request(url, headers={"User-Agent": "PDFasker/2.0"})
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    data = _json.loads(resp.read().decode())
-                    for paper in data.get("data", []):
-                        title = paper.get("title", "")
-                        if title.lower() in seen_titles:
-                            continue
-                        seen_titles.add(title.lower())
-                        authors_list = paper.get("authors", [])
-                        author_names = ", ".join(
-                            a.get("name", "") for a in authors_list[:3]
-                        )
-                        doi = ""
-                        ext_ids = paper.get("externalIds", {}) or {}
-                        doi = ext_ids.get("DOI", "")
-                        all_papers.append({
-                            "title": title,
-                            "authors": author_names,
-                            "year": paper.get("year", ""),
-                            "citationCount": paper.get("citationCount", 0),
-                            "doi": doi,
-                            "url": paper.get("url", ""),
-                            "source": f"S2搜索: {query[:40]}",
-                        })
-            except Exception:
-                continue
+        for qi, query in enumerate(queries[:8]):  # 最多 8 个查询
+            if qi > 0:
+                _time.sleep(1.0)  # 避免触发 S2 限流（无 API key 时约 1 req/s）
+            for attempt in range(3):
+                try:
+                    params = urllib.parse.urlencode({"query": query, "limit": limit})
+                    url = f"https://api.semanticscholar.org/graph/v1/paper/search?{params}&fields=title,authors,year,citationCount,externalIds,url"
+                    req = urllib.request.Request(url, headers={"User-Agent": "PDFasker/2.0"})
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        data = _json.loads(resp.read().decode())
+                        for paper in data.get("data", []):
+                            title = paper.get("title", "")
+                            if title.lower() in seen_titles:
+                                continue
+                            seen_titles.add(title.lower())
+                            authors_list = paper.get("authors", [])
+                            author_names = ", ".join(
+                                a.get("name", "") for a in authors_list[:3]
+                            )
+                            doi = ""
+                            ext_ids = paper.get("externalIds", {}) or {}
+                            doi = ext_ids.get("DOI", "")
+                            all_papers.append({
+                                "title": title,
+                                "authors": author_names,
+                                "year": paper.get("year", ""),
+                                "citationCount": paper.get("citationCount", 0),
+                                "doi": doi,
+                                "url": paper.get("url", ""),
+                                "source": f"S2搜索: {query[:40]}",
+                            })
+                        break  # 请求成功，跳出重试循环
+                except urllib.error.HTTPError as e:
+                    if e.code == 429:
+                        wait = 2 ** attempt  # 指数退避: 1, 2, 4 秒
+                        _time.sleep(wait)
+                        continue
+                    break
+                except Exception:
+                    break
 
         # 按引用数降序
         all_papers.sort(key=lambda p: p.get("citationCount", 0), reverse=True)
@@ -731,63 +1126,83 @@ class WritingCoach:
         positive_dois: 已引用文献的 DOI 列表。
         """
         import urllib.request
+        import urllib.error
         import json as _json
+        import time as _time
 
         # 先用 DOI 获取 paperId
         paper_ids = []
         for doi in positive_dois[:20]:
-            try:
-                url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=paperId"
-                req = urllib.request.Request(url, headers={"User-Agent": "PDFasker/2.0"})
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    data = _json.loads(resp.read().decode())
-                    pid = data.get("paperId", "")
-                    if pid:
-                        paper_ids.append(pid)
-            except Exception:
-                continue
+            for attempt in range(3):
+                try:
+                    url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=paperId"
+                    req = urllib.request.Request(url, headers={"User-Agent": "PDFasker/2.0"})
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        data = _json.loads(resp.read().decode())
+                        pid = data.get("paperId", "")
+                        if pid:
+                            paper_ids.append(pid)
+                    break
+                except urllib.error.HTTPError as e:
+                    if e.code == 429:
+                        _time.sleep(2 ** attempt)
+                        continue
+                    break
+                except Exception:
+                    break
+
+            if len(paper_ids) >= 20:
+                break
 
         if not paper_ids:
             return []
 
         # 调用推荐 API
-        try:
-            body = _json.dumps({
-                "positivePaperIds": paper_ids[:20],
-                "limit": limit,
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                "https://api.semanticscholar.org/recommendations/v1/papers",
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "PDFasker/2.0",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                data = _json.loads(resp.read().decode())
-                papers = []
-                seen = set()
-                for paper in data.get("recommendedPapers", [])[:limit]:
-                    title = paper.get("title", "")
-                    if title.lower() in seen:
-                        continue
-                    seen.add(title.lower())
-                    authors = ", ".join(
-                        a.get("name", "") for a in (paper.get("authors") or [])[:3]
-                    )
-                    ext_ids = paper.get("externalIds", {}) or {}
-                    papers.append({
-                        "title": title,
-                        "authors": authors,
-                        "year": paper.get("year", ""),
-                        "citationCount": paper.get("citationCount", 0),
-                        "doi": ext_ids.get("DOI", ""),
-                        "url": paper.get("url", ""),
-                        "source": "S2推荐",
-                    })
-                papers.sort(key=lambda p: p.get("citationCount", 0), reverse=True)
-                return papers
-        except Exception:
-            return []
+        for attempt in range(3):
+            try:
+                body = _json.dumps({
+                    "positivePaperIds": paper_ids[:20],
+                    "limit": limit,
+                }).encode("utf-8")
+                req = urllib.request.Request(
+                    "https://api.semanticscholar.org/recommendations/v1/papers",
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "PDFasker/2.0",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    data = _json.loads(resp.read().decode())
+                    papers = []
+                    seen = set()
+                    for paper in data.get("recommendedPapers", [])[:limit]:
+                        title = paper.get("title", "")
+                        if title.lower() in seen:
+                            continue
+                        seen.add(title.lower())
+                        authors = ", ".join(
+                            a.get("name", "") for a in (paper.get("authors") or [])[:3]
+                        )
+                        ext_ids = paper.get("externalIds", {}) or {}
+                        papers.append({
+                            "title": title,
+                            "authors": authors,
+                            "year": paper.get("year", ""),
+                            "citationCount": paper.get("citationCount", 0),
+                            "doi": ext_ids.get("DOI", ""),
+                            "url": paper.get("url", ""),
+                            "source": "S2推荐",
+                        })
+                    papers.sort(key=lambda p: p.get("citationCount", 0), reverse=True)
+                    return papers
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    _time.sleep(2 ** attempt)
+                    continue
+                break
+            except Exception:
+                break
+
+        return []

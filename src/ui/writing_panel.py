@@ -1,6 +1,10 @@
-"""写作面板 —— 综述/论文/专利/软著 写作辅助。
+"""写作面板 —— 综述/论文/专利/软著 全流程写作辅助。
 
-布局: 顶部工具栏 | 左侧编辑器 | 右侧知识库状态 + AI辅助
+布局: 顶部工具栏(类型/知识库/Zotero) | 左侧编辑器 | 右侧知识库状态 + AI辅助
+
+AI 辅助按钮:
+  - "AI 润色与核查": 统一润色+引文核查 → Diff 对话框对比
+  - "文献补充": LLM分析→用户反馈→PubMed检索
 """
 
 from __future__ import annotations
@@ -51,149 +55,27 @@ class StyleGuideWorker(QThread):
             self.error_signal.emit(str(e))
 
 
-class PolishWorker(QThread):
-    """后台润色文字。"""
-    finished_signal = Signal(str)
+class UnifiedWorker(QThread):
+    """后台统一润色与引文核查。"""
+    finished_signal = Signal(dict)
     error_signal = Signal(str)
 
-    def __init__(self, coach: "WritingCoach", client: "LLMClient",
-                 text: str, writing_type: str):
+    def __init__(self, client: "LLMClient", selected_text: str,
+                 coach: "WritingCoach", zotero_lib: "ZoteroLibrary | None",
+                 writing_type: str):
         super().__init__()
-        self._coach = coach
         self._client = client
-        self._text = text
+        self._text = selected_text
+        self._coach = coach
+        self._zotero = zotero_lib
         self._writing_type = writing_type
 
     def run(self):
         try:
-            result = self._coach.polish_text(
-                self._client, self._text, self._writing_type
-            )
-            self.finished_signal.emit(result)
-        except Exception as e:
-            self.error_signal.emit(str(e))
-
-
-class CiteRewriteWorker(QThread):
-    """后台基于引文改写。"""
-    finished_signal = Signal(str)
-    error_signal = Signal(str)
-
-    def __init__(self, coach: "WritingCoach", client: "LLMClient",
-                 text: str, zotero, writing_type: str):
-        super().__init__()
-        self._coach = coach
-        self._client = client
-        self._text = text
-        self._zotero = zotero
-        self._writing_type = writing_type
-
-    def run(self):
-        try:
-            result = self._coach.rewrite_with_citations(
-                self._client, self._text, self._zotero, self._writing_type
-            )
-            self.finished_signal.emit(result)
-        except Exception as e:
-            self.error_signal.emit(str(e))
-
-
-class MissingLitWorker(QThread):
-    """后台检测遗漏文献。"""
-    progress_signal = Signal(str)
-    finished_signal = Signal(object)  # dict with gaps + papers
-    error_signal = Signal(str)
-
-    def __init__(self, coach: "WritingCoach", client: "LLMClient",
-                 draft_text: str, zotero):
-        super().__init__()
-        self._coach = coach
-        self._client = client
-        self._draft = draft_text
-        self._zotero = zotero
-
-    def run(self):
-        try:
-            # Step 1: LLM 分析
-            self.progress_signal.emit("正在分析草稿主题和遗漏方向...")
-            gaps = self._coach.detect_missing_literature(
-                self._client, self._draft, self._zotero
-            )
-            if not gaps:
-                self.error_signal.emit("LLM 分析失败，无法检测遗漏文献")
-                return
-
-            # Step 2: S2 推荐 API
-            self.progress_signal.emit("正在调用 S2 推荐 API...")
-            # 收集已引用文献的 DOI
-            import re
-            cited_dois = []
-            if self._zotero and hasattr(self._zotero, '_items'):
-                cite_pattern = re.compile(r'\[(\d+(?:[,，\s]*\d+)*)\]')
-                cited_nums = set()
-                for m in cite_pattern.finditer(self._draft):
-                    for num in re.split(r'[,，\s]+', m.group(1)):
-                        if num.strip().isdigit():
-                            cited_nums.add(int(num.strip()))
-                for i, item in enumerate(self._zotero._items):
-                    if (i + 1) in cited_nums and item.doi:
-                        cited_dois.append(item.doi)
-
-            rec_papers = self._coach.search_s2_recommendations(cited_dois)
-
-            # Step 3: S2 搜索 API（补充横向遗漏）
-            self.progress_signal.emit("正在 S2 搜索横向遗漏方向...")
-            search_papers = []
-            for gap in gaps.get("horizontal_gaps", []):
-                queries = gap.get("search_queries", [])
-                papers = self._coach.search_semantic_scholar(queries, limit=8)
-                for p in papers:
-                    p["gap_category"] = gap.get("domain", "横向遗漏")
-                search_papers.extend(papers)
-
-            for gap in gaps.get("vertical_gaps", []):
-                queries = gap.get("search_queries", [])
-                papers = self._coach.search_semantic_scholar(queries, limit=8)
-                for p in papers:
-                    p["gap_category"] = gap.get("domain", "纵向遗漏")
-                search_papers.extend(papers)
-
-            self.finished_signal.emit({
-                "gaps": gaps,
-                "recommendations": rec_papers,
-                "search_results": search_papers,
-                "cited_dois": cited_dois,
-                "search_keywords": self._collect_keywords(gaps),
-            })
-        except Exception as e:
-            self.error_signal.emit(str(e))
-
-    @staticmethod
-    def _collect_keywords(gaps: dict) -> list[str]:
-        """从 gaps 中提取所有搜索关键词。"""
-        keywords = []
-        for gap in gaps.get("horizontal_gaps", []) + gaps.get("vertical_gaps", []):
-            keywords.extend(gap.get("search_queries", []))
-        return keywords
-
-
-class ReviewCheckWorker(QThread):
-    """后台执行引文核查（复用 review_checker）。"""
-    progress_signal = Signal(str, int, int)
-    finished_signal = Signal(object)
-    error_signal = Signal(str)
-
-    def __init__(self, checker: "ReviewChecker", review_text: str):
-        super().__init__()
-        self._checker = checker
-        self._text = review_text
-
-    def run(self):
-        try:
-            result = self._checker.check_review(
-                self._text,
-                progress_callback=lambda msg, cur, tot: self.progress_signal.emit(msg, cur, tot)
-            )
+            from ..core.unified_writer import UnifiedWriter
+            uw = UnifiedWriter()
+            result = uw.process(self._client, self._text, self._coach,
+                                self._zotero, self._writing_type)
             self.finished_signal.emit(result)
         except Exception as e:
             self.error_signal.emit(str(e))
@@ -217,7 +99,7 @@ class WritingPanel(QWidget):
         self._coach = self._create_coach()
         self._current_writing_type = "综述"
         self._style_worker: StyleGuideWorker | None = None
-        self._review_worker: ReviewCheckWorker | None = None
+        self._unified_worker: UnifiedWorker | None = None
 
         self._setup_ui()
         self._refresh_kb_dropdown()
@@ -410,25 +292,20 @@ class WritingPanel(QWidget):
         ai_layout = QVBoxLayout(ai_group)
         ai_layout.setSpacing(6)
 
-        self._polish_btn = QPushButton("✨ 润色选中文字")
-        self._polish_btn.setToolTip("AI 润色编辑器中选中的文字")
-        self._polish_btn.clicked.connect(self._on_polish)
+        self._polish_btn = QPushButton("✨ AI 润色与核查")
+        self._polish_btn.setToolTip(
+            "选中含引文的文字后，AI 同时完成：润色语言 + 核查引文准确性（需 Zotero 连接）\n"
+            "结果以左右并排对比的方式展示，方便逐条审查"
+        )
+        self._polish_btn.clicked.connect(self._on_unified_polish)
         ai_layout.addWidget(self._polish_btn)
 
-        self._cite_rewrite_btn = QPushButton("📎 基于引文改写")
-        self._cite_rewrite_btn.setToolTip("根据 Zotero 中引用文献的原文改写选中文字")
-        self._cite_rewrite_btn.clicked.connect(self._on_cite_rewrite)
-        ai_layout.addWidget(self._cite_rewrite_btn)
-
-        self._check_cite_btn = QPushButton("📖 核查引文准确性")
-        self._check_cite_btn.setToolTip("逐条检查综述中的引文是否准确反映原文观点")
-        self._check_cite_btn.clicked.connect(self._on_check_citations)
-        ai_layout.addWidget(self._check_cite_btn)
-
-        self._missing_lit_btn = QPushButton("🔍 文献推荐")
-        self._missing_lit_btn.setToolTip("基于草稿主题和已引用文献，推荐可能遗漏的文献")
-        self._missing_lit_btn.clicked.connect(self._on_detect_missing)
-        ai_layout.addWidget(self._missing_lit_btn)
+        self._lit_search_btn = QPushButton("🔍 文献补充")
+        self._lit_search_btn.setToolTip(
+            "AI 分析草稿的遗漏方向 → 你审阅并反馈 → 确认后 PubMed 检索"
+        )
+        self._lit_search_btn.clicked.connect(self._on_lit_search)
+        ai_layout.addWidget(self._lit_search_btn)
 
         right_layout.addWidget(ai_group)
         right_layout.addStretch()
@@ -478,7 +355,9 @@ class WritingPanel(QWidget):
             profile = self._coach._profiles.get(name)
             extra = ""
             if profile:
-                extra = f" ({profile.personal_count}篇论文, {profile.journal_count}篇范文)"
+                h = "H" if profile.has_writing_habits else "-"
+                j = "J" if profile.has_journal_style else "-"
+                extra = f" ({profile.personal_count}篇 [{h}], {profile.journal_count}篇 [{j}])"
             self._kb_combo.addItem(f"{name}{extra}", name)
 
         # 分隔 + 新建项
@@ -632,22 +511,32 @@ class WritingPanel(QWidget):
         self._style_btn.setEnabled(True)
         self._style_btn.setText("📐 重新生成")
         self._update_kb_status()
-        self._status_label.setText("✅ 风格指南已生成")
+        self._status_label.setText("风格分析完成")
 
-        # 简略展示风格指南内容
+        profile = self._coach.current_profile
         lines = []
-        if guide.get("citation_style"):
-            lines.append(f"引用格式: {guide['citation_style'][:80]}")
-        if guide.get("structure_template"):
-            lines.append(f"结构: {guide['structure_template'][:80]}")
-        if guide.get("sentence_templates"):
-            n = len(guide["sentence_templates"]) if isinstance(guide["sentence_templates"], list) else 1
-            lines.append(f"句式模板: {n} 个")
+        if profile:
+            if profile.has_writing_habits:
+                h = profile.writing_habits
+                if h.get("citation_detail_level"):
+                    cd = h["citation_detail_level"]
+                    lines.append(f"引用详略度: 平均 {cd['avg_sentences_per_citation']} 句 / {cd['avg_chars_per_citation']} 字 (共 {cd['sample_count']} 个样本)")
+                if h.get("argumentation_style"):
+                    lines.append(f"论述逻辑: {h['argumentation_style'][:80]}")
+                if h.get("paragraph_patterns"):
+                    lines.append(f"段落: {h['paragraph_patterns'][:80]}")
+            if profile.has_journal_style:
+                j = profile.journal_style
+                if j.get("citation_format"):
+                    lines.append(f"引用格式: {j['citation_format'][:80]}")
+                if j.get("section_structure"):
+                    lines.append(f"结构: {j['section_structure'][:80]}")
+
         QMessageBox.information(
-            self, "风格指南已生成",
-            "AI 已分析所有论文并生成写作风格指南。\n\n"
+            self, "风格分析完成",
+            "AI 已完成知识库分析。\n\n"
             + "\n".join(lines) +
-            "\n\n后续写作时，AI 将自动遵循此风格指南。"
+            "\n\n后续写作时将自动遵循这些规范。"
         )
 
     def _on_style_guide_error(self, err: str):
@@ -658,13 +547,13 @@ class WritingPanel(QWidget):
         self._status_label.setText(f"风格分析失败: {err[:60]}")
         QMessageBox.warning(self, "风格分析失败", err)
 
-    # ---- Phase 3: 润色 + 引文改写 + 遗漏检测 ----
+    # ---- 按钮 1: AI 润色与核查 ----
 
-    def _on_polish(self):
-        """润色选中文字。"""
+    def _on_unified_polish(self):
+        """统一润色 + 引文核查。"""
         cursor = self.editor.textCursor()
         if not cursor.hasSelection():
-            QMessageBox.warning(self, "提示", "请先在编辑器中选中要润色的文字")
+            QMessageBox.warning(self, "提示", "请先在编辑器中选中要处理的文字")
             return
         if not self._write_client:
             QMessageBox.warning(self, "提示", "请先配置写作 API")
@@ -672,211 +561,69 @@ class WritingPanel(QWidget):
 
         text = cursor.selectedText().strip()
         self._polish_btn.setEnabled(False)
-        self._polish_btn.setText("⏳ 润色中...")
-        self._status_label.setText("正在润色...")
-
-        self._polish_worker = PolishWorker(
-            self._coach, self._write_client, text, self._current_writing_type
-        )
-        self._polish_worker.finished_signal.connect(self._on_polish_done)
-        self._polish_worker.error_signal.connect(self._on_polish_error)
-        self._polish_worker.start()
-
-    def _on_polish_done(self, result: str):
-        self._polish_btn.setEnabled(True)
-        self._polish_btn.setText("✨ 润色选中文字")
-        self._status_label.setText("润色完成")
-        # 替换选中文字
-        cursor = self.editor.textCursor()
-        cursor.insertText(result)
-        QMessageBox.information(self, "润色完成", "已将润色后的文字替换到编辑器中。")
-
-    def _on_polish_error(self, err: str):
-        self._polish_btn.setEnabled(True)
-        self._polish_btn.setText("✨ 润色选中文字")
-        self._status_label.setText(f"润色失败: {err[:60]}")
-        QMessageBox.warning(self, "润色失败", err)
-
-    def _on_cite_rewrite(self):
-        """基于引文改写。"""
-        cursor = self.editor.textCursor()
-        if not cursor.hasSelection():
-            QMessageBox.warning(self, "提示", "请先在编辑器中选中包含引用的文字")
-            return
-        if not self._write_client:
-            QMessageBox.warning(self, "提示", "请先配置写作 API")
-            return
-        if not self._zotero:
-            QMessageBox.warning(self, "提示", "请先连接 Zotero 文献库")
-            return
-
-        text = cursor.selectedText().strip()
-        self._cite_rewrite_btn.setEnabled(False)
-        self._cite_rewrite_btn.setText("⏳ 改写中...")
-        self._status_label.setText("正在基于引文原文改写...")
-
-        self._cite_worker = CiteRewriteWorker(
-            self._coach, self._write_client, text,
-            self._zotero, self._current_writing_type
-        )
-        self._cite_worker.finished_signal.connect(self._on_cite_rewrite_done)
-        self._cite_worker.error_signal.connect(self._on_cite_rewrite_error)
-        self._cite_worker.start()
-
-    def _on_cite_rewrite_done(self, result: str):
-        self._cite_rewrite_btn.setEnabled(True)
-        self._cite_rewrite_btn.setText("📎 基于引文改写")
-        self._status_label.setText("改写完成")
-        cursor = self.editor.textCursor()
-        cursor.insertText("\n\n" + result)
-        QMessageBox.information(self, "改写完成", "改写结果已追加到编辑器中。")
-
-    def _on_cite_rewrite_error(self, err: str):
-        self._cite_rewrite_btn.setEnabled(True)
-        self._cite_rewrite_btn.setText("📎 基于引文改写")
-        self._status_label.setText(f"改写失败: {err[:60]}")
-
-    def _on_detect_missing(self):
-        """检测遗漏文献。"""
-        draft = self.editor.toPlainText().strip()
-        if not draft:
-            QMessageBox.warning(self, "提示", "请先编写包含引用的综述草稿")
-            return
-        if not self._write_client:
-            QMessageBox.warning(self, "提示", "请先配置写作 API")
-            return
-
-        self._missing_lit_btn.setEnabled(False)
-        self._missing_lit_btn.setText("⏳ 检测中...")
+        self._polish_btn.setText("⏳ 处理中...")
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)
-        self._status_label.setText("正在分析草稿 + 检索 S2...")
+        self._status_label.setText("AI 正在润色并核查引文...")
+        QApplication.processEvents()
 
-        self._missing_worker = MissingLitWorker(
-            self._coach, self._write_client, draft, self._zotero
+        self._unified_worker = UnifiedWorker(
+            self._write_client, text, self._coach, self._zotero,
+            self._current_writing_type
         )
-        self._missing_worker.progress_signal.connect(
-            lambda msg: self._status_label.setText(msg)
-        )
-        self._missing_worker.finished_signal.connect(self._on_missing_lit_done)
-        self._missing_worker.error_signal.connect(self._on_missing_lit_error)
-        self._missing_worker.start()
+        self._unified_worker.finished_signal.connect(self._on_unified_done)
+        self._unified_worker.error_signal.connect(self._on_unified_error)
+        self._unified_worker.start()
 
-    def _on_missing_lit_done(self, result: dict):
+    def _on_unified_done(self, result: dict):
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 100)
-        self._missing_lit_btn.setEnabled(True)
-        self._missing_lit_btn.setText("🔍 文献推荐")
-        self._status_label.setText("文献推荐完成")
+        self._polish_btn.setEnabled(True)
+        self._polish_btn.setText("✨ AI 润色与核查")
+        self._status_label.setText("处理完成")
 
-        gaps = result.get("gaps", {})
-        recs = result.get("recommendations", [])
-        search = result.get("search_results", [])
-        cited_dois = result.get("cited_dois", [])
-        keywords = result.get("search_keywords", [])
-
-        # 构建展示文本（富文本）
-        parts = ["<b>📊 文献推荐结果</b>"]
-
-        # LLM 理解
-        covered = gaps.get("covered_domains", [])
-        if covered:
-            parts.append("<br><b>🧠 LLM 理解——你的草稿覆盖了：</b>")
-            for d in covered:
-                parts.append(f"  · {d.get('domain', '?')}（{d.get('paper_count', 0)}篇，最新 {d.get('latest_year', '?')}）")
-
-        horiz = gaps.get("horizontal_gaps", [])
-        if horiz:
-            parts.append("<br><b>⚠️ 横向遗漏方向：</b>")
-            for g in horiz:
-                parts.append(f"  · {g.get('domain', '?')}：{g.get('reason', '')}")
-
-        vert = gaps.get("vertical_gaps", [])
-        if vert:
-            parts.append("<br><b>🔄 纵向遗漏方向：</b>")
-            for g in vert:
-                parts.append(f"  · {g.get('domain', '?')}：{g.get('reason', '')}")
-
-        # 搜索关键词
-        if keywords:
-            parts.append("<br><b>🔑 S2 搜索关键词：</b>")
-            for kw in keywords[:10]:
-                parts.append(f"  · {kw}")
-
-        # 推荐 DOI
-        if cited_dois:
-            parts.append(f"<br><b>📎 S2 推荐所用 DOI（{len(cited_dois)} 个）：</b>")
-            for doi in cited_dois[:5]:
-                parts.append(f"  · {doi}")
-            if len(cited_dois) > 5:
-                parts.append(f"  ... 等 {len(cited_dois)} 个")
-
-        # 推荐结果
-        if recs:
-            parts.append(f"<br><b>📚 S2 推荐文献（共 {len(recs)} 篇）：</b>")
-            for p in recs[:8]:
-                parts.append(f"  · {p['authors']} ({p['year']}) - {p['title'][:80]} ⭐{p.get('citationCount', 0)}")
-
-        if search:
-            parts.append(f"<br><b>🔍 S2 关键词搜索结果（共 {len(search)} 篇）：</b>")
-            for p in search[:8]:
-                gap = p.get("gap_category", "")
-                parts.append(f"  [{gap}] {p['authors']} ({p['year']}) - {p['title'][:80]} ⭐{p.get('citationCount', 0)}")
-
-        full_html = "<br>".join(parts)
-
-        # 纯文本版（供详细展开）
-        plain_parts = [p for p in parts]
-        plain_text = "\n".join(p.replace("<b>", "").replace("</b>", "").replace("<br>", "\n") for p in plain_parts)
-
-        msg = QMessageBox(self)
-        msg.setWindowTitle("文献推荐")
-        msg.setTextFormat(Qt.TextFormat.RichText)
-        msg.setText(full_html[:3000])
-        msg.setDetailedText(plain_text)
-
-        export_btn = msg.addButton("导出为CSV", QMessageBox.ButtonRole.ActionRole)
-        close_btn = msg.addButton("关闭", QMessageBox.ButtonRole.RejectRole)
-        msg.exec()
-
-        if msg.clickedButton() == export_btn:
-            self._export_missing_csv(recs + search)
-
-    def _on_missing_lit_error(self, err: str):
-        self._progress_bar.setVisible(False)
-        self._progress_bar.setRange(0, 100)
-        self._missing_lit_btn.setEnabled(True)
-        self._missing_lit_btn.setText("🔍 文献推荐")
-        self._status_label.setText(f"推荐失败: {err[:60]}")
-        QMessageBox.warning(self, "文献推荐失败", err)
-
-    def _export_missing_csv(self, papers: list[dict]):
-        """导出文献列表为 CSV。"""
-        path, _ = QFileDialog.getSaveFileName(
-            self, "导出遗漏文献 CSV", "missing_literature.csv",
-            "CSV 文件 (*.csv)"
-        )
-        if not path:
+        if result.get("error"):
+            QMessageBox.warning(self, "处理失败", result["error"])
             return
-        import csv
-        try:
-            with open(path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
-                writer.writerow(["title", "authors", "year", "citationCount", "doi", "url", "source", "gap_category"])
-                for p in papers:
-                    writer.writerow([
-                        p.get("title", ""),
-                        p.get("authors", ""),
-                        p.get("year", ""),
-                        p.get("citationCount", ""),
-                        p.get("doi", ""),
-                        p.get("url", ""),
-                        p.get("source", ""),
-                        p.get("gap_category", ""),
-                    ])
-            self._status_label.setText(f"CSV 已导出: {os.path.basename(path)}")
-        except Exception as e:
-            QMessageBox.warning(self, "导出失败", str(e))
+
+        from .diff_dialog import DiffDialog
+        dialog = DiffDialog(
+            original=self.editor.textCursor().selectedText(),
+            polished=result.get("polished_text", ""),
+            citation_notes=result.get("citation_notes", []),
+            supervisor_notes=result.get("supervisor_notes", []),
+            parent=self,
+        )
+        if dialog.exec():
+            # 用户点击了"替换原文"
+            cursor = self.editor.textCursor()
+            cursor.insertText(dialog.get_polished_text())
+            self._status_label.setText("润色文本已替换")
+
+    def _on_unified_error(self, err: str):
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setRange(0, 100)
+        self._polish_btn.setEnabled(True)
+        self._polish_btn.setText("✨ AI 润色与核查")
+        self._status_label.setText(f"处理失败: {err[:60]}")
+        QMessageBox.warning(self, "处理失败", err)
+
+    # ---- 按钮 2: 文献补充 ----
+
+    def _on_lit_search(self):
+        """文献补充：LLM 分析 → 用户反馈 → PubMed 检索。"""
+        draft = self.editor.toPlainText().strip()
+        if not draft:
+            QMessageBox.warning(self, "提示", "请先编写草稿")
+            return
+        if not self._write_client:
+            QMessageBox.warning(self, "提示", "请先配置写作 API")
+            return
+
+        from .lit_search_dialog import LitSearchDialog
+        dialog = LitSearchDialog(self._write_client, self._coach, parent=self)
+        dialog.set_draft_text(draft)
+        dialog.exec()
 
     # ---- Zotero ----
 
@@ -900,73 +647,21 @@ class WritingPanel(QWidget):
     def _update_kb_status(self):
         profile = self._coach.current_profile
         if profile:
+            habits_ok = "已生成" if profile.has_writing_habits else "未生成"
+            journal_ok = "已生成" if profile.has_journal_style else "未生成"
             lines = [
                 f"名称: {profile.name}",
                 f"类型: {profile.writing_type}",
                 f"个人论文: {profile.personal_count} 篇",
                 f"期刊范文: {profile.journal_count} 篇",
-                f"风格指南: {'✅ 已生成' if profile.has_style_guide else '⏳ 未生成'}",
+                f"写作习惯: {habits_ok}",
+                f"期刊格式: {journal_ok}",
             ]
             self._kb_status_label.setText("\n".join(lines))
             self._style_btn.setEnabled(profile.total_papers > 0)
         else:
             self._kb_status_label.setText("未选择知识库\n请在下拉菜单中选择或新建")
             self._style_btn.setEnabled(False)
-
-    # ---- AI 辅助 ----
-
-    def _on_check_citations(self):
-        """核查引文准确性。"""
-        text = self.editor.toPlainText().strip()
-        if not text:
-            QMessageBox.warning(self, "提示", "请先编写包含引用的综述文本")
-            return
-        if not self._review_checker:
-            QMessageBox.warning(self, "提示", "引文核查功能需要配置写作 API 和 Zotero 连接")
-            return
-
-        self._check_cite_btn.setEnabled(False)
-        self._check_cite_btn.setText("⏳ 核查中...")
-        self._progress_bar.setVisible(True)
-        self._progress_bar.setValue(0)
-
-        self._review_worker = ReviewCheckWorker(self._review_checker, text)
-        self._review_worker.progress_signal.connect(self._on_review_progress)
-        self._review_worker.finished_signal.connect(self._on_review_finished)
-        self._review_worker.error_signal.connect(self._on_review_error)
-        self._review_worker.start()
-
-    def _on_review_progress(self, msg: str, cur: int, tot: int):
-        self._progress_bar.setValue(int(cur / max(tot, 1) * 100))
-        self._status_label.setText(msg)
-
-    def _on_review_finished(self, result):
-        self._progress_bar.setVisible(False)
-        self._check_cite_btn.setEnabled(True)
-        self._check_cite_btn.setText("📖 核查引文准确性")
-
-        # 展示结果
-        if hasattr(result, 'claims'):
-            n = len(result.claims)
-            issues = sum(1 for c in result.claims if c.status != "引用恰当")
-            self._status_label.setText(f"核查完成: {n} 条引文, {issues} 条需关注")
-            # TODO: 弹窗展示详细结果（复用 ClaimResultCard）
-            details = "\n\n".join(
-                f"[{c.status}] 引文{c.citation_marker}: {c.ai_feedback[:200]}"
-                for c in result.claims if c.status != "引用恰当"
-            )
-            if details:
-                QMessageBox.information(self, "引文核查结果", details[:2000] or "未发现明显问题")
-            else:
-                QMessageBox.information(self, "引文核查结果", "✅ 所有引文表述准确")
-        else:
-            self._status_label.setText("核查完成")
-
-    def _on_review_error(self, err: str):
-        self._progress_bar.setVisible(False)
-        self._check_cite_btn.setEnabled(True)
-        self._check_cite_btn.setText("📖 核查引文准确性")
-        self._status_label.setText(f"核查失败: {err[:80]}")
 
     # ---- 生命周期 ----
 
@@ -975,9 +670,9 @@ class WritingPanel(QWidget):
         if self._style_worker and self._style_worker.isRunning():
             self._style_worker.quit()
             self._style_worker.wait(2000)
-        if self._review_worker and self._review_worker.isRunning():
-            self._review_worker.quit()
-            self._review_worker.wait(2000)
+        if self._unified_worker and self._unified_worker.isRunning():
+            self._unified_worker.quit()
+            self._unified_worker.wait(2000)
 
     def get_editor_text(self) -> str:
         return self.editor.toPlainText()
