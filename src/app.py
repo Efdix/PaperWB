@@ -59,6 +59,7 @@ class FirstLaunchDialog(QDialog):
         self.setStyleSheet(
             "QDialog { background-color: #1a1b26; }"
             "QLabel { background-color: transparent; }"
+            "QFormLayout QLabel { color: #e2e5f2; font-size: 14px; }"
         )
 
         layout = QVBoxLayout(self)

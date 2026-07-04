@@ -30,7 +30,7 @@ class LitAnalysisWorker(QThread):
         self._system = system_prompt
 
     def run(self):
-        prompt = LitSearchDialog.ANALYSIS_PROMPT.replace("{draft_text}", self._draft[:8000])
+        prompt = LitSearchDialog.ANALYSIS_PROMPT.replace("{draft_text}", self._draft[:50000])
         messages = [
             {"role": "system", "content": self._system or "你是学术文献检索专家。只返回 JSON，不要加解释。"},
             {"role": "user", "content": prompt},
@@ -63,7 +63,7 @@ class LitRefineWorker(QThread):
 
     def run(self):
         prompt = (LitSearchDialog.REFINE_PROMPT
-            .replace("{draft_text}", self._draft[:8000])
+            .replace("{draft_text}", self._draft[:50000])
             .replace("{previous_analysis}", self._previous)
             .replace("{user_feedback}", self._feedback))
         messages = [
@@ -120,35 +120,88 @@ class LitSearchDialog(QDialog):
     5. 随时导出 CSV 或关闭
     """
 
-    ANALYSIS_PROMPT = """你是学术文献检索专家。请分析以下综述草稿，找出可能遗漏的研究方向、列出你已知的相关文献、并生成 PubMed 检索关键词。
+    ANALYSIS_PROMPT = """你是学术文献分析专家。请按以下步骤分层分析文章草稿。
 
 【草稿】
 {draft_text}
 
-## 任务
+## 分析步骤
 
-1. 归纳草稿覆盖的研究方向（列出具体方向名称、大致文献数量、最新年份）
-2. **列出你已知的、与遗漏方向直接相关的具体文献**（如果你脑海中有明确的论文，直接写出标题、作者、年份、DOI 和为什么推荐它）
-3. 找出草稿可能遗漏的研究方向（横向遗漏：完全没覆盖的领域；纵向遗漏：已覆盖但缺少的最新文献）
-4. 为每个遗漏方向生成 3-5 条 PubMed 检索用的英文关键词
+### Step 1: 学科领域识别
+阅读全文，判断此文属于哪个**一级学科**（如生物学、医学、化学、物理学、计算机科学、材料学、地质学等），以及哪些**子学科/二级领域**（可多选，根据文本实际内容尽量精确）。同时判断是否有明显的**交叉学科**特征。
 
-## 输出格式
+### Step 2: 技术手段识别
+列举全文反复提及或作为核心框架的**技术/方法**（如特定实验技术、测序技术、分析方法、计算模型等）。对每种技术标注：
+- 它在文中的角色（核心分析框架？功能验证工具？辅助佐证？主要讨论对象？）
+- 它在全文中的提及频率（高/中/低）
 
-请严格返回 JSON（不要加 Markdown 标记）：
+### Step 3: 核心科学问题提取
+用 1-2 句话概括该草稿试图讨论的核心科学问题。指出领域内被提及的关键争议或未解决问题。判断写作逻辑主线（按分类体系组织？按机制通路组织？按技术方法组织？按时间线组织？）
 
-{
-  "covered_domains": [{"domain": "方向名", "paper_count": 0, "latest_year": ""}],
-  "known_papers": [{"title": "论文标题", "authors": "Author et al.", "year": 2024, "doi": "10.xxx/xxx", "relevance": "此文献与遗漏方向X直接相关，提供了xxx证据"}],
-  "gaps": [{"domain": "遗漏方向名", "reason": "为什么需要补充", "search_queries": ["关键词1", "关键词2"]}]
-}
+### Step 4: 跨领域连接
+基于对文章的实际理解，识别**不在当前草稿中**但与之相关的关联领域。判断依据包括：
+- 共同的方法学（如果草稿大量讨论方法A，哪些其他研究领域也以方法A为核心？）
+- 共同的机制或原理（共享的因果链条、物理化学原理、理论框架等）
+- 共同的模型系统或实验范式
+每个连接需要说明关联类型和具体理由。
 
-注意：
-- known_papers: 只列你确实知道的具体论文（标题不能编造），没有把握就留空数组 []
-- 每个 gap 的 search_queries 应该是能直接在 PubMed 搜索框中使用的英文关键词
-- 关键词要具体而非泛泛，如 "avian melanocyte scRNA-seq" 而非 "bird color"
-- 如果有长关键词，拆分为 2-3 条互补的短关键词"""
+### Step 5: 遗漏方向 + 检索策略
+基于前 4 步的分析，找出可能遗漏的研究方向：
+- 横向遗漏：完全没覆盖但紧密相关的子领域/模型系统/方法
+- 纵向遗漏：已覆盖方向中缺少的近年（2023-2025）重要文献
 
-    REFINE_PROMPT = """你之前分析了一篇综述草稿，现在用户对你的分析给出了反馈。请根据反馈修正你的分析。
+对每个遗漏方向，生成 3 类 PubMed 检索查询词：
+a) precise: 直接检索该方向核心文献的精确查询
+b) methodological: 用共享的技术/方法搜索跨领域的类似应用
+c) mechanistic: 搜索相关的机制、通路、原理或理论框架（如适用则填，不适用则为空数组）
+
+## 输出格式（严格JSON）
+
+{{
+  "domain": {{
+    "primary": ["一级学科"],
+    "sub_disciplines": ["子学科1", "子学科2"],
+    "cross_disciplines": ["交叉学科"]
+  }},
+  "techniques": [
+    {{"name": "技术名称", "role": "角色描述", "frequency": "高/中/低"}}
+  ],
+  "core_questions": ["核心科学问题概括"],
+  "unresolved_issues": ["关键争议/未解决问题"],
+  "organization_logic": "写作逻辑主线描述",
+  "cross_domain_connections": [
+    {{
+      "field": "关联领域名",
+      "connection_type": "methodology/mechanism/model_system/theory",
+      "relevance": "关联理由描述",
+      "potential_keywords": ["可检索的关键词组"]
+    }}
+  ],
+  "covered_domains": [
+    {{"domain": "已覆盖方向名", "paper_count": 0, "latest_year": ""}}
+  ],
+  "gaps": [
+    {{
+      "domain": "遗漏方向名",
+      "gap_type": "horizontal/vertical",
+      "reason": "遗漏原因",
+      "search_queries": {{
+        "precise": ["精确查询词"],
+        "methodological": ["方法学查询词"],
+        "mechanistic": ["机理查询词"]
+      }}
+    }}
+  ]
+}}
+
+## 注意
+- 所有字段都必须基于文本的实际内容，不要编造不相关信息
+- 学科分类要通用——提示中如有示例词汇仅为格式参考，不代表任何领域预设
+- 如某步骤不适用于当前草稿，返回空数组/空字符串，不要编造
+- 搜索查询词必须是能在 PubMed 中直接使用的英文关键词
+- 方法学查询词应该对非该领域研究者也有可检索性"""
+
+    REFINE_PROMPT = """你之前分析了一篇草稿，现在用户对你的分析给出了反馈。请根据反馈修正你的分析。
 
 【草稿】
 {draft_text}
@@ -159,7 +212,7 @@ class LitSearchDialog(QDialog):
 【用户反馈】
 {user_feedback}
 
-请重新生成完整的 JSON 分析结果（格式不变，包含 covered_domains、known_papers、gaps）。特别注意用户指出的理解错误，务必修正。"""
+请重新生成完整的 JSON 分析结果（格式与初次分析完全相同，包含 domain、techniques、core_questions、unresolved_issues、organization_logic、cross_domain_connections、covered_domains、gaps 所有字段）。特别注意用户指出的理解错误，务必修正。"""
 
     def __init__(self, client, coach=None, parent=None):
         super().__init__(parent)
@@ -241,12 +294,6 @@ class LitSearchDialog(QDialog):
         self._search_btn.setEnabled(False)
         btn_row.addWidget(self._search_btn)
 
-        self._export_known_btn = QPushButton("导出LLM推断文献列表")
-        self._export_known_btn.setToolTip("将 LLM 直接推荐的文献导出为 CSV")
-        self._export_known_btn.clicked.connect(self._export_known_csv)
-        self._export_known_btn.setVisible(False)
-        btn_row.addWidget(self._export_known_btn)
-
         btn_row.addStretch()
 
         self._progress = QProgressBar()
@@ -321,46 +368,99 @@ class LitSearchDialog(QDialog):
         self._feedback_edit.setFocus()
 
     def _render_analysis(self, data: dict):
-        lines = ["<b style='color: #7aa2f7;'>已覆盖方向:</b>"]
-        for d in data.get("covered_domains", []):
-            lines.append(
-                f"<span style='color: #a9b1d6;'>  &middot; {d.get('domain', '?')}</span> "
-                f"<span style='color: #8a8ea6;'>({d.get('paper_count', 0)} 篇, 最新 {d.get('latest_year', '?')})</span>"
-            )
+        lines = []
 
-        known = data.get("known_papers", [])
-        if known:
-            lines.append("<br><b style='color: #bb9af7;'>📚 LLM 推断推荐的文献（可导出）:</b>")
-            for i, p in enumerate(known):
-                title = p.get("title", "?")
-                authors = p.get("authors", "?")
-                year = p.get("year", "")
-                doi = p.get("doi", "")
-                relevance = p.get("relevance", "")
-                doi_str = f" DOI: {doi}" if doi else ""
+        # ---- 领域识别 ----
+        domain = data.get("domain", {})
+        if domain:
+            primary = ", ".join(domain.get("primary", []))
+            subs = ", ".join(domain.get("sub_disciplines", []))
+            cross = ", ".join(domain.get("cross_disciplines", []))
+            if primary:
+                lines.append(f"<b style='color: #7aa2f7;'>学科领域:</b> <span style='color: #cfd2e3;'>{primary}</span>")
+            if subs:
+                lines.append(f"<b style='color: #7aa2f7;'>子领域:</b> <span style='color: #a9b1d6;'>{subs}</span>")
+            if cross:
+                lines.append(f"<b style='color: #7aa2f7;'>交叉学科:</b> <span style='color: #e0af68;'>{cross}</span>")
+
+        # ---- 技术手段 ----
+        techniques = data.get("techniques", [])
+        if techniques:
+            lines.append("<br><b style='color: #9ece6a;'>技术手段:</b>")
+            for t in techniques:
+                freq_icon = {"高": "🔥", "中": "📌", "低": "🔹"}.get(t.get("frequency", ""), "")
                 lines.append(
-                    f"  <b style='color: #cfd2e3;'>{i+1}. {authors} ({year}) {title}</b>"
-                    f"<span style='color: #636688;'>{doi_str}</span><br>"
-                    f"  <span style='color: #8a8ea6;'>  → {relevance}</span><br>"
+                    f"<span style='color: #a9b1d6;'>  {freq_icon} {t.get('name', '?')}</span>"
+                    f"<span style='color: #8a8ea6;'> — {t.get('role', '')}</span>"
                 )
-            self._known_papers = known
-            self._export_known_btn.setVisible(True)
-        else:
-            self._known_papers = []
-            self._export_known_btn.setVisible(False)
 
+        # ---- 核心问题 ----
+        core_q = data.get("core_questions", [])
+        if core_q:
+            lines.append("<br><b style='color: #bb9af7;'>核心科学问题:</b>")
+            for q in core_q:
+                lines.append(f"<span style='color: #cfd2e3;'>  &middot; {q}</span>")
+
+        issues = data.get("unresolved_issues", [])
+        if issues:
+            lines.append("<b style='color: #bb9af7;'>未解决争议:</b>")
+            for iss in issues:
+                lines.append(f"<span style='color: #8a8ea6;'>  &middot; {iss}</span>")
+
+        logic = data.get("organization_logic", "")
+        if logic:
+            lines.append(f"<b style='color: #636688;'>写作主线:</b> <span style='color: #8a8ea6;'>{logic}</span>")
+
+        # ---- 跨领域连接 ----
+        connections = data.get("cross_domain_connections", [])
+        if connections:
+            lines.append("<br><b style='color: #e0af68;'>跨领域连接:</b>")
+            for c in connections:
+                ctype = c.get("connection_type", "")
+                lines.append(
+                    f"<span style='color: #cfd2e3;'>  &rarr; {c.get('field', '?')}</span>"
+                    f"<span style='color: #636688;'> [{ctype}]</span><br>"
+                    f"<span style='color: #8a8ea6;'>    {c.get('relevance', '')}</span><br>"
+                    f"<span style='color: #636688;'>    关键词: {', '.join(c.get('potential_keywords', [])[:3])}</span><br>"
+                )
+
+        # ---- 已覆盖方向 ----
+        covered = data.get("covered_domains", [])
+        if covered:
+            lines.append("<br><b style='color: #9ece6a;'>已覆盖方向:</b>")
+            for d in covered:
+                lines.append(
+                    f"<span style='color: #a9b1d6;'>  &middot; {d.get('domain', '?')}</span> "
+                    f"<span style='color: #8a8ea6;'>({d.get('paper_count', 0)} 篇, 最新 {d.get('latest_year', '?')})</span>"
+                )
+
+        # ---- 遗漏方向 + 三类检索词 ----
         gaps = data.get("gaps", [])
         if gaps:
-            lines.append("<br><b style='color: #e0af68;'>遗漏方向 + 搜索关键词:</b>")
+            lines.append("<br><b style='color: #f7768e;'>遗漏方向 + 检索策略:</b>")
             for i, g in enumerate(gaps):
-                queries = g.get("search_queries", [])
-                kw_str = ", ".join(f"<span style='color: #9ece6a;'><i>{q}</i></span>" for q in queries[:5])
-                reason = g.get("reason", "")[:300]
+                gap_type = g.get("gap_type", "horizontal")
+                type_label = "⟂ 横向遗漏" if gap_type == "horizontal" else "⟊ 纵向遗漏"
+                sq = g.get("search_queries", {})
+                precise = sq.get("precise", []) if isinstance(sq, dict) else sq
+                method = sq.get("methodological", []) if isinstance(sq, dict) else []
+                mech = sq.get("mechanistic", []) if isinstance(sq, dict) else []
+
                 lines.append(
-                    f"  <b style='color: #cfd2e3;'>{i+1}. {g.get('domain', '?')}</b><br>"
-                    f"  <span style='color: #8a8ea6;'>原因: {reason}</span><br>"
-                    f"  <span style='color: #636688;'>关键词: {kw_str}</span><br>"
+                    f"<br><b style='color: #cfd2e3;'>{i+1}. {g.get('domain', '?')}</b>"
+                    f"<span style='color: #636688;'> [{type_label}]</span><br>"
+                    f"<span style='color: #8a8ea6;'>原因: {g.get('reason', '')[:300]}</span><br>"
                 )
+                if precise:
+                    lines.append(f"<span style='color: #636688;'>  精确: </span>"
+                                 + ", ".join(f"<span style='color: #9ece6a;'><i>{q}</i></span>" for q in precise[:4]))
+                if method:
+                    lines.append(f"<br><span style='color: #636688;'>  方法学跨领域: </span>"
+                                 + ", ".join(f"<span style='color: #7aa2f7;'><i>{q}</i></span>" for q in method[:3]))
+                if mech:
+                    lines.append(f"<br><span style='color: #636688;'>  机理: </span>"
+                                 + ", ".join(f"<span style='color: #bb9af7;'><i>{q}</i></span>" for q in mech[:3]))
+                lines.append("<br>")
         else:
             lines.append("<br><b style='color: #9ece6a;'>未检测到明显遗漏方向。</b>")
 
@@ -377,7 +477,7 @@ class LitSearchDialog(QDialog):
             return
 
         # 如果上次分析失败（_analysis_data 为 None），构造一个空分析传给 RefineWorker
-        prev = self._analysis_data or {"covered_domains": [], "gaps": [], "_error": "上次分析失败"}
+        prev = self._analysis_data or {"covered_domains": [], "gaps": [], "domain": {}, "_error": "上次分析失败"}
 
         self._set_busy(True, "LLM 正在根据反馈重新分析...")
         self._refine_btn.setEnabled(False)
@@ -401,8 +501,15 @@ class LitSearchDialog(QDialog):
 
         queries = []
         for g in gaps:
-            queries.extend(g.get("search_queries", []))
+            sq = g.get("search_queries", {})
+            if isinstance(sq, dict):
+                queries.extend(sq.get("precise", []))
+                queries.extend(sq.get("methodological", []))
+                queries.extend(sq.get("mechanistic", []))
+            elif isinstance(sq, list):
+                queries.extend(sq)
         if not queries:
+            QMessageBox.information(self, "提示", "当前分析中未生成搜索关键词。请给反馈让 LLM 重新分析。")
             return
 
         self._search_keywords = queries
@@ -477,33 +584,6 @@ class LitSearchDialog(QDialog):
         except Exception as e:
             QMessageBox.warning(self, "导出失败", f"导出 CSV 时出错：{e}")
 
-    def _export_known_csv(self):
-        """导出 LLM 推断的已知文献列表为 CSV。"""
-        papers = getattr(self, '_known_papers', [])
-        if not papers:
-            QMessageBox.information(self, "提示", "当前分析中 LLM 没有列出已知文献。")
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "导出 LLM 推断文献列表", "llm_inferred_papers.csv",
-            "CSV 文件 (*.csv)"
-        )
-        if not path:
-            return
-        try:
-            with open(path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
-                writer.writerow(["title", "authors", "year", "doi", "relevance"])
-                for p in papers:
-                    writer.writerow([
-                        p.get("title", ""),
-                        p.get("authors", ""),
-                        p.get("year", ""),
-                        p.get("doi", ""),
-                        p.get("relevance", ""),
-                    ])
-        except Exception as e:
-            QMessageBox.warning(self, "导出失败", f"导出 CSV 时出错：{e}")
-
     # ---- 工具 ----
 
     def _set_busy(self, busy: bool, msg: str = ""):
@@ -564,6 +644,12 @@ class LitSearchDialog(QDialog):
 
         # 兜底降级: 把 LLM 原始返回作为分析文本展示
         return {
+            "domain": {},
+            "techniques": [],
+            "core_questions": [],
+            "unresolved_issues": [],
+            "organization_logic": "",
+            "cross_domain_connections": [],
             "covered_domains": [],
-            "gaps": [{"domain": "LLM 原始回复（JSON 解析失败）", "reason": text[:500], "search_queries": []}],
+            "gaps": [{"domain": "LLM 原始回复（JSON 解析失败）", "gap_type": "horizontal", "reason": text[:500], "search_queries": {"precise": [], "methodological": [], "mechanistic": []}}],
         }

@@ -204,6 +204,59 @@ class UnifiedWorker(QThread):
             self.error_signal.emit(str(e))
 
 
+def _strip_reference_list(text: str) -> str:
+    """去除文本尾部的参考文献列表（用于 Diff 对比展示，避免全部标红）。
+
+    三策略级联：
+    1. 显式标题：查找 「参考文献」/「References」/「LITERATURE CITED」
+    2. 条目特征扫描：从末尾反向查找符合参考条目格式的行
+    3. 占比检测：如果尾部候选参考条目的字符占比超过 10%，认定是参考列表
+    """
+    import re
+
+    # 策略 1: 显式标题
+    m = re.split(
+        r'\n\s*(?:参考文献|References?|REFERENCES?|LITERATURE\s*CITED)\s*\n',
+        text, maxsplit=1,
+    )
+    if len(m) > 1:
+        return m[0].strip()
+
+    # 策略 2: 条目特征反向扫描
+    ref_line_pattern = re.compile(
+        r'^\s*(\[\d+[,\-\s\d]*\]|\d+\.)\s+\S'           # [1] xxx 或 1. xxx
+        r'|^\s*[A-Z][a-z\-]+,\s+[A-Z]\.'                 # Author, A. B. ...
+        r'|^\s*doi:\s'                                    # doi: 开头
+        r'|^\s*DOI:'                                       # DOI: 开头
+        r'|^\s*[A-Z][a-z\-]+.*\d{4}[a-z]?\.\s+\S'        # Author ... 2024. Journal...
+    )
+    lines = text.split('\n')
+    ref_start = None
+
+    for i in range(len(lines) - 1, max(len(lines) - 40, 0), -1):
+        line = lines[i].strip()
+        if not line:
+            if ref_start is not None:
+                # 空行后认为参考列表结束
+                break
+            continue
+        if ref_line_pattern.match(line) and len(line) > 25:
+            ref_start = i
+        elif ref_start is not None and len(line) < 25:
+            # 遇到短行（非参考条目），停止
+            break
+
+    if ref_start is not None and ref_start > 0:
+        body_lines = lines[:ref_start]
+        ref_lines = lines[ref_start:]
+        non_empty_refs = [l for l in ref_lines if l.strip()]
+        ref_char_ratio = sum(len(l) for l in ref_lines) / max(len(text), 1)
+        if len(non_empty_refs) >= 2 or (len(non_empty_refs) == 1 and ref_char_ratio > 0.15):
+            return '\n'.join(body_lines).strip()
+
+    return text.strip()
+
+
 # ============================================================
 # 写作面板
 # ============================================================
@@ -671,9 +724,7 @@ class WritingPanel(QWidget):
 
         text = cursor.selectedText().strip()
         # 裁剪尾部参考文献列表（仅用于DiffDialog对比展示，不影响引文核查）
-        import re
-        ref_stripped = re.split(r'\n\s*(参考文献|References|REFERENCES)\s*\n', text)
-        display_text = ref_stripped[0] if ref_stripped else text
+        display_text = _strip_reference_list(text)
         # 存储原始文本和光标位置，避免异步处理期间选中丢失
         self._pending_original = display_text
         self._pending_cursor_pos = cursor.selectionStart()
