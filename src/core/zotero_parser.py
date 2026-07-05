@@ -269,7 +269,9 @@ class ZoteroLibrary:
 
     @property
     def is_available(self) -> bool:
-        return bool(self._data_dir) and os.path.isdir(self._data_dir)
+        return bool(self._data_dir) and os.path.isdir(self._data_dir) and (
+            bool(self._sqlite_path) or bool(self._storage_dir)
+        )
 
     @property
     def data_dir(self) -> str:

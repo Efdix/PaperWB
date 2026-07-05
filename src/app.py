@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
         self._apply_styles()
         self._init_all_clients()
         self._init_write()
+        self._validate_data_root()
 
     def _setup_ui(self):
         menubar = self.menuBar()
@@ -248,6 +249,7 @@ class MainWindow(QMainWindow):
 
         # Tab 1: 写作
         self._writing_panel = WritingPanel()
+        self._writing_panel.zotero_path_changed.connect(self._init_write)
         self._main_tabs.addTab(self._writing_panel, "📝 写作")
 
         self.setCentralWidget(self._main_tabs)
@@ -548,12 +550,45 @@ class MainWindow(QMainWindow):
             f"color: {'#9ece6a' if self._llm_write else '#636688'}; padding: 2px 6px; font-size: 11px;"
         )
 
-    def _init_write(self) -> None:
-        zotero_dir = self._config.get("zotero_data_dir", "")
+    def _init_write(self, zotero_path: str = "") -> None:
+        # 优先使用信号传来的路径，其次重新从磁盘读 config
+        if zotero_path:
+            zotero_dir = zotero_path
+        else:
+            self._config = load_config()
+            zotero_dir = self._config.get("zotero_data_dir", "")
         self._zotero = ZoteroLibrary(zotero_dir)
-        self._zotero.load()
+        count = self._zotero.load()
+        if count == 0 and zotero_dir:
+            QMessageBox.warning(
+                self, "Zotero 加载失败",
+                f"未能从指定目录加载到文献：\n{zotero_dir}\n\n请检查该目录是否包含 zotero.sqlite 和 storage/ 子目录。"
+            )
         if self._llm_write:
             self._review_checker = ReviewChecker(self._llm_write, self._zotero)
             self._writing_panel.set_checker(self._review_checker)
         self._writing_panel.set_write_client(self._llm_write)
         self._writing_panel.set_zotero_library(self._zotero)
+
+    def _validate_data_root(self) -> None:
+        """启动时校验数据根目录是否可访问。"""
+        import os as _os
+        dr = self._config.get("data_root", "")
+        if not dr:
+            return
+        from pathlib import Path
+        p = Path(dr)
+        if not p.exists():
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                QMessageBox.warning(
+                    self, "数据目录不可用",
+                    f"数据根目录无法创建：\n{dr}\n\n请在菜单「设置 → 数据目录...」中重新设置。"
+                )
+                return
+        if not _os.access(str(p), _os.W_OK):
+            QMessageBox.warning(
+                self, "数据目录无写入权限",
+                f"数据根目录无写入权限：\n{dr}\n\n请检查权限或在菜单「设置 → 数据目录...」中重新设置。"
+            )

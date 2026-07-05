@@ -213,6 +213,7 @@ class WritingPanel(QWidget):
 
     # 信号
     status_message = Signal(str)
+    zotero_path_changed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -348,6 +349,7 @@ class WritingPanel(QWidget):
             "padding: 16px; font-size: 14px; line-height: 1.8; }"
             "QTextEdit:focus { border-color: #7aa2f7; }"
         )
+        self.editor.textChanged.connect(self._on_editor_text_changed)
         editor_layout.addWidget(self.editor)
 
         splitter.addWidget(editor_frame)
@@ -428,6 +430,13 @@ class WritingPanel(QWidget):
         self._polish_btn.clicked.connect(self._on_unified_polish)
         ai_layout.addWidget(self._polish_btn)
 
+        self._verify_only_btn = QPushButton("🔍 仅核查引文")
+        self._verify_only_btn.setToolTip(
+            "仅核查选中文字的引文准确性，不修改原文表述"
+        )
+        self._verify_only_btn.clicked.connect(self._on_verify_only)
+        ai_layout.addWidget(self._verify_only_btn)
+
         self._lit_search_btn = QPushButton("🔍 文献补充")
         self._lit_search_btn.setToolTip(
             "AI 分析草稿的遗漏方向 → 你审阅并反馈 → 确认后 PubMed 检索"
@@ -457,6 +466,10 @@ class WritingPanel(QWidget):
         self._status_label.setStyleSheet("color: #8a8ea6; font-size: 12px;")
         status_bar.addWidget(self._status_label)
         status_bar.addStretch()
+
+        self._word_count_label = QLabel("字数: 0")
+        self._word_count_label.setStyleSheet("color: #565a7a; font-size: 11px;")
+        status_bar.addWidget(self._word_count_label)
 
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
@@ -547,15 +560,20 @@ class WritingPanel(QWidget):
         path = QFileDialog.getExistingDirectory(self, "选择 Zotero 数据目录", current or "")
         if path:
             self._zotero_path_edit.setText(path)
-            # 同时更新 config
             from ..utils.config import load_config, save_config
             cfg = load_config()
             cfg["zotero_data_dir"] = path
             save_config(cfg)
             self._status_label.setText(f"Zotero 路径已更新: {path}")
+            self.zotero_path_changed.emit(path)
 
     def _on_writing_type_changed(self, idx: int):
         self._current_writing_type = self._type_combo.itemData(idx) or "综述"
+
+    def _on_editor_text_changed(self):
+        text = self.editor.toPlainText()
+        chars = len(text)
+        self._word_count_label.setText(f"字数: {chars}")
 
     def _on_new_kb(self):
         name, ok = QInputDialog.getText(
@@ -670,17 +688,39 @@ class WritingPanel(QWidget):
             return
 
         text = cursor.selectedText().strip()
+        # 归一化 Qt 富文本换行符（QTextEdit 内部使用 \u2029 而非 \n）
+        text = text.replace('\u2029', '\n')
         # 裁剪尾部参考文献列表（仅用于DiffDialog对比展示，不影响引文核查）
+        # 匹配参考文献条目的格式特征：
+        #   "Loh LS, Hanly JJ, ... 2025. Single-nucleus transcriptomics..."
+        #   "Prakash A, Dion E, Banerjee TD, Monteiro A. 2024. The molecular basis..."
+        # 和正文引用 "(Prakash et al., 2024)" 格式完全不同，不会误切
         import re
-        ref_stripped = re.split(r'\n\s*(参考文献|References|REFERENCES)\s*\n', text)
-        display_text = ref_stripped[0] if ref_stripped else text
-        # 存储原始文本和光标位置，避免异步处理期间选中丢失
+        ref_marker = re.search(
+            r'\n([A-Z][a-z]+ [A-Z]{1,3}(?:, [A-Z][a-z]+ [A-Z]{1,3})*(?: et al)?\. \d{4}[a-z]?\.)',
+            text
+        )
+        display_text = text[:ref_marker.start()] if ref_marker else text
         self._pending_original = display_text
         self._pending_cursor_pos = cursor.selectionStart()
         self._pending_cursor_end = cursor.selectionEnd()
 
+        # Zotero 可用性检查
+        zotero_ok = self._zotero and hasattr(self._zotero, 'get_all_items') and len(self._zotero.get_all_items()) > 0
+        if not zotero_ok:
+            answer = QMessageBox.question(
+                self, "Zotero 未连接",
+                "当前 Zotero 文献库未加载到有效文献，引文核查将跳过。\n\n"
+                "如需引文核查，请先在工具栏中设置 Zotero 数据目录（保证目录下有 zotero.sqlite 和 storage/）。\n\n"
+                "是否继续（仅润色，不核查引文）？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
         self._polish_btn.setEnabled(False)
         self._polish_btn.setText("⏳ 处理中...")
+        self._verify_only_btn.setEnabled(False)
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)
         self._status_label.setText("AI 正在润色并核查引文...")
@@ -699,6 +739,8 @@ class WritingPanel(QWidget):
         self._progress_bar.setRange(0, 100)
         self._polish_btn.setEnabled(True)
         self._polish_btn.setText("✨ AI 润色与核查")
+        self._verify_only_btn.setEnabled(True)
+        self._verify_only_btn.setText("🔍 仅核查引文")
         self._status_label.setText("处理完成")
 
         if result.get("error"):
@@ -706,12 +748,26 @@ class WritingPanel(QWidget):
             return
 
         original = getattr(self, '_pending_original', '')
+        polished = result.get("polished_text", "")
+        if not polished.strip() and not result.get("error"):
+            QMessageBox.warning(
+                self, "润色结果为空",
+                "LLM 返回了空的润色结果。\n\n"
+                "可能原因：\n"
+                "1. 选中的文字过长，超出模型处理上限\n"
+                "2. API 配额用尽\n"
+                "3. 模型不支持该请求格式\n\n"
+                "建议：缩短选中文字后重试，或检查 API 配置。"
+            )
+            return
+
         from .diff_dialog import DiffDialog
         dialog = DiffDialog(
             original=original,
-            polished=result.get("polished_text", ""),
+            polished=polished,
             citation_notes=result.get("citation_notes", []),
             supervisor_notes=result.get("supervisor_notes", []),
+            citation_sources_text=result.get("citation_sources_text", ""),
             write_client=self._write_client,
             coach=self._coach,
             zotero=self._zotero,
@@ -736,8 +792,67 @@ class WritingPanel(QWidget):
         self._progress_bar.setRange(0, 100)
         self._polish_btn.setEnabled(True)
         self._polish_btn.setText("✨ AI 润色与核查")
+        self._verify_only_btn.setEnabled(True)
+        self._verify_only_btn.setText("🔍 仅核查引文")
         self._status_label.setText(f"处理失败: {err[:60]}")
         QMessageBox.warning(self, "处理失败", err)
+
+    def _on_verify_only(self):
+        """仅核查引文，不修改原文表述。"""
+        cursor = self.editor.textCursor()
+        if not cursor.hasSelection():
+            QMessageBox.warning(self, "提示", "请先在编辑器中选中要核查的文字")
+            return
+        if not self._write_client:
+            QMessageBox.warning(self, "提示", "请先配置写作 API")
+            return
+
+        text = cursor.selectedText().strip()
+        self._pending_original = text
+        self._pending_cursor_pos = cursor.selectionStart()
+        self._pending_cursor_end = cursor.selectionEnd()
+
+        self._verify_only_btn.setEnabled(False)
+        self._verify_only_btn.setText("⏳ 核查中...")
+        self._progress_bar.setVisible(True)
+        self._progress_bar.setRange(0, 0)
+        self._status_label.setText("AI 正在核查引文...")
+        QApplication.processEvents()
+
+        self._unified_worker = UnifiedWorker(
+            self._write_client, text, self._coach, self._zotero,
+            self._current_writing_type
+        )
+        self._unified_worker.finished_signal.connect(self._on_verify_done)
+        self._unified_worker.error_signal.connect(self._on_unified_error)
+        self._unified_worker.start()
+
+    def _on_verify_done(self, result: dict):
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setRange(0, 100)
+        self._verify_only_btn.setEnabled(True)
+        self._verify_only_btn.setText("🔍 仅核查引文")
+        self._status_label.setText("核查完成")
+        self._polish_btn.setEnabled(True)
+
+        if result.get("error"):
+            QMessageBox.warning(self, "处理失败", result["error"])
+            return
+
+        original = getattr(self, '_pending_original', '')
+        from .diff_dialog import DiffDialog
+        dialog = DiffDialog(
+            original=original,
+            polished=result.get("polished_text", original),
+            citation_notes=result.get("citation_notes", []),
+            supervisor_notes=result.get("supervisor_notes", []),
+            write_client=self._write_client,
+            coach=self._coach,
+            zotero=self._zotero,
+            writing_type=self._current_writing_type,
+            parent=self,
+        )
+        dialog.exec()
 
     # ---- 按钮 2: 文献补充 ----
 
@@ -763,11 +878,11 @@ class WritingPanel(QWidget):
             count = self._zotero.item_count if hasattr(self._zotero, 'item_count') else 0
             self._zotero_status_label.setText(f"✅ 已连接 ({count} 篇文献)")
             self._zotero_status_label.setStyleSheet("color: #9ece6a; font-size: 12px;")
-            # 更新路径显示
+            # 更新路径显示（总是同步，不检查是否为空）
             from ..utils.config import load_config
             cfg = load_config()
             zdir = cfg.get("zotero_data_dir", "") or self._zotero._data_dir
-            if zdir and not self._zotero_path_edit.text():
+            if zdir:
                 self._zotero_path_edit.setText(zdir)
         else:
             self._zotero_status_label.setText("⚠️ 未连接")

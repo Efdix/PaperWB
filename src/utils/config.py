@@ -234,7 +234,11 @@ def load_config() -> dict:
 
 
 def save_config(config: dict) -> None:
-    """保存配置到 JSON 文件。"""
+    """保存配置到 JSON 文件。对路径字段做 normalize 防乱码。"""
+    if config.get("data_root"):
+        config["data_root"] = os.path.normpath(str(config["data_root"]))
+    if config.get("zotero_data_dir"):
+        config["zotero_data_dir"] = os.path.normpath(str(config["zotero_data_dir"]))
     cf = _config_file()
     cf.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 

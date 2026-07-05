@@ -42,6 +42,7 @@ class DiffDialog(QDialog):
     def __init__(self, original: str, polished: str,
                  citation_notes: list[dict] | None = None,
                  supervisor_notes: list[dict] | None = None,
+                 citation_sources_text: str = "",
                  write_client: "LLMClient | None" = None,
                  coach: "WritingCoach | None" = None,
                  zotero: "ZoteroLibrary | None" = None,
@@ -56,6 +57,7 @@ class DiffDialog(QDialog):
         self._polished = polished
         self._citation_notes = citation_notes or []
         self._supervisor_notes = supervisor_notes or []
+        self._citation_sources_text = citation_sources_text
         self._write_client = write_client
         self._coach = coach
         self._zotero = zotero
@@ -256,6 +258,11 @@ class DiffDialog(QDialog):
         )
         btn_layout.addWidget(self._rerun_btn)
 
+        export_chat_btn = QPushButton("导出对话记录")
+        export_chat_btn.setToolTip("将 AI 对话导出为 Markdown 文件")
+        export_chat_btn.clicked.connect(self._export_chat_md)
+        btn_layout.addWidget(export_chat_btn)
+
         btn_layout.addStretch()
 
         cancel_btn = QPushButton("取消")
@@ -454,11 +461,12 @@ class DiffDialog(QDialog):
         self._add_chat_bubble("assistant", "⏳ 思考中...")
         self._chat_history.append({"role": "user", "content": text})
 
-        # 构建上下文
+        # 构建上下文（含 PDF 全文，方便 LLM 回答具体文献问题）
         context = (
-            f"【原始文本】\n{self._original[:3000]}\n\n"
-            f"【润色后文本】\n{self._polished[:3000]}\n\n"
-            f"【引文核查结果】\n{_json.dumps(self._citation_notes, ensure_ascii=False)[:2000]}\n\n"
+            f"【原始文本】\n{self._original}\n\n"
+            f"【润色后文本】\n{self._polished}\n\n"
+            f"【引文核查结果】\n{_json.dumps(self._citation_notes, ensure_ascii=False)}\n\n"
+            f"【引文涉及的文献全文】（你可据此回答用户关于具体论文细节的疑问）\n{self._citation_sources_text}\n\n"
         )
         system_prompt = "你是学术写作助手的对话伙伴。用户对 AI 的润色修改有疑问，你需要基于原始文本和润色结果，解释修改的理由、引文的依据，或接受用户的指正。回答要简洁、有根据、不使用表情符号。回答长度控制在 200 字以内。"
 
@@ -481,7 +489,7 @@ class DiffDialog(QDialog):
 
             def run(self):
                 try:
-                    reply = self._client.chat_sync(self._messages, timeout=120.0, max_tokens=800)
+                    reply = self._client.chat_sync(self._messages, timeout=120.0)
                     self.finished_sig.emit(reply or "")
                 except Exception as e:
                     self.error_sig.emit(str(e))
@@ -607,7 +615,7 @@ class DiffDialog(QDialog):
 
             def run(self):
                 try:
-                    reply = self._client.chat_sync(self._messages, timeout=180.0, max_tokens=4000)
+                    reply = self._client.chat_sync(self._messages, timeout=180.0)
                     self.finished_sig.emit(reply or "")
                 except Exception as e:
                     self.error_sig.emit(str(e))
@@ -673,3 +681,21 @@ class DiffDialog(QDialog):
     def _on_accept(self):
         self._accepted = True
         self.accept()
+
+    def _export_chat_md(self):
+        """导出 AI 对话为 Markdown 文件。"""
+        if not self._chat_history:
+            return
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(self, "导出对话记录", "polish_chat.md", "Markdown (*.md)")
+        if not path:
+            return
+        lines = ["# AI 润色对话记录\n"]
+        for m in self._chat_history:
+            role = "**你**" if m["role"] == "user" else "**AI**"
+            lines.append(f"\n{role}:\n{m['content']}\n")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+        except OSError:
+            pass

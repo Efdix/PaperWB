@@ -569,7 +569,7 @@ class IntegrationWorker(QThread):
                 {"role": "system", "content": INTEGRATION_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ]
-            response = self._client.chat_sync(messages, timeout=300.0, max_tokens=32000)
+            response = self._client.chat_sync(messages, timeout=300.0)
             result = _validate_integration_result(response)
 
             if "error" in result:
@@ -868,7 +868,7 @@ class DocumentIntegrator:
             {"role": "system", "content": INTEGRATION_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]
-        response = self._client.chat_sync(messages, timeout=300.0, max_tokens=32000)
+        response = self._client.chat_sync(messages, timeout=300.0)
         result = _validate_integration_result(response)
 
         if "error" in result:

@@ -60,7 +60,7 @@ c) 如果批注意见与引文原文明显矛盾，标注 flagged 但仍按批�
 2. 不要新增、删除或合并引用标记
 3. 不要改变学术术语（除非原始术语本身是错误的）
 4. 不要改变段落数量和段落间的逻辑顺序
-5. 不要使文本显著变长（润色前后字数差异应在 ±15% 以内）
+5. 尽量不使文本显著变长或变短（不要进行不必要的扩写或删减）
 
 ## 输出格式
 
@@ -89,7 +89,38 @@ c) 如果批注意见与引文原文明显矛盾，标注 flagged 但仍按批�
 - supervisor_notes: 每条批注一条记录（无批注时为空数组 []）
   - suggestion: 用你自己的话概括批注的关键内容
   - action: applied(已采纳) | modified(调整后采纳) | flagged(有疑虑但已按意思修改)
-  - note: 1句话说明如何处理"""
+   - note: 1句话说明如何处理"""
+
+
+VERIFY_ONLY_PROMPT = """你是学术写作核查专家。只核查引文，不修改原文。
+
+{style_context}
+
+【待核查文本】
+{selected_text}
+
+【可用引文原文】（如某引文的原文为空或无法匹配，对该引文的核查标注为 unchecked）
+{citation_sources}
+
+## 任务
+
+对每处引文标记，比对上方提供的对应原文，验证表述是否准确反映原文发现。
+- 如果表述准确 → status: "accurate"
+- 如果有偏差 → status: "corrected"，在 note 中说明差异
+- 如果原文中有但引文中表述不完整 → status: "partial"
+- 如果无原文可核查 → status: "unchecked"
+
+## 禁止事项
+1. 不要修改原文任何字词
+2. polished_text 必须和输入文本完全一致
+
+## 输出格式
+
+{
+  "polished_text": "（必须与输入文本完全一致）",
+  "citation_notes": [...],
+  "supervisor_notes": []
+}"""
 
 
 class UnifiedWriter:
@@ -111,6 +142,7 @@ class UnifiedWriter:
         coach: "WritingCoach",
         zotero_lib: "ZoteroLibrary | None" = None,
         writing_type: str = "综述",
+        verify_only: bool = False,
     ) -> dict:
         """执行统一润色+核查。
 
@@ -138,10 +170,17 @@ class UnifiedWriter:
         # 构建引文原文上下文
         citation_sources = self._build_citation_sources(selected_text, zotero_lib)
 
-        prompt = (UNIFIED_PROMPT
-            .replace("{style_context}", style_context)
-            .replace("{selected_text}", selected_text)
-            .replace("{citation_sources}", citation_sources))
+        if verify_only:
+            prompt = (VERIFY_ONLY_PROMPT
+                .replace("{style_context}", "")
+                .replace("{selected_text}", selected_text)
+                .replace("{citation_sources}", citation_sources))
+            system_prompt = "你是学术写作核查专家。只返回 JSON，不要修改原文。"
+        else:
+            prompt = (UNIFIED_PROMPT
+                .replace("{style_context}", style_context)
+                .replace("{selected_text}", selected_text)
+                .replace("{citation_sources}", citation_sources))
 
         messages = [
             {"role": "system", "content": system_prompt or "你是学术写作助手。"},
@@ -149,15 +188,24 @@ class UnifiedWriter:
         ]
 
         try:
-            response = write_client.chat_sync(messages, timeout=180.0, max_tokens=4000)
+            response = write_client.chat_sync(messages, timeout=180.0)
+            if not response or not response.strip():
+                return {"polished_text": selected_text, "citation_notes": [],
+                        "supervisor_notes": [], "citation_sources_text": citation_sources,
+                        "error": "LLM 返回了空响应。可能原因：消息过长超出模型限制、API 配额用尽、或模型不支持该请求。"}
             result = self._parse_response(response)
-            return {"polished_text": result.get("polished_text", selected_text),
+            polished = result.get("polished_text", "")
+            if not polished.strip():
+                polished = selected_text
+            return {"polished_text": polished,
                     "citation_notes": result.get("citation_notes", []),
                     "supervisor_notes": result.get("supervisor_notes", []),
+                    "citation_sources_text": citation_sources,
                     "error": None}
         except Exception as e:
             return {"polished_text": selected_text, "citation_notes": [],
-                    "supervisor_notes": [], "error": str(e)}
+                    "supervisor_notes": [], "citation_sources_text": "",
+                    "error": str(e)}
 
     def _build_citation_sources(
         self, selected_text: str, zotero_lib,
@@ -166,7 +214,7 @@ class UnifiedWriter:
 
         支持引文格式: (Author et al., Year), (Author & Author, Year), (Author, Year)
         """
-        if not zotero_lib or not hasattr(zotero_lib, '_items'):
+        if not zotero_lib or not hasattr(zotero_lib, 'get_all_items'):
             return "（Zotero 未连接，无法提供引文原文）"
 
         # 从选中文字中提取 Author-Year 引文对
@@ -213,7 +261,7 @@ class UnifiedWriter:
                 authors = ", ".join(item.authors[:3]) if item.authors else "?"
                 sources.append(
                     f"--- 引文 {marker_text} → {authors} ({item.year}) {title} ---\n"
-                    f"{source_text[:3000]}"
+                    f"{source_text}"
                 )
 
         if not sources:
@@ -236,7 +284,7 @@ class UnifiedWriter:
             return "（未检测到有效编号引用）"
 
         sources: list[str] = []
-        items = getattr(zotero_lib, '_items', [])
+        items = getattr(zotero_lib, 'get_all_items', lambda: [])()
         for num in sorted(cited_nums):
             if 1 <= num <= len(items):
                 item = items[num - 1]
@@ -245,7 +293,7 @@ class UnifiedWriter:
                 authors = ", ".join(item.authors[:3]) if item.authors else "?"
                 sources.append(
                     f"--- 引文 [{num}] → {authors} ({item.year}) {title} ---\n"
-                    f"{source_text[:3000]}"
+                    f"{source_text}"
                 )
 
         if not sources:
@@ -254,7 +302,7 @@ class UnifiedWriter:
 
     @staticmethod
     def _extract_pdf_text(item) -> str:
-        """从 ZoteroItem 提取 PDF 前几页文本。"""
+        """从 ZoteroItem 提取 PDF 全文。"""
         if not item.pdf_path or not os.path.isfile(item.pdf_path):
             return "(PDF 文件缺失)"
 
@@ -262,12 +310,12 @@ class UnifiedWriter:
             import fitz
             doc = fitz.open(item.pdf_path)
             parts = []
-            for page in doc[:3]:
-                parts.append(page.get_text())
-                if len("\n".join(parts)) > 3000:
-                    break
+            for page in doc:
+                t = page.get_text()
+                if t.strip():
+                    parts.append(t.strip())
             doc.close()
-            return "\n".join(parts)[:3000]
+            return "\n\n".join(parts)
         except Exception:
             return "(PDF 读取失败)"
 

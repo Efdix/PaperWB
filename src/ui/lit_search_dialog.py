@@ -36,7 +36,7 @@ class LitAnalysisWorker(QThread):
             {"role": "user", "content": prompt},
         ]
         try:
-            response = self._client.chat_sync(messages, timeout=120.0, max_tokens=8000)
+            response = self._client.chat_sync(messages, timeout=120.0)
             if not response or not response.strip():
                 self.error.emit("LLM 返回空响应，请稍后重试")
                 return
@@ -71,7 +71,7 @@ class LitRefineWorker(QThread):
             {"role": "user", "content": prompt},
         ]
         try:
-            response = self._client.chat_sync(messages, timeout=120.0, max_tokens=8000)
+            response = self._client.chat_sync(messages, timeout=120.0)
             if not response or not response.strip():
                 self.error.emit("LLM 返回空响应，请稍后重试")
                 return
@@ -143,7 +143,7 @@ class LitSearchDialog(QDialog):
 }
 
 注意：
-- known_papers: 只列你确实知道的具体论文（标题不能编造），没有把握就留空数组 []
+- known_papers: 只列你确实知道的具体论文（标题不能编造）。如果草稿覆盖已经相当全面、没有明确遗漏方向，known_papers 和 gaps 都可以留空。不要为了填充而强行推荐
 - 每个 gap 的 search_queries 应该是能直接在 PubMed 搜索框中使用的英文关键词
 - 关键词要具体而非泛泛，如 "avian melanocyte scRNA-seq" 而非 "bird color"
 - 如果有长关键词，拆分为 2-3 条互补的短关键词"""
@@ -311,14 +311,36 @@ class LitSearchDialog(QDialog):
         self._feedback_edit.setFocus()
 
     def _on_analysis_error(self, err: str):
+        self._set_busy(False)
+        self._refine_btn.setEnabled(True)
+        self._feedback_edit.setFocus()
+
+        if "无法解析" in err and hasattr(self._worker, '_draft'):
+            # JSON 解析失败 → 弹确认对话框
+            answer = QMessageBox.question(
+                self, "分析结果格式异常",
+                "LLM 返回的结果无法自动解析为结构化数据。\n\n"
+                "• 重试分析：重新调用 LLM 分析草稿\n"
+                "• 展示原始文本：将 LLM 的原始回复作为分析结果展示\n"
+                "• 取消：关闭提示，你可手动输入反馈",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self._start_analysis()
+                return
+            elif answer == QMessageBox.StandardButton.No:
+                # 用兜底数据展示
+                data = LitSearchDialog._parse_json("")  # 触发兜底
+                self._analysis_data = data
+                self._render_analysis(data)
+                return
+            # Cancel → 什么都不做
+
         self._analysis_label.setText(
             f"<span style='color: #f7768e; font-weight: bold;'>分析失败</span><br>"
             f"<span style='color: #8a8ea6;'>{err}</span><br><br>"
             '<span style="color: #a9b1d6;">请在下方反馈中补充你的理解，点 \u201c反馈并重新分析\u201d。</span>'
         )
-        self._set_busy(False)
-        self._refine_btn.setEnabled(True)
-        self._feedback_edit.setFocus()
 
     def _render_analysis(self, data: dict):
         lines = ["<b style='color: #7aa2f7;'>已覆盖方向:</b>"]

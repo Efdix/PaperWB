@@ -697,7 +697,7 @@ class WritingCoach:
         ]
 
         try:
-            response = parse_client.chat_sync(messages, timeout=180.0, max_tokens=3000)
+            response = parse_client.chat_sync(messages, timeout=180.0)
             habits = self._parse_style_guide_response(response)
             if habits:
                 # 附加计算性引用详略度指标
@@ -779,7 +779,7 @@ class WritingCoach:
         ]
 
         try:
-            response = parse_client.chat_sync(messages, timeout=180.0, max_tokens=3000)
+            response = parse_client.chat_sync(messages, timeout=180.0)
             style = self._parse_style_guide_response(response)
             if style:
                 self._current_profile.journal_style = style
@@ -938,8 +938,8 @@ class WritingCoach:
         # 收集所有 Zotero 文献的摘要信息（不分引用格式）
         import fitz
         all_citation_texts = []
-        if zotero_lib and hasattr(zotero_lib, '_items'):
-            for i, item in enumerate(zotero_lib._items):
+        if zotero_lib and hasattr(zotero_lib, 'get_all_items'):
+            for i, item in enumerate(zotero_lib.get_all_items()):
                 if not item.title:
                     continue
                 title = item.title
@@ -951,10 +951,10 @@ class WritingCoach:
                         doc = fitz.open(item.pdf_path)
                         parts = []
                         for page in doc:
-                            parts.append(page.get_text())
-                            if len("\n".join(parts)) > 2000:
-                                break
-                        text = "\n".join(parts)[:2000]
+                            t = page.get_text()
+                            if t.strip():
+                                parts.append(t.strip())
+                        text = "\n\n".join(parts)
                         doc.close()
                     except Exception:
                         text = ""
@@ -998,8 +998,8 @@ class WritingCoach:
 
         # 构建已引用文献列表
         cited_parts = []
-        if zotero_lib and hasattr(zotero_lib, '_items'):
-            # 从草稿中提取引用编号
+        if zotero_lib and hasattr(zotero_lib, 'get_all_items'):
+            items = zotero_lib.get_all_items()
             import re
             cite_pattern = re.compile(r'\[(\d+(?:[,，\s]*\d+)*)\]')
             cited_nums = set()
@@ -1008,7 +1008,7 @@ class WritingCoach:
                     if num.strip().isdigit():
                         cited_nums.add(int(num.strip()))
 
-            for i, item in enumerate(zotero_lib._items):
+            for i, item in enumerate(items):
                 if (i + 1) in cited_nums:
                     authors = ", ".join(item.authors[:2]) if item.authors else "?"
                     year = item.year or "?"
@@ -1025,7 +1025,7 @@ class WritingCoach:
             {"role": "user", "content": prompt},
         ]
         try:
-            response = write_client.chat_sync(messages, timeout=120.0, max_tokens=3000)
+            response = write_client.chat_sync(messages, timeout=120.0)
             # 使用多级容错解析（复用 _parse_style_guide_response 的容错策略）
             import json as _json
             import re
