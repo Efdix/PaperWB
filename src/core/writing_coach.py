@@ -420,9 +420,30 @@ class WritingCoach:
                     f"分布范围：{cd.get('distribution_description', '?')}。\n"
                     f"请严格按照这个详略尺度来写，不要对某篇文献进行过度详细的描述。"
                 )
+            # 引用密度（每个章节的引用数分布）
+            cit_den = habits.get("citation_density", {})
+            if cit_den:
+                parts.append(
+                    f"【引用密度参考】\n"
+                    f"{cit_den.get('summary', '')}\n"
+                    + "\n".join(
+                        f"  {s.get('name', '?')}: {s.get('citation_count', '?')} 篇"
+                        for s in cit_den.get("sections", [])
+                    )
+                    + "\n请在润色时参考此引用密度，如果某部分引用过少或过多，给出建议。"
+                )
 
         if parts:
             prompt += "\n\n---\n以下是根据你的历史论文分析出的写作习惯（仅描述风格，不限制学术主题），请在写作中保持一致的风格：\n\n" + "\n\n".join(parts)
+
+        # 小结与过渡指导
+        prompt += (
+            "\n\n---\n以下是小结与过渡策略指导：\n"
+            "请根据上述段落组织习惯和过渡方式，在写作中主动判断并添加：\n"
+            "1. 如果段落间的逻辑跨度较大，添加过渡句连接前后内容\n"
+            "2. 如果章节或大段落末尾缺少总结，添加1-2句小结段落来概括要点\n"
+            "3. 新增的过渡和小结应与原文风格一致，使用上述句式模板中的表达方式\n"
+        )
 
         return prompt
 
@@ -653,6 +674,7 @@ class WritingCoach:
 4. **过渡方式**: 段落间如何过渡？（如"此外…""相比之下…""更重要的是…""例如…"）
 5. **论述逻辑**: 是归纳式（先罗列研究后总结）还是演绎式（先给观点再引用证据）？还是两者混合？
 6. **语气风格**: 主动/被动语态偏好？第一人称使用频率？评价性语言的强弱？
+7. **引用密度**: 分析论文各主要部分（根据论文自身内容判断章节边界，如Introduction、Results、Discussion等）分别引用了多少文献。统计每部分的引用总数，并给出整体分布描述（如"Introduction平均引用5篇，Discussion部分引用最密集"）
 
 ## 输出格式
 
@@ -664,7 +686,8 @@ class WritingCoach:
   "paragraph_patterns": "段落大小和组织方式描述",
   "transition_phrases": "段落间过渡方式描述",
   "argumentation_style": "论述逻辑描述（归纳/演绎/混合）",
-  "tone_voice": "语气和语态描述"
+  "tone_voice": "语气和语态描述",
+  "citation_density": {"summary": "整体引用分布描述", "sections": [{"name": "部分名", "citation_count": 8}]}
 }
 
 以下是你的历史综述论文文本：
@@ -684,11 +707,6 @@ class WritingCoach:
         all_text = self.get_sample_paper_texts()
         if not all_text.strip():
             return None
-
-        # 截断过长的文本
-        max_chars = 30000
-        if len(all_text) > max_chars:
-            all_text = all_text[:20000] + "\n\n...(中间内容已省略)...\n\n" + all_text[-10000:]
 
         prompt = self.WRITING_HABITS_PROMPT.replace("{paper_texts}", all_text)
         messages = [
@@ -766,11 +784,6 @@ class WritingCoach:
         all_text = self.get_journal_paper_texts()
         if not all_text.strip():
             return None
-
-        # 截断过长的文本
-        max_chars = 35000
-        if len(all_text) > max_chars:
-            all_text = all_text[:25000] + "\n\n...(中间内容已省略)...\n\n" + all_text[-10000:]
 
         prompt = self.JOURNAL_STYLE_PROMPT.replace("{paper_texts}", all_text)
         messages = [
@@ -1018,8 +1031,8 @@ class WritingCoach:
         cited_text = "\n".join(cited_parts) if cited_parts else "（未检测到引用或 Zotero 未连接）"
 
         prompt = (self.MISSING_LIT_PROMPT
-            .replace("{draft_text}", draft_text[:8000])
-            .replace("{cited_papers}", cited_text[:3000]))
+            .replace("{draft_text}", draft_text)
+            .replace("{cited_papers}", cited_text))
         messages = [
             {"role": "system", "content": "你是学术文献检索专家。只返回 JSON，不要加解释。"},
             {"role": "user", "content": prompt},

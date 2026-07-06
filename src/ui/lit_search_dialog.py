@@ -30,7 +30,7 @@ class LitAnalysisWorker(QThread):
         self._system = system_prompt
 
     def run(self):
-        prompt = LitSearchDialog.ANALYSIS_PROMPT.replace("{draft_text}", self._draft[:8000])
+        prompt = LitSearchDialog.ANALYSIS_PROMPT.replace("{draft_text}", self._draft)
         messages = [
             {"role": "system", "content": self._system or "你是学术文献检索专家。只返回 JSON，不要加解释。"},
             {"role": "user", "content": prompt},
@@ -63,7 +63,7 @@ class LitRefineWorker(QThread):
 
     def run(self):
         prompt = (LitSearchDialog.REFINE_PROMPT
-            .replace("{draft_text}", self._draft[:8000])
+            .replace("{draft_text}", self._draft)
             .replace("{previous_analysis}", self._previous)
             .replace("{user_feedback}", self._feedback))
         messages = [
@@ -166,6 +166,7 @@ class LitSearchDialog(QDialog):
         self.setWindowTitle("文献补充")
         self.resize(900, 680)
         self.setMinimumSize(700, 520)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint)
 
         self._client = client
         self._coach = coach

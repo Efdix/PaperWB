@@ -10,8 +10,8 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton,
     QLabel, QScrollArea, QFrame, QSplitter, QSizePolicy, QLineEdit,
 )
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor, QColor
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor, QColor, QTextDocument
 
 if TYPE_CHECKING:
     from ..core.llm_client import LLMClient
@@ -20,24 +20,9 @@ if TYPE_CHECKING:
 
 
 class DiffDialog(QDialog):
-    """润色与核查结果展示对话框。
+    """润色与核查结果展示对话框 — 内联diff + 导航工具栏 + 可编辑。"""
 
-    布局:
-        ┌──────────────────────────────────────────┐
-        │  原始文本            │  润色后文本         │ ← QSplitter 水平
-        │  (着色标记差异)       │  (着色标记差异)     │
-        │  ←──同步滚动──→      │                    │
-        ├──────────────────────────────────────────┤ ← QSplitter 垂直
-        │  引文核查备注                              │ ← 可拖拽高度
-        ├──────────────────────────────────────────┤ ← QSplitter 垂直
-        │  💬 AI 对话                               │ ← 可拖拽高度
-        │  ┌──────────────────────────────┐ [发送]  │
-        │  │ 输入疑问...                   │         │
-        │  └──────────────────────────────┘         │
-        ├──────────────────────────────────────────┤
-        │  [根据对话重新润色]  [替换原文]  [取消]     │
-        └──────────────────────────────────────────┘
-    """
+    accepted_signal = Signal(str)  # 非模态模式下发射润色后文本
 
     def __init__(self, original: str, polished: str,
                  citation_notes: list[dict] | None = None,
@@ -52,6 +37,7 @@ class DiffDialog(QDialog):
         self.setWindowTitle("AI 润色与核查结果")
         self.resize(1100, 750)
         self.setMinimumSize(800, 550)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint)
 
         self._original = original
         self._polished = polished
@@ -63,7 +49,8 @@ class DiffDialog(QDialog):
         self._zotero = zotero
         self._writing_type = writing_type
         self._accepted = False
-        self._syncing = False
+        self._change_anchors: list[tuple[int, int, str]] = []  # (start, end, type)
+        self._current_anchor_idx = -1
 
         self._chat_history: list[dict] = []  # [{"role": "user"|"assistant", "content": str}]
 
@@ -93,51 +80,59 @@ class DiffDialog(QDialog):
         self._main_splitter.setHandleWidth(3)
         self._main_splitter.setOpaqueResize(False)
 
-        # == 顶层: Diff 并排区域 ==
+        # == 顶层: 内联 Diff 区域（单编辑框：红删绿增） ==
         diff_container = QFrame()
         diff_container.setStyleSheet("background-color: #1a1b26; border: none;")
         diff_layout = QVBoxLayout(diff_container)
         diff_layout.setContentsMargins(8, 8, 8, 4)
         diff_layout.setSpacing(4)
 
-        diff_label = QLabel("红色 = 删除 | 绿色 = 新增 | 灰色 = 未变  (左右同步滚动)")
+        diff_label = QLabel("红色删除线 = 删除 | 绿色 = 新增 | 灰蓝 = 未变")
         diff_label.setStyleSheet("color: #a9b1d6; font-size: 12px; padding: 2px 8px;")
         diff_layout.addWidget(diff_label)
 
-        diff_splitter = QSplitter(Qt.Orientation.Horizontal)
-        diff_splitter.setHandleWidth(3)
-        diff_splitter.setOpaqueResize(False)
+        # 导航工具栏
+        nav_row = QHBoxLayout()
+        nav_row.setSpacing(6)
+        nav_styles = (
+            "QPushButton { background-color: #24253a; color: #a9b1d6; border: 1px solid #3b3d54; "
+            "border-radius: 4px; padding: 3px 10px; font-size: 12px; }"
+            "QPushButton:hover { background-color: #3b3d54; }"
+        )
+        self._prev_btn = QPushButton("◀ 上一处")
+        self._prev_btn.setToolTip("跳转到上一处修改 (Ctrl+Up)")
+        self._prev_btn.clicked.connect(lambda: self._navigate_change(-1))
+        self._prev_btn.setStyleSheet(nav_styles)
+        nav_row.addWidget(self._prev_btn)
+        self._next_btn = QPushButton("下一处 ▶")
+        self._next_btn.setToolTip("跳转到下一处修改 (Ctrl+Down)")
+        self._next_btn.clicked.connect(lambda: self._navigate_change(1))
+        self._next_btn.setStyleSheet(nav_styles)
+        nav_row.addWidget(self._next_btn)
+        nav_row.addSpacing(8)
+        self._accept_btn = QPushButton("✅ 接受")
+        self._accept_btn.setToolTip("接受当前修改（保留新增，移除删除）")
+        self._accept_btn.clicked.connect(self._accept_current)
+        self._accept_btn.setStyleSheet(nav_styles.replace("#a9b1d6", "#9ece6a"))
+        nav_row.addWidget(self._accept_btn)
+        self._reject_btn = QPushButton("❌ 拒绝")
+        self._reject_btn.setToolTip("拒绝当前修改（保留原文，移除新增）")
+        self._reject_btn.clicked.connect(self._reject_current)
+        self._reject_btn.setStyleSheet(nav_styles.replace("#a9b1d6", "#f7768e"))
+        nav_row.addWidget(self._reject_btn)
+        nav_row.addStretch()
+        self._anchor_label = QLabel("修改: 0 处")
+        self._anchor_label.setStyleSheet("color: #636688; font-size: 11px;")
+        nav_row.addWidget(self._anchor_label)
+        diff_layout.addLayout(nav_row)
 
-        orig_frame = self._make_panel("原始文本")
-        self._orig_edit = QTextEdit()
-        self._orig_edit.setReadOnly(True)
-        self._orig_edit.setStyleSheet(
+        self._diff_edit = QTextEdit()
+        self._diff_edit.setStyleSheet(
             "QTextEdit { background-color: #1e2030; color: #cfd2e3; "
             "border: 1px solid #3b3d54; border-radius: 6px; "
-            "padding: 12px; font-size: 14px; line-height: 1.8; }"
+            "padding: 12px; font-size: 14px; line-height: 2.0; }"
         )
-        self._orig_edit.verticalScrollBar().valueChanged.connect(
-            lambda v: self._sync_scroll(v, self._orig_edit, self._polished_edit)
-        )
-        orig_frame.layout().addWidget(self._orig_edit)
-        diff_splitter.addWidget(orig_frame)
-
-        polished_frame = self._make_panel("润色后文本")
-        self._polished_edit = QTextEdit()
-        self._polished_edit.setReadOnly(True)
-        self._polished_edit.setStyleSheet(
-            "QTextEdit { background-color: #1e2030; color: #cfd2e3; "
-            "border: 1px solid #3b3d54; border-radius: 6px; "
-            "padding: 12px; font-size: 14px; line-height: 1.8; }"
-        )
-        self._polished_edit.verticalScrollBar().valueChanged.connect(
-            lambda v: self._sync_scroll(v, self._polished_edit, self._orig_edit)
-        )
-        polished_frame.layout().addWidget(self._polished_edit)
-        diff_splitter.addWidget(polished_frame)
-        diff_splitter.setSizes([500, 500])
-
-        diff_layout.addWidget(diff_splitter, 1)
+        diff_layout.addWidget(self._diff_edit, 1)
         self._main_splitter.addWidget(diff_container)
 
         # == 中层: 引文核查备注 ==
@@ -276,64 +271,203 @@ class DiffDialog(QDialog):
 
         outer.addLayout(btn_layout)
 
-    @staticmethod
-    def _make_panel(title: str) -> QFrame:
-        frame = QFrame()
-        frame.setStyleSheet("background-color: #1a1b26; border: none;")
-        lay = QVBoxLayout(frame)
-        lay.setContentsMargins(4, 0, 4, 4)
-        header = QLabel(title)
-        header.setStyleSheet("color: #c4d3ff; font-weight: bold; font-size: 13px; padding: 2px 8px;")
-        lay.addWidget(header)
-        return frame
-
     # ============================================================
-    # 同步滚动
-    # ============================================================
-
-    def _sync_scroll(self, value: int, source: QTextEdit, target: QTextEdit):
-        if self._syncing:
-            return
-        self._syncing = True
-        src_bar = source.verticalScrollBar()
-        tgt_bar = target.verticalScrollBar()
-        src_max = max(src_bar.maximum(), 1)
-        tgt_max = max(tgt_bar.maximum(), 1)
-        ratio = value / src_max
-        tgt_bar.setValue(int(ratio * tgt_max))
-        self._syncing = False
-
-    # ============================================================
-    # Diff 渲染
+    # Diff 渲染（内联单编辑框：红色删除线删除，绿色新增）
     # ============================================================
 
     def _render_diff(self):
+        self._diff_edit.clear()
+        self._change_anchors = []
         matcher = difflib.SequenceMatcher(None, self._original, self._polished)
 
-        orig_fmt_equal = self._fmt(QColor("#a9b1d6"))
-        orig_fmt_del = self._fmt(QColor("#f7768e"), bg=QColor("#2d1a22"))
-        orig_fmt_replace = self._fmt(QColor("#f7768e"), bg=QColor("#2d1a22"))
-        orig_fmt_insert = self._fmt(QColor("#a9b1d6"))
+        fmt_equal = self._fmt(QColor("#a9b1d6"))
+        fmt_del = self._fmt(QColor("#f7768e"), bg=QColor("#2d1a22"))
+        fmt_insert = self._fmt(QColor("#9ece6a"), bg=QColor("#1d2a1d"))
 
-        pol_fmt_equal = self._fmt(QColor("#a9b1d6"))
-        pol_fmt_replace = self._fmt(QColor("#9ece6a"), bg=QColor("#1d2a1d"))
-        pol_fmt_insert = self._fmt(QColor("#9ece6a"), bg=QColor("#1d2a1d"))
-        pol_fmt_del = self._fmt(QColor("#a9b1d6"))
-
-        orig_cursor = self._orig_edit.textCursor()
-        pol_cursor = self._polished_edit.textCursor()
+        cursor = self._diff_edit.textCursor()
+        cursor.beginEditBlock()
 
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
             if tag == "equal":
-                self._insert(orig_cursor, self._original[i1:i2], orig_fmt_equal)
-                self._insert(pol_cursor, self._polished[j1:j2], pol_fmt_equal)
+                self._insert(cursor, self._original[i1:i2], fmt_equal)
             elif tag == "delete":
-                self._insert(orig_cursor, self._original[i1:i2], orig_fmt_del)
+                start = cursor.position()
+                del_fmt = QTextCharFormat(fmt_del)
+                del_fmt.setFontStrikeOut(True)
+                self._insert(cursor, self._original[i1:i2], del_fmt)
+                self._change_anchors.append((start, cursor.position(), "delete"))
             elif tag == "insert":
-                self._insert(pol_cursor, self._polished[j1:j2], pol_fmt_insert)
+                start = cursor.position()
+                self._insert(cursor, self._polished[j1:j2], fmt_insert)
+                self._change_anchors.append((start, cursor.position(), "insert"))
             elif tag == "replace":
-                self._insert(orig_cursor, self._original[i1:i2], orig_fmt_replace)
-                self._insert(pol_cursor, self._polished[j1:j2], pol_fmt_replace)
+                start = cursor.position()
+                del_fmt = QTextCharFormat(fmt_del)
+                del_fmt.setFontStrikeOut(True)
+                self._insert(cursor, self._original[i1:i2], del_fmt)
+                self._insert(cursor, self._polished[j1:j2], fmt_insert)
+                self._change_anchors.append((start, cursor.position(), "replace"))
+
+        cursor.endEditBlock()
+        self._current_anchor_idx = -1
+        self._anchor_label.setText(f"修改: {len(self._change_anchors)} 处")
+        self._highlight_citations()
+
+    def _highlight_citations(self):
+        """高亮引用标记：Author-Year / [n] / 中文格式。"""
+        doc = self._diff_edit.document()
+        plain = doc.toPlainText()
+        h_fmt = QTextCharFormat()
+        h_fmt.setBackground(QColor("#3d3520"))
+        h_fmt.setForeground(QColor("#e0af68"))
+
+        import re
+        patterns = [
+            (r'\(([A-Z][a-z]+(?:\s+(?:et al\.|& [A-Z][a-z]+))?,\s*\d{4}[a-z]?\))'),
+            (r'\[(\d+(?:[,\-]\d+)*)\]'),
+            (r'（[^）]*?\d{4}）'),
+            (r'[A-Z][a-z]+等（\d{4}）'),
+        ]
+        cursor = QTextCursor(doc)
+        for pattern in patterns:
+            for m in re.finditer(pattern, plain):
+                cursor.setPosition(m.start())
+                cursor.setPosition(m.end(), QTextCursor.MoveMode.KeepAnchor)
+                cursor.mergeCharFormat(h_fmt)
+
+    def _navigate_change(self, delta: int):
+        if not self._change_anchors:
+            return
+        self._current_anchor_idx += delta
+        total = len(self._change_anchors)
+        self._current_anchor_idx = max(0, min(self._current_anchor_idx, total - 1))
+        start, end, _ = self._change_anchors[self._current_anchor_idx]
+        cursor = self._diff_edit.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        self._diff_edit.setTextCursor(cursor)
+        self._diff_edit.setFocus()
+        self._anchor_label.setText(f"修改: {self._current_anchor_idx + 1}/{total}")
+
+    def _accept_current(self):
+        cursor = self._diff_edit.textCursor()
+        if not cursor.hasSelection():
+            if self._change_anchors:
+                self._navigate_change(1)
+                cursor = self._diff_edit.textCursor()
+            else:
+                return
+        cursor.beginEditBlock()
+        fmt = cursor.charFormat()
+        has_strike = fmt.fontStrikeOut()
+        bg = fmt.background().color()
+        is_green = bg.red() < 50 and bg.green() > 100 and bg.blue() < 50
+
+        if has_strike:
+            cursor.removeSelectedText()
+        elif is_green:
+            plain_fmt = QTextCharFormat()
+            plain_fmt.setForeground(QColor("#a9b1d6"))
+            plain_fmt.setBackground(QColor(0, 0, 0, 0))
+            cursor.mergeCharFormat(plain_fmt)
+        else:
+            # mixed (replace): remove red-strikethrough, keep green with normal fmt
+            sel_start = cursor.selectionStart()
+            sel_end = cursor.selectionEnd()
+            cursor.setPosition(sel_start)
+            while cursor.position() < sel_end:
+                cursor.movePosition(QTextCursor.MoveMode.NextCharacter, QTextCursor.MoveMode.KeepAnchor)
+                cf = cursor.charFormat()
+                if cf.fontStrikeOut():
+                    cursor.removeSelectedText()
+                    sel_end -= 1
+                else:
+                    cursor.clearSelection()
+        cursor.endEditBlock()
+        self._rebuild_anchors()
+
+    def _reject_current(self):
+        cursor = self._diff_edit.textCursor()
+        if not cursor.hasSelection():
+            if self._change_anchors:
+                self._navigate_change(1)
+                cursor = self._diff_edit.textCursor()
+            else:
+                return
+        cursor.beginEditBlock()
+        fmt = cursor.charFormat()
+        has_strike = fmt.fontStrikeOut()
+        bg = fmt.background().color()
+        is_green = bg.red() < 50 and bg.green() > 100 and bg.blue() < 50
+
+        if is_green and not has_strike:
+            cursor.removeSelectedText()
+        elif has_strike and not is_green:
+            plain_fmt = QTextCharFormat()
+            plain_fmt.setForeground(QColor("#a9b1d6"))
+            plain_fmt.setBackground(QColor(0, 0, 0, 0))
+            plain_fmt.setFontStrikeOut(False)
+            cursor.mergeCharFormat(plain_fmt)
+        else:
+            sel_start = cursor.selectionStart()
+            sel_end = cursor.selectionEnd()
+            cursor.setPosition(sel_start)
+            while cursor.position() < sel_end:
+                cursor.movePosition(QTextCursor.MoveMode.NextCharacter, QTextCursor.MoveMode.KeepAnchor)
+                cf = cursor.charFormat()
+                bg_c = cf.background().color()
+                if bg_c.red() < 50 and bg_c.green() > 100 and bg_c.blue() < 50:
+                    cursor.removeSelectedText()
+                    sel_end -= 1
+                elif cf.fontStrikeOut():
+                    plain_fmt = QTextCharFormat()
+                    plain_fmt.setForeground(QColor("#a9b1d6"))
+                    plain_fmt.setBackground(QColor(0, 0, 0, 0))
+                    plain_fmt.setFontStrikeOut(False)
+                    cursor.mergeCharFormat(plain_fmt)
+                    cursor.clearSelection()
+                else:
+                    cursor.clearSelection()
+        cursor.endEditBlock()
+        self._rebuild_anchors()
+
+    def _rebuild_anchors(self):
+        """接受/拒绝后重建锚点列表。扫描文档中所有带删除线或绿色背景的区域。"""
+        doc = self._diff_edit.document()
+        cursor = QTextCursor(doc)
+        self._change_anchors = []
+
+        while not cursor.atEnd():
+            cursor.movePosition(QTextCursor.MoveMode.NextCharacter, QTextCursor.MoveMode.KeepAnchor)
+            cf = cursor.charFormat()
+            has_strike = cf.fontStrikeOut()
+            bg = cf.background().color()
+            is_green = bg.red() < 50 and bg.green() > 100 and bg.blue() < 50
+
+            if has_strike or is_green:
+                start = cursor.selectionStart()
+                # 扩展到整个相同格式区域
+                while not cursor.atEnd():
+                    cursor.movePosition(QTextCursor.MoveMode.NextCharacter, QTextCursor.MoveMode.KeepAnchor)
+                    cf2 = cursor.charFormat()
+                    same = cf2.fontStrikeOut() == has_strike or (
+                        cf2.background().color().red() < 50
+                        and cf2.background().color().green() > 100
+                        and cf2.background().color().blue() < 50
+                    ) == is_green
+                    if not same:
+                        cursor.movePosition(QTextCursor.MoveMode.PreviousCharacter, QTextCursor.MoveMode.KeepAnchor)
+                        break
+                end = cursor.selectionEnd()
+                kind = "delete" if has_strike else "insert"
+                self._change_anchors.append((start, end, kind))
+                cursor.setPosition(end)
+            else:
+                cursor.clearSelection()
+
+        self._current_anchor_idx = -1
+        self._anchor_label.setText(f"修改: {len(self._change_anchors)} 处")
+        self._highlight_citations()
 
     # ============================================================
     # 引文核查备注
@@ -386,6 +520,7 @@ class DiffDialog(QDialog):
 
             text_label = QLabel(f"<b>{marker}</b>  {text}")
             text_label.setWordWrap(True)
+            text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             text_label.setStyleSheet("color: #e2e5f2; font-size: 12px; padding: 2px 0;")
             row_layout.addWidget(text_label, 1)
 
@@ -435,6 +570,7 @@ class DiffDialog(QDialog):
                 label_text += f"<br><span style='color: #a9b1d6;'>{text}</span>"
             text_label = QLabel(label_text)
             text_label.setWordWrap(True)
+            text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             text_label.setStyleSheet("color: #e2e5f2; font-size: 12px; padding: 2px 0;")
             row_layout.addWidget(text_label, 1)
 
@@ -570,23 +706,19 @@ class DiffDialog(QDialog):
             return
 
         self._rerun_btn.setEnabled(False)
-        self._rerun_btn.setText("⏳ 重新润色中...")
+        self._rerun_btn.setText("\u23f3 重新润色中...（可能需要 1-2 分钟）")
 
-        # 构建重新润色的 prompt
-        chat_context = self._build_chat_history_text()
-        system_prompt = "你是学术写作助手。用户对上次润色结果给出了反馈意见。请根据反馈重新润色原文，同时核查引文。输出格式与之前相同（JSON）。"
+        try:
+            chat_context = self._build_chat_history_text()
+            system_prompt = "你是学术写作助手。用户对上次润色结果给出了反馈意见。请根据反馈重新润色原文，同时核查引文。输出格式与之前相同（JSON）。"
 
-        # Style guide
-        style_context = ""
-        if self._coach:
-            style_context = self._coach.build_polish_system_prompt(self._writing_type)
+            style_context = ""
+            if self._coach:
+                style_context = self._coach.build_polish_system_prompt(self._writing_type)
 
-        # Citation sources
-        from ..core.unified_writer import UnifiedWriter
-        uw = UnifiedWriter()
-        citation_sources = uw._build_citation_sources(self._original, self._zotero)
+            citation_sources = self._citation_sources_text or ""
 
-        prompt = (
+            prompt = (
             f"【风格约束】\n{style_context}\n\n"
             f"【原始文本】\n{self._original}\n\n"
             f"【之前的润色结果】\n{self._polished}\n\n"
@@ -597,10 +729,14 @@ class DiffDialog(QDialog):
             f'{{\n  "polished_text": "...",\n  "citation_notes": [...],\n  "supervisor_notes": [...]\n}}'
         )
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ]
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+        except Exception:
+            self._rerun_btn.setEnabled(True)
+            self._rerun_btn.setText("根据对话重新润色")
+            return
 
         from PySide6.QtCore import QThread, Signal as QtSignal
 
@@ -615,7 +751,7 @@ class DiffDialog(QDialog):
 
             def run(self):
                 try:
-                    reply = self._client.chat_sync(self._messages, timeout=180.0)
+                    reply = self._client.chat_sync(self._messages, timeout=120.0)
                     self.finished_sig.emit(reply or "")
                 except Exception as e:
                     self.error_sig.emit(str(e))
@@ -632,9 +768,9 @@ class DiffDialog(QDialog):
                     self._supervisor_notes = new_sup
 
                 # 重新渲染 diff
-                self._orig_edit.clear()
-                self._polished_edit.clear()
+                self._diff_edit.clear()
                 self._render_diff()
+                self._highlight_citations()
 
                 # 重新渲染 notes
                 while self._notes_layout.count():
@@ -680,6 +816,8 @@ class DiffDialog(QDialog):
 
     def _on_accept(self):
         self._accepted = True
+        text = self._diff_edit.toPlainText()
+        self.accepted_signal.emit(text)
         self.accept()
 
     def _export_chat_md(self):

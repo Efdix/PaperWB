@@ -526,7 +526,7 @@ class PageAnalysisWorker(QThread):
                             "type": "text",
                             "text": (
                                 f"请分析第 {self._page_num} 页论文。\n\n"
-                                f"【提取文本供参考】\n{self._text[:8000]}"
+                                f"【提取文本供参考】\n{self._text}"
                             ),
                         },
                         {

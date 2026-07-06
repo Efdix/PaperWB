@@ -91,6 +91,32 @@ PROVIDERS: dict[str, dict] = {
         "models": ["mimo-v2.5", "mimo-v2.5-pro"],
         "description": "Mimo 大模型系列",
     },
+    "OpenCode Go": {
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "models": [
+            "glm-5.2", "glm-5.1",
+            "kimi-k2.7-code", "kimi-k2.6",
+            "deepseek-v4-pro", "deepseek-v4-flash",
+            "mimo-v2.5", "mimo-v2.5-pro",
+        ],
+        "description": "OpenCode Go — GLM / Kimi / DeepSeek / MiMo",
+    },
+    "OpenCode Zen": {
+        "base_url": "https://opencode.ai/zen/v1",
+        "models": [
+            "glm-5.2", "glm-5.1", "glm-5",
+            "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
+            "deepseek-v4-pro", "deepseek-v4-flash",
+            "deepseek-v4-flash-free",
+            "mimo-v2.5-free",
+            "north-mini-code-free",
+            "nemotron-3-ultra-free",
+            "minimax-m3", "minimax-m2.7", "minimax-m2.5",
+            "grok-build-0.1",
+            "big-pickle",
+        ],
+        "description": "OpenCode Zen — 含免费模型（/chat/completions）",
+    },
     "自定义": {
         "base_url": "",
         "models": [],

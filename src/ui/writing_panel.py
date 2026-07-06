@@ -42,6 +42,7 @@ class StyleGuideDialog(QDialog):
         self.setWindowTitle("风格分析完成")
         self.resize(560, 500)
         self.setMinimumSize(420, 350)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint)
         self._setup_ui(profile)
 
     def _setup_ui(self, profile):
@@ -111,6 +112,18 @@ class StyleGuideDialog(QDialog):
                 _section("过渡方式", h["transition_phrases"], "#7aa2f7")
             if h.get("tone_voice"):
                 _section("语气风格", h["tone_voice"], "#7aa2f7")
+            cit_den = h.get("citation_density", {})
+            if cit_den:
+                lines = []
+                summary = cit_den.get("summary", "")
+                if summary:
+                    lines.append(summary)
+                sections = cit_den.get("sections", [])
+                if sections:
+                    lines.append("")
+                    for s in sections:
+                        lines.append(f"  · {s.get('name', '?')}: {s.get('citation_count', '?')} 篇")
+                _section("引用密度（各章节引用分布）", "\n".join(lines), "#e0af68")
 
         # 期刊格式部分
         if profile and profile.has_journal_style:
@@ -224,6 +237,7 @@ class WritingPanel(QWidget):
         self._current_writing_type = "综述"
         self._style_worker: StyleGuideWorker | None = None
         self._unified_worker: UnifiedWorker | None = None
+        self._active_dialogs: list = []  # 保持非模态对话框引用防止被GC
 
         self._setup_ui()
         self._refresh_kb_dropdown()
@@ -393,6 +407,12 @@ class WritingPanel(QWidget):
         self._style_btn.clicked.connect(self._on_generate_style_guide)
         self._style_btn.setEnabled(False)
         kb_layout.addWidget(self._style_btn)
+
+        self._view_style_btn = QPushButton("📋 查看风格指南")
+        self._view_style_btn.setToolTip("再次查看已生成的风格分析结果")
+        self._view_style_btn.clicked.connect(self._on_view_style_guide)
+        self._view_style_btn.setEnabled(False)
+        kb_layout.addWidget(self._view_style_btn)
 
         right_layout.addWidget(kb_group)
 
@@ -655,6 +675,18 @@ class WritingPanel(QWidget):
         self._style_worker.error_signal.connect(self._on_style_guide_error)
         self._style_worker.start()
 
+    def _on_view_style_guide(self):
+        """再次查看已生成的风格分析结果。"""
+        if not self._coach or not self._coach.current_profile:
+            return
+        profile = self._coach.current_profile
+        if not profile.has_writing_habits and not profile.has_journal_style:
+            QMessageBox.information(self, "提示",
+                "尚未生成风格指南，请先添加范文后点击\u201c生成风格指南\u201d。")
+            return
+        dialog = StyleGuideDialog(profile, parent=self)
+        dialog.exec()
+
     def _on_style_guide_ready(self, guide: dict):
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 100)
@@ -774,18 +806,20 @@ class WritingPanel(QWidget):
             writing_type=self._current_writing_type,
             parent=self,
         )
-        if dialog.exec():
-            # 恢复原始光标位置并替换文本
-            cursor = self.editor.textCursor()
-            start = getattr(self, '_pending_cursor_pos', cursor.position())
-            end = getattr(self, '_pending_cursor_end', cursor.position())
-            cursor.setPosition(start)
-            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-            self.editor.setTextCursor(cursor)
-            cursor.insertText(dialog.get_polished_text())
-            self._status_label.setText("润色文本已替换")
-            # 用户确认后保存润色历史
-            self._save_polish_history(result, original)
+        dialog.accepted_signal.connect(lambda text: self._on_diff_accepted(text, result, original))
+        self._active_dialogs.append(dialog)
+        dialog.show()
+
+    def _on_diff_accepted(self, text: str, result: dict, original: str):
+        cursor = self.editor.textCursor()
+        start = getattr(self, '_pending_cursor_pos', cursor.position())
+        end = getattr(self, '_pending_cursor_end', cursor.position())
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        self.editor.setTextCursor(cursor)
+        cursor.insertText(text)
+        self._status_label.setText("润色文本已替换")
+        self._save_polish_history(result, original)
 
     def _on_unified_error(self, err: str):
         self._progress_bar.setVisible(False)
@@ -852,7 +886,8 @@ class WritingPanel(QWidget):
             writing_type=self._current_writing_type,
             parent=self,
         )
-        dialog.exec()
+        self._active_dialogs.append(dialog)
+        dialog.show()
 
     # ---- 按钮 2: 文献补充 ----
 
@@ -869,7 +904,8 @@ class WritingPanel(QWidget):
         from .lit_search_dialog import LitSearchDialog
         dialog = LitSearchDialog(self._write_client, self._coach, parent=self)
         dialog.set_draft_text(draft)
-        dialog.exec()
+        self._active_dialogs.append(dialog)
+        dialog.show()
 
     # ---- Zotero ----
 
@@ -905,9 +941,12 @@ class WritingPanel(QWidget):
             ]
             self._kb_status_label.setText("\n".join(lines))
             self._style_btn.setEnabled(profile.total_papers > 0)
+            has_guide = profile.has_writing_habits or profile.has_journal_style
+            self._view_style_btn.setEnabled(has_guide)
         else:
             self._kb_status_label.setText("未选择知识库\n请在下拉菜单中选择或新建")
             self._style_btn.setEnabled(False)
+            self._view_style_btn.setEnabled(False)
 
     # ---- 生命周期 ----
 

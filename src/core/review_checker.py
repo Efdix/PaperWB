@@ -340,7 +340,7 @@ class ReviewChecker:
             claim.rewrite_suggestion = "请检查 PDF 文件是否损坏。"
 
     def _find_relevant_context(
-        self, full_text: str, claim_text: str, max_chars: int = 8000,
+        self, full_text: str, claim_text: str, max_chars: int = 100000,
     ) -> str:
         """在 PDF 全文中寻找与声明最相关的段落。
 

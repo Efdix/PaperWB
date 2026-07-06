@@ -82,25 +82,20 @@ class ZoteroLibrary:
         self._loaded = False
 
         if zotero_data_dir and os.path.isdir(zotero_data_dir):
-            self._resolve_paths(zotero_data_dir)
+            self._resolve_paths(zotero_data_dir, allow_global=False)
         else:
             self._data_dir = self._auto_detect()
             if self._data_dir:
                 self._resolve_paths(self._data_dir)
 
-    def _resolve_paths(self, user_path: str) -> None:
-        """智能解析用户提供的路径。
+    def _resolve_paths(self, user_path: str, allow_global: bool = True) -> None:
+        """智能解析用户提供的路径。"""
 
-        1. 递归搜索 zotero.sqlite（或含 Zotero 表结构的 .sqlite 文件）
-        2. 查找 storage 目录
-        3. 找不到 sqlite 时回退到无数据库模式（直接扫描 storage 下的 PDF）
-        """
         user_path = os.path.abspath(user_path)
         print(f"[ZoteroLibrary] 解析路径: {user_path}")
 
-        # ---- Step 1: 递归搜索 zotero.sqlite（最多 4 层深度）----
         sqlite_path = self._find_zotero_db(user_path)
-        if not sqlite_path:
+        if not sqlite_path and allow_global:
             # 也尝试在用户目录下全局搜索
             home = str(Path.home())
             for base in [home, os.path.join(home, "Zotero"),
@@ -593,7 +588,7 @@ class ZoteroLibrary:
                     # 只读前 3 页（摘要通常在开头）
                     first_pages = ""
                     for page in doc[:3]:
-                        first_pages += page.get_text()[:2000]
+                        first_pages += page.get_text()
                     doc.close()
 
                     first_lower = first_pages.lower()

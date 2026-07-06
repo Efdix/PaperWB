@@ -207,7 +207,7 @@ class PubMedSearcher:
                 year=year,
                 journal=journal_title,
                 doi=doi,
-                abstract=abstract[:2000] if abstract else "",
+                abstract=abstract if abstract else "",
                 url=url,
             )
         except Exception:
