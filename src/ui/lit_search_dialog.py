@@ -166,7 +166,7 @@ class LitSearchDialog(QDialog):
         self.setWindowTitle("文献补充")
         self.resize(900, 680)
         self.setMinimumSize(700, 520)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.Window)
 
         self._client = client
         self._coach = coach
@@ -268,7 +268,7 @@ class LitSearchDialog(QDialog):
 
         self._results_list = QListWidget()
         self._results_list.setStyleSheet(
-            "QListWidget { background-color: #1e2030; border: 1px solid #2a2c3d; border-radius: 6px; font-size: 13px; }"
+            "QListWidget { background-color: #1e2030; border: 1px solid #2a2c3d; border-radius: 6px; font-size: 13px; color: #cfd2e3; }"
             "QListWidget::item { padding: 8px; border-bottom: 1px solid #2a2c3d; }"
             "QListWidget::item:hover { background-color: #24253a; }"
         )

@@ -249,22 +249,31 @@ class UnifiedWriter:
                 continue
             author_part = parts[0].strip()
             year_part = parts[-1].strip()
+            year_clean = year_part.rstrip('abcdefghijklmnopqrstuvwxyz')  # 2025a → 2025
 
-            # 提取第一作者姓氏
             first_author = author_part.split("&")[0].split("and")[0].strip()
             first_author = re.sub(r'\s+et\s+al\.?\s*', '', first_author).strip()
 
-            if first_author.lower() in matched_authors:
+            dedup_key = f"{first_author.lower()}|{year_clean}"
+            if dedup_key in matched_authors:
                 continue
-            matched_authors.add(first_author.lower())
+            matched_authors.add(dedup_key)
 
-            # 在 Zotero 库中搜索
-            candidates = zotero_lib.find_by_citation(first_author, year_part)
+            candidates = zotero_lib.find_by_citation(first_author, year_clean)
             if not candidates:
                 sources.append(f"--- {marker_text}: 未在 Zotero 库中匹配到 ---\n(无原文可对照)")
                 continue
 
-            for item in candidates[:2]:
+            # 优先选择有 PDF 的条目，按标题去重
+            pdf_items = [c for c in candidates if c.pdf_path and os.path.isfile(c.pdf_path)]
+            no_pdf_items = [c for c in candidates if not c.pdf_path or not os.path.isfile(c.pdf_path)]
+            best = pdf_items + no_pdf_items
+            seen_titles = set()
+            for item in best:
+                key = item.title.lower()
+                if key in seen_titles:
+                    continue
+                seen_titles.add(key)
                 source_text = self._extract_pdf_text(item)
                 title = item.title[:100] if item.title else "?"
                 authors = ", ".join(item.authors[:3]) if item.authors else "?"

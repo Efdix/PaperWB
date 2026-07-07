@@ -95,19 +95,19 @@ class StyleGuideDialog(QDialog):
                     f"中位数: {cd['med_chars_per_citation']} 字  "
                     f"四分位: {cd['q25_chars']}-{cd['q75_chars']} 字\n"
                     f"分布: {cd['distribution_description']}",
-                    "#e0af68")
+                    "#7aa2f7")
             if h.get("argumentation_style"):
                 _section("论述逻辑", h["argumentation_style"], "#7aa2f7")
             if h.get("paragraph_patterns"):
                 _section("段落组织", h["paragraph_patterns"], "#7aa2f7")
             if h.get("terminology_preferences"):
-                _section("术语偏好", h["terminology_preferences"], "#9ece6a")
+                _section("术语偏好", h["terminology_preferences"], "#7aa2f7")
             st = h.get("sentence_templates")
             if st:
                 if isinstance(st, list):
-                    _section("句式模板", "\n".join(f"· {s}" for s in st), "#bb9af7")
+                    _section("句式模板", "\n".join(f"· {s}" for s in st), "#7aa2f7")
                 else:
-                    _section("句式模板", st, "#bb9af7")
+                    _section("句式模板", st, "#7aa2f7")
             if h.get("transition_phrases"):
                 _section("过渡方式", h["transition_phrases"], "#7aa2f7")
             if h.get("tone_voice"):
@@ -123,7 +123,7 @@ class StyleGuideDialog(QDialog):
                     lines.append("")
                     for s in sections:
                         lines.append(f"  · {s.get('name', '?')}: {s.get('citation_count', '?')} 篇")
-                _section("引用密度（各章节引用分布）", "\n".join(lines), "#e0af68")
+                _section("引用密度（各章节引用分布）", "\n".join(lines), "#7aa2f7")
 
         # 期刊格式部分
         if profile and profile.has_journal_style:
@@ -804,7 +804,7 @@ class WritingPanel(QWidget):
             coach=self._coach,
             zotero=self._zotero,
             writing_type=self._current_writing_type,
-            parent=self,
+            parent=None,
         )
         dialog.accepted_signal.connect(lambda text: self._on_diff_accepted(text, result, original))
         self._active_dialogs.append(dialog)
@@ -884,7 +884,7 @@ class WritingPanel(QWidget):
             coach=self._coach,
             zotero=self._zotero,
             writing_type=self._current_writing_type,
-            parent=self,
+            parent=None,
         )
         self._active_dialogs.append(dialog)
         dialog.show()
@@ -902,7 +902,7 @@ class WritingPanel(QWidget):
             return
 
         from .lit_search_dialog import LitSearchDialog
-        dialog = LitSearchDialog(self._write_client, self._coach, parent=self)
+        dialog = LitSearchDialog(self._write_client, self._coach, parent=None)
         dialog.set_draft_text(draft)
         self._active_dialogs.append(dialog)
         dialog.show()
