@@ -152,6 +152,7 @@ class UnifiedWriter:
         zotero_lib: "ZoteroLibrary | None" = None,
         writing_type: str = "综述",
         verify_only: bool = False,
+        pre_citation_sources: str = "",
     ) -> dict:
         """执行统一润色+核查。
 
@@ -176,8 +177,8 @@ class UnifiedWriter:
         system_prompt = coach.build_polish_system_prompt(writing_type) if coach else ""
         style_context = f"【风格约束】\n{system_prompt}" if system_prompt else ""
 
-        # 构建引文原文上下文
-        citation_sources = self._build_citation_sources(selected_text, zotero_lib)
+        # 构建引文原文上下文（优先使用预构建的，否则本地匹配）
+        citation_sources = pre_citation_sources or self._build_citation_sources(selected_text, zotero_lib)
 
         if verify_only:
             prompt = (VERIFY_ONLY_PROMPT
@@ -236,12 +237,6 @@ class UnifiedWriter:
             num_matches = num_pattern.findall(selected_text)
             if num_matches:
                 return self._build_numbered_sources(selected_text, zotero_lib, num_pattern)
-
-            # 尝试 superscript 纯数字角标（如 Nature 格式 19,20）
-            sup_pattern = re.compile(r'(?:[^\d]|^)(\d{1,3}(?:,\s*\d{1,3})*)(?=[\s。,;，；.!?]|$)')
-            sup_matches = sup_pattern.findall(selected_text)
-            if len(sup_matches) >= 2:  # 至少2处数字引用才认为是引用
-                return self._build_numbered_sources_from_digits(selected_text, zotero_lib, sup_matches)
 
             return "（未检测到引文标记）"
 
@@ -324,46 +319,6 @@ class UnifiedWriter:
             return "（Zotero 库中无对应编号的文献）"
         return "\n\n".join(sources)
 
-    def _build_numbered_sources_from_digits(
-        self, selected_text: str, zotero_lib, sup_matches,
-    ) -> str:
-        """处理纯数字角标格式（如 Nature 的 19,20）。Zotero 内全量搜索匹配。"""
-        items = getattr(zotero_lib, 'get_all_items', lambda: [])()
-        if not items:
-            return "（Zotero 库中无文献，无法按序号匹配）"
-
-        # 去重并排序所有数字
-        cited_nums: set[int] = set()
-        for m in sup_matches:
-            for num_str in re.split(r'[,，\s]+', str(m)):
-                num_str = num_str.strip()
-                if num_str.isdigit():
-                    n = int(num_str)
-                    if n > 0:
-                        cited_nums.add(n)
-
-        if not cited_nums:
-            return "（未检测到有效数字引用）"
-
-        sources: list[str] = []
-        max_num = max(cited_nums)
-        for num in sorted(cited_nums):
-            if 1 <= num <= len(items):
-                item = items[num - 1]
-                source_text = self._extract_pdf_text(item)
-                title = item.title[:100] if item.title else "?"
-                authors = ", ".join(item.authors[:3]) if item.authors else "?"
-                sources.append(
-                    f"--- 角标 [{num}] → {authors} ({item.year}) {title} ---\n"
-                    f"{source_text}"
-                )
-            elif num > len(items):
-                continue
-
-        if not sources:
-            return "（Zotero 库中按序号未匹配到对应文献。Zotero 序号可能与论文参考列表序号不一致）"
-        return "\n\n".join(sources)
-
     @staticmethod
     def _extract_pdf_text(item) -> str:
         """从 ZoteroItem 提取 PDF 全文。"""
@@ -384,9 +339,9 @@ class UnifiedWriter:
             return "(PDF 读取失败)"
 
     @staticmethod
-    def extract_citations_via_llm(draft_text: str, llm_client: "LLMClient") -> list[dict]:
+    def extract_citations_via_llm(draft_text: str, citation_count: int, llm_client: "LLMClient") -> list[dict]:
         """让 LLM 识别草稿中的引文标记，返回 author_hint + year_hint 列表。"""
-        prompt = CITATION_EXTRACT_PROMPT.replace("{draft_text}", draft_text[:10000])
+        prompt = CITATION_EXTRACT_PROMPT.replace("{draft_text}", draft_text[:10000]).replace("{citation_count}", str(citation_count))
         messages = [
             {"role": "system", "content": "你是学术文献识别专家。只返回 JSON，不要加解释。"},
             {"role": "user", "content": prompt},
@@ -477,14 +432,17 @@ class UnifiedWriter:
 
 CITATION_EXTRACT_PROMPT = """你是一位学术文献识别专家。请分析以下草稿，找出文中所有的引文标记并推断出对应的文献信息。
 
+草稿中应有 **{citation_count} 篇** 不同的引文文献。请以此数量为参考，努力找出所有文献。
+
 【草稿】
 {draft_text}
 
 ## 任务
 
-1. 识别文中的所有引文标记（包括 Author-Year、(Author, Year)、[1] 编号、纯数字角标如 19,20、Unicode 上标等）
-2. 对每个引文标记，根据草稿上下文推断第一作者的姓氏和出版年份
-3. 如果某处引文有多个数字（如 19,20），拆分为多个独立条目
+1. 找出文中所有引文标记（不管是什么格式：Author-Year、(Author, Year)、[1] 编号、纯数字角标如 19,20、Unicode 上标等）
+2. 对每篇独立的引文，推断第一作者姓氏和出版年份
+3. 如果同一篇文献被多次引用，只列一次
+4. 总共应找出约 {citation_count} 篇不同文献
 
 ## 输出格式
 

@@ -191,6 +191,28 @@ class StyleGuideWorker(QThread):
             self.error_signal.emit(str(e))
 
 
+class CitationExtractWorker(QThread):
+    """后台 LLM 引文识别。"""
+    finished_signal = Signal(list)
+    error_signal = Signal(str)
+
+    def __init__(self, client: "LLMClient", draft_text: str, citation_count: int):
+        super().__init__()
+        self._client = client
+        self._draft = draft_text
+        self._count = citation_count
+
+    def run(self):
+        try:
+            from ..core.unified_writer import UnifiedWriter
+            citations = UnifiedWriter.extract_citations_via_llm(
+                self._draft, self._count, self._client
+            )
+            self.finished_signal.emit(citations)
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
+
 class UnifiedWorker(QThread):
     """后台统一润色与引文核查。"""
     finished_signal = Signal(dict)
@@ -198,20 +220,22 @@ class UnifiedWorker(QThread):
 
     def __init__(self, client: "LLMClient", selected_text: str,
                  coach: "WritingCoach", zotero_lib: "ZoteroLibrary | None",
-                 writing_type: str):
+                 writing_type: str, pre_citation_sources: str = ""):
         super().__init__()
         self._client = client
         self._text = selected_text
         self._coach = coach
         self._zotero = zotero_lib
         self._writing_type = writing_type
+        self._pre_citation_sources = pre_citation_sources
 
     def run(self):
         try:
             from ..core.unified_writer import UnifiedWriter
             uw = UnifiedWriter()
             result = uw.process(self._client, self._text, self._coach,
-                                self._zotero, self._writing_type)
+                                self._zotero, self._writing_type,
+                                pre_citation_sources=self._pre_citation_sources)
             self.finished_signal.emit(result)
         except Exception as e:
             self.error_signal.emit(str(e))
@@ -503,6 +527,17 @@ class WritingPanel(QWidget):
             "QProgressBar::chunk { background-color: #7aa2f7; border-radius: 6px; }"
         )
         status_bar.addWidget(self._progress_bar)
+
+        self._cancel_btn = QPushButton("\u23f9 \u505c\u6b62")
+        self._cancel_btn.setToolTip("\u7ec8\u6b62\u5f53\u524d\u7684 AI \u5904\u7406")
+        self._cancel_btn.clicked.connect(self._cancel_all_workers)
+        self._cancel_btn.setStyleSheet(
+            "QPushButton { background-color: #3b3d54; color: #f7768e; "
+            "border-radius: 4px; padding: 2px 10px; font-size: 11px; }"
+            "QPushButton:hover { background-color: #4a4d6a; }"
+        )
+        self._cancel_btn.setVisible(False)
+        status_bar.addWidget(self._cancel_btn)
         main_layout.addLayout(status_bar)
 
     # ---- 知识库操作 ----
@@ -709,85 +744,14 @@ class WritingPanel(QWidget):
 
     # ---- 按钮 1: AI 润色与核查 ----
 
-    def _precheck_citations(self, text: str) -> bool:
-        """润色前预检：本地匹配引文。零匹配时弹窗让用户选择 LLM 识别或取消。
-        返回 True 表示继续润色流程，False 表示取消。"""
-        from ..core.unified_writer import UnifiedWriter
-        uw = UnifiedWriter()
-        sources = uw._build_citation_sources(text, self._zotero)
-
-        # 有匹配到文献全文 → 正常继续
-        if sources and "（" not in sources[:3] and "---" in sources:
-            return True
-
-        # 一篇都没匹配到 → 弹窗
-        answer = QMessageBox.question(
-            self, "未匹配到引文文献",
-            "未能在 Zotero 库中匹配到任何引文文献。\n\n"
-            "可能原因：\n"
-            "  1. Zotero 数据目录未正确配置或未加载到文献\n"
-            "  2. 草稿中引文格式未被自动识别（如 Nature 角标 19,20）\n"
-            "  3. Zotero 库中缺少对应文献的 PDF 附件\n\n"
-            "点击左侧按钮让 AI 自动识别引文并重试查找。",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    def _ask_citation_count(self) -> int:
+        """弹窗让用户输入草稿中包含的文献篇数。返回 0 表示取消。"""
+        from PySide6.QtWidgets import QInputDialog
+        value, ok = QInputDialog.getInt(
+            self, "引文数量", "所选草稿中包含了几篇不同的参考文献？",
+            8, 0, 200, 1
         )
-
-        if answer != QMessageBox.StandardButton.Yes:
-            return False  # 用户选取消
-
-        # 用户选择LLM识别
-        if not self._write_client:
-            QMessageBox.warning(self, "提示", "请先配置写作 API")
-            return False
-
-        self._status_label.setText("AI 正在识别草稿中的引文...")
-        QApplication.processEvents()
-
-        citations = UnifiedWriter.extract_citations_via_llm(text, self._write_client)
-
-        if not citations:
-            answer2 = QMessageBox.question(
-                self, "AI 未能识别引文",
-                "AI 也未能从草稿中识别出引文标记。\n\n"
-                "建议：\n"
-                "  1. 检查草稿中是否确实有引文标记\n"
-                "  2. 若为纯数字角标（如 19,20），确保草稿末尾有参考文献列表\n"
-                "  3. 手动添加 (Author, Year) 格式的引文标记重试\n\n"
-                "是否跳过引文核查，直接润色？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if answer2 != QMessageBox.StandardButton.Yes:
-                return False
-            return True  # 跳过核查直接润色
-
-        # 用LLM返回的author_hint+year_hint重新搜索Zotero
-        found_any = False
-        for c in citations:
-            author = c.get("author_hint", "").strip()
-            year = c.get("year_hint", "").strip()
-            if not author or not year or author == "unknown" or year == "unknown":
-                continue
-            candidates = self._zotero.find_by_citation(author, year) if self._zotero else []
-            if candidates:
-                found_any = True
-                break
-
-        if not found_any:
-            answer3 = QMessageBox.question(
-                self, "Zotero 中仍未匹配到",
-                "AI 已识别出引文信息，但 Zotero 中仍未能匹配到对应文献的 PDF 全文。\n\n"
-                "建议：\n"
-                "  1. 检查 Zotero 中是否已下载这些文献的 PDF 附件\n"
-                "  2. 确认 Zotero 数据目录连接的是正确的库\n"
-                "  3. 若引文为纯数字角标（如 19,20），请在草稿末尾添加\n"
-                "     参考文献列表以帮助定位\n\n"
-                "是否跳过引文核查，直接润色？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if answer3 != QMessageBox.StandardButton.Yes:
-                return False
-
-        return True
+        return value if ok else 0
 
     def _on_unified_polish(self):
         """统一润色 + 引文核查。"""
@@ -830,50 +794,135 @@ class WritingPanel(QWidget):
             if answer != QMessageBox.StandardButton.Yes:
                 return
 
-        # 引文预检：本地匹配 + 零匹配时弹窗
-        if not self._precheck_citations(text):
+        # 询问用户草稿中文献数量 → 后台 LLM 识别引文
+        citation_count = self._ask_citation_count()
+        if citation_count <= 0:
             return
 
         self._polish_btn.setEnabled(False)
         self._polish_btn.setText("⏳ 处理中...")
         self._verify_only_btn.setEnabled(False)
         self._progress_bar.setVisible(True)
+        self._cancel_btn.setVisible(True)
         self._progress_bar.setRange(0, 0)
-        self._status_label.setText("AI 正在润色并核查引文...")
+        self._progress_bar.setFormat("AI 正在解析草稿中的引文...")
+        self._status_label.setText("AI 正在解析草稿中的引文...")
+        QApplication.processEvents()
+
+        self._citation_worker = CitationExtractWorker(
+            self._write_client, text, citation_count
+        )
+        self._citation_worker.finished_signal.connect(
+            lambda citations: self._on_citations_extracted(citations, text, "polish")
+        )
+        self._citation_worker.error_signal.connect(
+            lambda err: self._on_citation_extract_error(err, text, "polish")
+        )
+        self._citation_worker.start()
+
+    def _on_citation_extract_error(self, error: str, text: str, mode: str):
+        self._progress_bar.setVisible(False)
+        self._cancel_btn.setVisible(False)
+        self._polish_btn.setEnabled(True)
+        self._polish_btn.setText("✨ AI 润色与核查")
+        self._verify_only_btn.setEnabled(True)
+        self._verify_only_btn.setText("🔍 仅核查引文")
+        self._status_label.setText("引文解析失败")
+
+        answer = QMessageBox.question(
+            self, "引文解析失败",
+            f"AI 未能完成引文解析：{error[:200]}\n\n"
+            "可能原因：\n"
+            "  1. API 连接异常或 Key 无效\n"
+            "  2. 草稿文本过长\n"
+            "  3. 服务暂不可用\n\n"
+            "点击左侧按钮重试；点中间跳过引文核查直接润色；右侧取消。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
+        )
+
+        if answer == QMessageBox.StandardButton.Yes:
+            # 重试：重新弹数量并启动
+            self._on_unified_polish() if mode == "polish" else self._on_verify_only()
+        elif answer == QMessageBox.StandardButton.No:
+            # 跳过核查直接润色
+            self._progress_bar.setVisible(True)
+            self._progress_bar.setRange(0, 0)
+            self._progress_bar.setFormat("正在润色修改...")
+            self._status_label.setText("跳过引文核查，直接润色...")
+            QApplication.processEvents()
+            self._start_polish_worker(text, "")
+        # Cancel → 什么都不做
+
+    def _on_citations_extracted(self, citations: list, text: str, mode: str):
+        """LLM 引文识别完成 → 在 Zotero 中搜索 → 启动润色/核查。"""
+        pre_citation_sources = ""
+        from ..core.unified_writer import UnifiedWriter
+        if self._zotero:
+            sources_list = []
+            for c in citations:
+                author = c.get("author_hint", "").strip()
+                year = str(c.get("year_hint", "")).strip()
+                marker = c.get("original_marker", "?")
+                if not author or not year or author == "unknown" or year == "unknown":
+                    sources_list.append(f"--- 引文 {marker}: 未能识别到作者/年份 ---\n(无原文可对照)")
+                    continue
+                candidates = self._zotero.find_by_citation(author, year)
+                if not candidates:
+                    sources_list.append(f"--- 引文 {marker} ({author}, {year}): 未在 Zotero 库中匹配到 ---\n(无原文可对照)")
+                    continue
+                for item in candidates[:2]:
+                    text_pdf = UnifiedWriter._extract_pdf_text(item)
+                    title = (item.title or "?")[:100]
+                    authors_list = ", ".join(item.authors[:3]) if item.authors else "?"
+                    sources_list.append(
+                        f"--- 引文 {marker} → {authors_list} ({item.year}) {title} ---\n{text_pdf}"
+                    )
+            pre_citation_sources = "\n\n".join(sources_list) if sources_list else ""
+        self._status_label.setText(f"已识别 {len(citations)} 处引文标记")
+
+        self._progress_bar.setFormat("正在润色修改..." if mode == "polish" else "正在核查引文...")
+        self._progress_bar.setVisible(True)
+        self._progress_bar.setRange(0, 0)
+        self._polish_btn.setEnabled(False)
+        self._verify_only_btn.setEnabled(False)
         QApplication.processEvents()
 
         self._unified_worker = UnifiedWorker(
             self._write_client, text, self._coach, self._zotero,
-            self._current_writing_type
+            self._current_writing_type, pre_citation_sources
         )
-        self._unified_worker.finished_signal.connect(self._on_unified_done)
+        if mode == "polish":
+            self._unified_worker.finished_signal.connect(self._on_unified_done)
+        else:
+            self._unified_worker.finished_signal.connect(self._on_verify_done)
         self._unified_worker.error_signal.connect(self._on_unified_error)
         self._unified_worker.start()
 
     def _on_unified_done(self, result: dict):
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 100)
+        self._cancel_btn.setVisible(False)
         self._polish_btn.setEnabled(True)
-        self._polish_btn.setText("✨ AI 润色与核查")
+        self._polish_btn.setText("\u2728 AI \u6da6\u8272\u4e0e\u6838\u67e5")
         self._verify_only_btn.setEnabled(True)
-        self._verify_only_btn.setText("🔍 仅核查引文")
-        self._status_label.setText("处理完成")
+        self._verify_only_btn.setText("\ud83d\udd0d \u4ec5\u6838\u67e5\u5f15\u6587")
+        self._status_label.setText("\u5904\u7406\u5b8c\u6210")
 
         if result.get("error"):
-            QMessageBox.warning(self, "处理失败", result["error"])
+            QMessageBox.warning(self, "\u5904\u7406\u5931\u8d25", result["error"])
             return
 
         original = getattr(self, '_pending_original', '')
         polished = result.get("polished_text", "")
         if not polished.strip() and not result.get("error"):
             QMessageBox.warning(
-                self, "润色结果为空",
-                "LLM 返回了空的润色结果。\n\n"
-                "可能原因：\n"
-                "1. 选中的文字过长，超出模型处理上限\n"
-                "2. API 配额用尽\n"
-                "3. 模型不支持该请求格式\n\n"
-                "建议：缩短选中文字后重试，或检查 API 配置。"
+                self, "\u6da6\u8272\u7ed3\u679c\u4e3a\u7a7a",
+                "LLM \u8fd4\u56de\u4e86\u7a7a\u7684\u6da6\u8272\u7ed3\u679c\u3002\n\n"
+                "\u53ef\u80fd\u539f\u56e0\uff1a\n"
+                "1. \u9009\u4e2d\u7684\u6587\u5b57\u8fc7\u957f\uff0c\u8d85\u51fa\u6a21\u578b\u5904\u7406\u4e0a\u9650\n"
+                "2. API \u914d\u989d\u7528\u5c3d\n"
+                "3. \u6a21\u578b\u4e0d\u652f\u6301\u8be5\u8bf7\u6c42\u683c\u5f0f\n\n"
+                "\u5efa\u8bae\uff1a\u7f29\u77ed\u9009\u4e2d\u6587\u5b57\u540e\u91cd\u8bd5\uff0c\u6216\u68c0\u67e5 API \u914d\u7f6e\u3002"
             )
             return
 
@@ -907,6 +956,7 @@ class WritingPanel(QWidget):
 
     def _on_unified_error(self, err: str):
         self._progress_bar.setVisible(False)
+        self._cancel_btn.setVisible(False)
         self._progress_bar.setRange(0, 100)
         self._polish_btn.setEnabled(True)
         self._polish_btn.setText("✨ AI 润色与核查")
@@ -930,23 +980,37 @@ class WritingPanel(QWidget):
         self._pending_cursor_pos = cursor.selectionStart()
         self._pending_cursor_end = cursor.selectionEnd()
 
+        # 询问用户草稿中文献数量 → 后台 LLM 识别引文
+        citation_count = self._ask_citation_count()
+        if citation_count <= 0:
+            self._verify_only_btn.setEnabled(True)
+            self._verify_only_btn.setText("🔍 仅核查引文")
+            return
+
         self._verify_only_btn.setEnabled(False)
-        self._verify_only_btn.setText("⏳ 核查中...")
+        self._verify_only_btn.setText("⏳ 处理中...")
+        self._polish_btn.setEnabled(False)
         self._progress_bar.setVisible(True)
+        self._cancel_btn.setVisible(True)
         self._progress_bar.setRange(0, 0)
-        self._status_label.setText("AI 正在核查引文...")
+        self._progress_bar.setFormat("AI 正在解析草稿中的引文...")
+        self._status_label.setText("AI 正在解析草稿中的引文...")
         QApplication.processEvents()
 
-        self._unified_worker = UnifiedWorker(
-            self._write_client, text, self._coach, self._zotero,
-            self._current_writing_type
+        self._citation_worker = CitationExtractWorker(
+            self._write_client, text, citation_count
         )
-        self._unified_worker.finished_signal.connect(self._on_verify_done)
-        self._unified_worker.error_signal.connect(self._on_unified_error)
-        self._unified_worker.start()
+        self._citation_worker.finished_signal.connect(
+            lambda citations: self._on_citations_extracted(citations, text, "verify")
+        )
+        self._citation_worker.error_signal.connect(
+            lambda err: self._on_citation_extract_error(err, text, "verify")
+        )
+        self._citation_worker.start()
 
     def _on_verify_done(self, result: dict):
         self._progress_bar.setVisible(False)
+        self._cancel_btn.setVisible(False)
         self._progress_bar.setRange(0, 100)
         self._verify_only_btn.setEnabled(True)
         self._verify_only_btn.setText("🔍 仅核查引文")
@@ -1034,10 +1098,28 @@ class WritingPanel(QWidget):
 
     # ---- 生命周期 ----
 
+    def _cancel_all_workers(self):
+        """终止所有后台 AI 处理线程。"""
+        for w in [self._citation_worker, self._unified_worker]:
+            if w and w.isRunning():
+                w.terminate()
+                w.wait(1000)
+        self._citation_worker = None
+        self._unified_worker = None
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setRange(0, 100)
+        self._cancel_btn.setVisible(False)
+        self._polish_btn.setEnabled(True)
+        self._polish_btn.setText("\u2728 AI \u6da6\u8272\u4e0e\u6838\u67e5")
+        self._verify_only_btn.setEnabled(True)
+        self._verify_only_btn.setText("\ud83d\udd0d \u4ec5\u6838\u67e5\u5f15\u6587")
+        self._status_label.setText("\u5df2\u53d6\u6d88")
+
     def shutdown(self):
         """清理后台线程并保存草稿。"""
         self._auto_save_draft()
         self._auto_save_timer.stop()
+        self._cancel_all_workers()
         if self._style_worker and self._style_worker.isRunning():
             self._style_worker.quit()
             self._style_worker.wait(2000)
