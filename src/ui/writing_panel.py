@@ -709,6 +709,86 @@ class WritingPanel(QWidget):
 
     # ---- 按钮 1: AI 润色与核查 ----
 
+    def _precheck_citations(self, text: str) -> bool:
+        """润色前预检：本地匹配引文。零匹配时弹窗让用户选择 LLM 识别或取消。
+        返回 True 表示继续润色流程，False 表示取消。"""
+        from ..core.unified_writer import UnifiedWriter
+        uw = UnifiedWriter()
+        sources = uw._build_citation_sources(text, self._zotero)
+
+        # 有匹配到文献全文 → 正常继续
+        if sources and "（" not in sources[:3] and "---" in sources:
+            return True
+
+        # 一篇都没匹配到 → 弹窗
+        answer = QMessageBox.question(
+            self, "未匹配到引文文献",
+            "未能在 Zotero 库中匹配到任何引文文献。\n\n"
+            "可能原因：\n"
+            "  1. Zotero 数据目录未正确配置或未加载到文献\n"
+            "  2. 草稿中引文格式未被自动识别（如 Nature 角标 19,20）\n"
+            "  3. Zotero 库中缺少对应文献的 PDF 附件\n\n"
+            "点击左侧按钮让 AI 自动识别引文并重试查找。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if answer != QMessageBox.StandardButton.Yes:
+            return False  # 用户选取消
+
+        # 用户选择LLM识别
+        if not self._write_client:
+            QMessageBox.warning(self, "提示", "请先配置写作 API")
+            return False
+
+        self._status_label.setText("AI 正在识别草稿中的引文...")
+        QApplication.processEvents()
+
+        citations = UnifiedWriter.extract_citations_via_llm(text, self._write_client)
+
+        if not citations:
+            answer2 = QMessageBox.question(
+                self, "AI 未能识别引文",
+                "AI 也未能从草稿中识别出引文标记。\n\n"
+                "建议：\n"
+                "  1. 检查草稿中是否确实有引文标记\n"
+                "  2. 若为纯数字角标（如 19,20），确保草稿末尾有参考文献列表\n"
+                "  3. 手动添加 (Author, Year) 格式的引文标记重试\n\n"
+                "是否跳过引文核查，直接润色？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if answer2 != QMessageBox.StandardButton.Yes:
+                return False
+            return True  # 跳过核查直接润色
+
+        # 用LLM返回的author_hint+year_hint重新搜索Zotero
+        found_any = False
+        for c in citations:
+            author = c.get("author_hint", "").strip()
+            year = c.get("year_hint", "").strip()
+            if not author or not year or author == "unknown" or year == "unknown":
+                continue
+            candidates = self._zotero.find_by_citation(author, year) if self._zotero else []
+            if candidates:
+                found_any = True
+                break
+
+        if not found_any:
+            answer3 = QMessageBox.question(
+                self, "Zotero 中仍未匹配到",
+                "AI 已识别出引文信息，但 Zotero 中仍未能匹配到对应文献的 PDF 全文。\n\n"
+                "建议：\n"
+                "  1. 检查 Zotero 中是否已下载这些文献的 PDF 附件\n"
+                "  2. 确认 Zotero 数据目录连接的是正确的库\n"
+                "  3. 若引文为纯数字角标（如 19,20），请在草稿末尾添加\n"
+                "     参考文献列表以帮助定位\n\n"
+                "是否跳过引文核查，直接润色？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if answer3 != QMessageBox.StandardButton.Yes:
+                return False
+
+        return True
+
     def _on_unified_polish(self):
         """统一润色 + 引文核查。"""
         cursor = self.editor.textCursor()
@@ -749,6 +829,10 @@ class WritingPanel(QWidget):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
+
+        # 引文预检：本地匹配 + 零匹配时弹窗
+        if not self._precheck_citations(text):
+            return
 
         self._polish_btn.setEnabled(False)
         self._polish_btn.setText("⏳ 处理中...")

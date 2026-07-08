@@ -2,9 +2,14 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+
+# 构建产物
 dist/
 build/
+
+# PyInstaller spec（保留 PDFasker.spec）
 *.spec
+!PDFasker.spec
 
 # 虚拟环境
 venv/
@@ -16,7 +21,7 @@ env/
 .vscode/
 .idea/
 
-# 项目运行时数据（含 API Key 配置，切勿提交！）
+# 运行时数据（含 API Key，切勿提交！）
 .pdfasker/
 .env
 *.secret
@@ -26,20 +31,9 @@ env/
 Thumbs.db
 desktop.ini
 
-# 图片缓存
-*_cache/
-
-# 归档/废弃代码
-*.deprecated
-
-# 临时脚本
-test_*.py
-_gen_*.py
-
-
-# 归档/废弃代码
-*.deprecated
-
 # 临时测试脚本
-test_*.py
+test/test_*.py
 _gen_*.py
+
+# 废弃代码
+*.deprecated

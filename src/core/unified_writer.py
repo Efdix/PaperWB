@@ -237,6 +237,12 @@ class UnifiedWriter:
             if num_matches:
                 return self._build_numbered_sources(selected_text, zotero_lib, num_pattern)
 
+            # 尝试 superscript 纯数字角标（如 Nature 格式 19,20）
+            sup_pattern = re.compile(r'(?:[^\d]|^)(\d{1,3}(?:,\s*\d{1,3})*)(?=[\s。,;，；.!?]|$)')
+            sup_matches = sup_pattern.findall(selected_text)
+            if len(sup_matches) >= 2:  # 至少2处数字引用才认为是引用
+                return self._build_numbered_sources_from_digits(selected_text, zotero_lib, sup_matches)
+
             return "（未检测到引文标记）"
 
         sources: list[str] = []
@@ -318,6 +324,46 @@ class UnifiedWriter:
             return "（Zotero 库中无对应编号的文献）"
         return "\n\n".join(sources)
 
+    def _build_numbered_sources_from_digits(
+        self, selected_text: str, zotero_lib, sup_matches,
+    ) -> str:
+        """处理纯数字角标格式（如 Nature 的 19,20）。Zotero 内全量搜索匹配。"""
+        items = getattr(zotero_lib, 'get_all_items', lambda: [])()
+        if not items:
+            return "（Zotero 库中无文献，无法按序号匹配）"
+
+        # 去重并排序所有数字
+        cited_nums: set[int] = set()
+        for m in sup_matches:
+            for num_str in re.split(r'[,，\s]+', str(m)):
+                num_str = num_str.strip()
+                if num_str.isdigit():
+                    n = int(num_str)
+                    if n > 0:
+                        cited_nums.add(n)
+
+        if not cited_nums:
+            return "（未检测到有效数字引用）"
+
+        sources: list[str] = []
+        max_num = max(cited_nums)
+        for num in sorted(cited_nums):
+            if 1 <= num <= len(items):
+                item = items[num - 1]
+                source_text = self._extract_pdf_text(item)
+                title = item.title[:100] if item.title else "?"
+                authors = ", ".join(item.authors[:3]) if item.authors else "?"
+                sources.append(
+                    f"--- 角标 [{num}] → {authors} ({item.year}) {title} ---\n"
+                    f"{source_text}"
+                )
+            elif num > len(items):
+                continue
+
+        if not sources:
+            return "（Zotero 库中按序号未匹配到对应文献。Zotero 序号可能与论文参考列表序号不一致）"
+        return "\n\n".join(sources)
+
     @staticmethod
     def _extract_pdf_text(item) -> str:
         """从 ZoteroItem 提取 PDF 全文。"""
@@ -336,6 +382,34 @@ class UnifiedWriter:
             return "\n\n".join(parts)
         except Exception:
             return "(PDF 读取失败)"
+
+    @staticmethod
+    def extract_citations_via_llm(draft_text: str, llm_client: "LLMClient") -> list[dict]:
+        """让 LLM 识别草稿中的引文标记，返回 author_hint + year_hint 列表。"""
+        prompt = CITATION_EXTRACT_PROMPT.replace("{draft_text}", draft_text[:10000])
+        messages = [
+            {"role": "system", "content": "你是学术文献识别专家。只返回 JSON，不要加解释。"},
+            {"role": "user", "content": prompt},
+        ]
+        try:
+            response = llm_client.chat_sync(messages, timeout=60.0)
+            if not response or not response.strip():
+                return []
+            # 复用 _parse_response 的JSON解析逻辑，但只取 citations 数组
+            obj = UnifiedWriter._try_parse_json(response)
+            if obj:
+                return obj.get("citations", [])
+            # fallback: 提取{...}再试
+            import re as _re
+            first = response.find('{')
+            last = response.rfind('}')
+            if first >= 0 and last > first:
+                obj = UnifiedWriter._try_parse_json(response[first:last + 1])
+                if obj:
+                    return obj.get("citations", [])
+        except Exception:
+            pass
+        return []
 
     @staticmethod
     def _try_parse_json(text: str) -> dict | None:
@@ -399,3 +473,33 @@ class UnifiedWriter:
 
         # 兜底降级: 所有 JSON 解析都失败，将整个原始返回作为 polished_text
         return {"polished_text": text, "citation_notes": [], "supervisor_notes": []}
+
+
+CITATION_EXTRACT_PROMPT = """你是一位学术文献识别专家。请分析以下草稿，找出文中所有的引文标记并推断出对应的文献信息。
+
+【草稿】
+{draft_text}
+
+## 任务
+
+1. 识别文中的所有引文标记（包括 Author-Year、(Author, Year)、[1] 编号、纯数字角标如 19,20、Unicode 上标等）
+2. 对每个引文标记，根据草稿上下文推断第一作者的姓氏和出版年份
+3. 如果某处引文有多个数字（如 19,20），拆分为多个独立条目
+
+## 输出格式
+
+请严格返回 JSON（不要加 Markdown 标记）：
+
+{
+  "citations": [
+    {"original_marker": "19", "author_hint": "第一作者姓", "year_hint": "2024"},
+    {"original_marker": "20", "author_hint": "另一作者姓", "year_hint": "2023"}
+  ]
+}
+
+## 说明
+- author_hint: 你推断的第一作者姓氏（不确定填 "unknown"）
+- year_hint: 你推断的出版年份（不确定填 "unknown"）
+- 如果草稿末尾有参考文献列表，可参考其中的信息
+- 只返回 JSON，不要加解释"""
+
