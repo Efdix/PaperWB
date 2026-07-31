@@ -382,6 +382,133 @@ class WritingCoach:
             parts.append(f"--- 期刊范文: {p['filename']} ---\n{p.get('text', '')}")
         return "\n\n".join(parts)
 
+    def build_review_benchmarks(self) -> str:
+        """构建草稿评价用的知识库基准字符串（供 DraftReviewer 使用）。
+
+        提取当前 profile 中所有可用的基准数据，格式化为结构化文字，
+        让 LLM 能够对照草稿进行量化/定性评判。
+
+        Returns:
+            格式化的基准字符串，或 "（未配置知识库或知识库无基准数据）"
+        """
+        if not self._current_profile:
+            return "（未配置知识库）"
+
+        profile = self._current_profile
+        if not profile.has_writing_habits and not profile.has_journal_style:
+            return "（知识库尚未生成风格指南，无基准数据）"
+
+        sections: list[str] = []
+
+        # ---- 写作习惯基准 ----
+        if profile.has_writing_habits:
+            habits = profile.writing_habits
+
+            # 引用密度（各章节引用数分布）
+            cit_den = habits.get("citation_density", {})
+            if cit_den:
+                lines = [f"整体描述：{cit_den.get('summary', '无')}"]
+                for s in cit_den.get("sections", []):
+                    lines.append(f"  {s.get('name', '?')}：{s.get('citation_count', '?')} 篇")
+                sections.append("【引用密度基准（各章节应引用文献数）】\n" + "\n".join(lines))
+
+            # 引用详略度
+            cd = habits.get("citation_detail_level", {})
+            if cd and cd.get("sample_count", 0) > 0:
+                sections.append(
+                    f"【引用详略度基准】\n"
+                    f"每引用平均 {cd.get('avg_sentences_per_citation', '?')} 句话、"
+                    f"{cd.get('avg_chars_per_citation', '?')} 字。"
+                    f"四分位范围：{cd.get('q25_chars', '?')}-{cd.get('q75_chars', '?')} 字。"
+                    f"分布：{cd.get('distribution_description', '?')}"
+                )
+
+            # 段落组织
+            if habits.get("paragraph_patterns"):
+                sections.append(f"【段落组织习惯】\n{habits['paragraph_patterns']}")
+
+            # 过渡方式
+            if habits.get("transition_phrases"):
+                sections.append(f"【过渡方式习惯】\n{habits['transition_phrases']}")
+
+            # 论述逻辑
+            if habits.get("argumentation_style"):
+                sections.append(f"【论述逻辑习惯】\n{habits['argumentation_style']}")
+
+            # 术语偏好
+            if habits.get("terminology_preferences"):
+                sections.append(f"【术语偏好】\n{habits['terminology_preferences']}")
+
+            # 句式模板（精简）
+            st = habits.get("sentence_templates")
+            if st:
+                if isinstance(st, list):
+                    sections.append("【常用句式模板】\n" + "\n".join(f"· {s}" for s in st[:6]))
+                else:
+                    sections.append(f"【常用句式模板】\n{st}")
+
+            # 语气风格
+            if habits.get("tone_voice"):
+                sections.append(f"【语气风格】\n{habits['tone_voice']}")
+
+            # 章节段落组织（新增）
+            sp = habits.get("section_paragraphs")
+            if sp and isinstance(sp, list):
+                lines = []
+                for s in sp:
+                    lines.append(
+                        f"  {s.get('section', '?')}: {s.get('paragraph_count', '?')} 段, "
+                        f"每段平均 {s.get('avg_words_per_paragraph', '?')} 字"
+                    )
+                    if s.get("notes"):
+                        lines[-1] += f" ({s['notes']})"
+                sections.append("【各章节段落组织基准】\n" + "\n".join(lines))
+
+            # 章节过渡模式（新增）
+            st_habits = habits.get("section_transitions")
+            if st_habits:
+                lines = [f"密度: {st_habits.get('density', '无')}"]
+                pats = st_habits.get("patterns", [])
+                if pats:
+                    lines.append("典型模式: " + "; ".join(str(p) for p in pats))
+                wb = st_habits.get("weak_boundaries", [])
+                if wb:
+                    lines.append("薄弱边界: " + "; ".join(str(w) for w in wb))
+                sections.append("【章节过渡模式基准】\n" + "\n".join(lines))
+
+            # 各部分字数分布（新增）
+            sw = habits.get("section_word_counts")
+            if sw and isinstance(sw, list):
+                lines = []
+                for s in sw:
+                    lines.append(
+                        f"  {s.get('section', '?')}: 约 {s.get('word_count', '?')} 字 "
+                        f"({s.get('percentage', '?')})"
+                    )
+                sections.append("【各部分字数基准】\n" + "\n".join(lines))
+
+        # ---- 期刊格式基准 ----
+        if profile.has_journal_style:
+            js = profile.journal_style
+
+            if js.get("section_structure"):
+                sections.append(
+                    f"【期刊要求的章节结构（草稿应包含这些部分）】\n{js['section_structure']}"
+                )
+
+            if js.get("figure_conventions"):
+                sections.append(
+                    f"【期刊图表惯例（可据此建议图表位置和格式）】\n{js['figure_conventions']}"
+                )
+
+            if js.get("citation_format"):
+                sections.append(f"【期刊引用格式要求】\n{js['citation_format']}")
+
+        if not sections:
+            return "（知识库已生成但无可用的基准数据字段）"
+
+        return "\n\n".join(sections)
+
     def build_polish_system_prompt(self, writing_type: str = "综述") -> str:
         """构建精简版润色 system prompt —— 仅含润色和核查需要的字段，不含期刊格式。
 
@@ -432,6 +559,26 @@ class WritingCoach:
                     )
                     + "\n请在润色时参考此引用密度，如果某部分引用过少或过多，给出建议。"
                 )
+            # 章节段落组织（新增）
+            sp = habits.get("section_paragraphs")
+            if sp and isinstance(sp, list):
+                lines = []
+                for s in sp:
+                    lines.append(
+                        f"  {s.get('section', '?')}: {s.get('paragraph_count', '?')} 段, "
+                        f"每段平均 {s.get('avg_words_per_paragraph', '?')} 字"
+                    )
+                parts.append("【各章节段落组织参考】\n" + "\n".join(lines))
+            # 各部分字数分布（新增）
+            sw = habits.get("section_word_counts")
+            if sw and isinstance(sw, list):
+                lines = []
+                for s in sw:
+                    lines.append(
+                        f"  {s.get('section', '?')}: 约 {s.get('word_count', '?')} 字 "
+                        f"({s.get('percentage', '?')})"
+                    )
+                parts.append("【各部分字数参考】\n" + "\n".join(lines) + "\n请在润色时参考此字数分布，保持各部分的篇幅比例一致。")
 
         if parts:
             prompt += "\n\n---\n以下是根据你的历史论文分析出的写作习惯（仅描述风格，不限制学术主题），请在写作中保持一致的风格：\n\n" + "\n\n".join(parts)
@@ -662,11 +809,11 @@ class WritingCoach:
             "sample_count": n,
         }
 
-    # ---- Phase 2a: 写作习惯分析（基于写作范文） ----
+    # ---- Phase 2a: 写作习惯分析（基于写作范文，逐篇分析+合成） ----
 
-    WRITING_HABITS_PROMPT = """你是一位学术写作风格分析专家。请分析以下综述论文的写作习惯。
+    SINGLE_PAPER_HABITS_PROMPT = """你是一位学术写作风格分析专家。请分析以下这篇论文的写作习惯。
 
-这些论文是你自己撰写的，请从以下角度提取你的写作风格：
+这是你自己撰写的论文，请从以下角度提取写作风格：
 
 1. **术语偏好**: 高频术语、固定搭配、学科特有表达
 2. **句式模板**: 摘录 5-8 个你常用的中文句式（如开头句、过渡句、总结句、引用句）
@@ -674,7 +821,10 @@ class WritingCoach:
 4. **过渡方式**: 段落间如何过渡？（如"此外…""相比之下…""更重要的是…""例如…"）
 5. **论述逻辑**: 是归纳式（先罗列研究后总结）还是演绎式（先给观点再引用证据）？还是两者混合？
 6. **语气风格**: 主动/被动语态偏好？第一人称使用频率？评价性语言的强弱？
-7. **引用密度**: 分析论文各主要部分（根据论文自身内容判断章节边界，如Introduction、Results、Discussion等）分别引用了多少文献。统计每部分的引用总数，并给出整体分布描述（如"Introduction平均引用5篇，Discussion部分引用最密集"）
+7. **引用密度**: 分析各主要部分（根据论文自身内容判断章节边界）分别引用了多少文献。统计每部分的引用总数，并给出整体分布描述
+8. **章节段落组织**: 每个主要章节各有几段？每段平均多少字？各章是否有孤句段或超长段？
+9. **章节过渡模式**: 各章节之间是否有过渡段或过渡句？过渡密度如何？哪些章节边界缺少过渡？
+10. **各部分字数分布**: 每个主要章节约多少字？占全文的大致百分比？
 
 ## 输出格式
 
@@ -687,38 +837,123 @@ class WritingCoach:
   "transition_phrases": "段落间过渡方式描述",
   "argumentation_style": "论述逻辑描述（归纳/演绎/混合）",
   "tone_voice": "语气和语态描述",
-  "citation_density": {"summary": "整体引用分布描述", "sections": [{"name": "部分名", "citation_count": 8}]}
+  "citation_density": {"summary": "整体引用分布描述", "sections": [{"name": "部分名", "citation_count": 8}]},
+  "section_paragraphs": [{"section": "Introduction", "paragraph_count": 3, "avg_words_per_paragraph": 150, "notes": ""}],
+  "section_transitions": {"density": "过渡密度描述", "patterns": ["典型过渡方式"], "weak_boundaries": ["薄弱边界"]},
+  "section_word_counts": [{"section": "Introduction", "word_count": 500, "percentage": "10%"}]
 }
 
-以下是你的历史综述论文文本：
-{paper_texts}"""
+以下是论文文本：
+{paper_text}"""
 
-    def generate_writing_habits(self, parse_client: "LLMClient") -> dict | None:
-        """分析写作范文的写作习惯 —— 仅基于 personal_papers。
+    SYNTHESIS_HABITS_PROMPT = """你是一位学术写作风格分析专家。以下是 {count} 篇论文的独立写作习惯分析结果。
 
-        Returns:
-            writing_habits dict（含 LLM 分析结果 + 计算性引用详略度指标）。
+请综合这 {count} 份分析，提炼出该作者的总体写作习惯。综合原则：
+- 统计量（引用密度、段落数、字数分布）取各篇的平均值和范围
+- 定性描述（句式模板、过渡方式、论述逻辑）取各篇的共性，标注个别差异
+- 如果某篇数据明显异常（与其他论文差异过大），在输出中标注但不纳入均值
+
+## 输出格式
+
+请严格返回 JSON（不要加 Markdown 标记）：
+
+{
+  "terminology_preferences": "综合术语偏好描述",
+  "sentence_templates": ["句式1", "..."],
+  "paragraph_patterns": "综合段落大小和组织方式描述",
+  "transition_phrases": "综合过渡方式描述",
+  "argumentation_style": "综合论述逻辑描述",
+  "tone_voice": "综合语气和语态描述",
+  "citation_density": {"summary": "综合引用分布描述", "sections": [{"name": "部分名", "citation_count": 8}]},
+  "section_paragraphs": [{"section": "Introduction", "paragraph_count": 3, "avg_words_per_paragraph": 150, "notes": ""}],
+  "section_transitions": {"density": "综合过渡密度", "patterns": ["模式1"], "weak_boundaries": []},
+  "section_word_counts": [{"section": "Introduction", "word_count": 500, "percentage": "10%"}]
+}
+
+以下为各篇论文的独立分析：
+{analyses}"""
+
+    def generate_writing_habits(self, parse_client: "LLMClient",
+                                on_progress=None) -> dict | None:
+        """逐篇分析写作范文 → 综合写作习惯（批量+合成模式）。
+
+        每篇论文独立发给 LLM 分析，避免多篇全文挤在同一 prompt
+        中导致的注意力稀释问题。最后用一次合成调用合并所有结果。
         """
+        from collections.abc import Callable
+
         if not self._current_profile:
             return None
-        if self._current_profile.personal_count == 0:
+        papers = self._current_profile.personal_papers
+        if not papers:
             return None
 
-        all_text = self.get_sample_paper_texts()
-        if not all_text.strip():
+        def _emit(msg: str) -> None:
+            if on_progress:
+                on_progress(msg)
+
+        # ---- 阶段 1: 逐篇分析 ----
+        single_results: list[dict] = []
+        for i, paper in enumerate(papers):
+            filename = paper.get("filename", f"论文{i + 1}")
+            text = paper.get("text", "")
+            if not text.strip():
+                _emit(f"跳过空文件: {filename}")
+                continue
+
+            _emit(f"正在分析第 {i + 1}/{len(papers)} 篇写作范文（{filename}）...")
+
+            prompt = self.SINGLE_PAPER_HABITS_PROMPT.replace("{paper_text}", text)
+            messages = [
+                {"role": "system", "content": "你是学术写作风格分析专家。只返回 JSON，不要加解释。"},
+                {"role": "user", "content": prompt},
+            ]
+
+            try:
+                response = parse_client.chat_sync(messages, timeout=600.0)
+                analysis = self._parse_style_guide_response(response)
+                if analysis:
+                    analysis["_source"] = filename
+                    single_results.append(analysis)
+                else:
+                    _emit(f"  ⚠ {filename} 分析失败（LLM 返回为空或格式异常）")
+            except Exception as e:
+                _emit(f"  ⚠ {filename} 分析失败: {e}")
+
+        if not single_results:
+            # 全部失败，尝试纯统计
+            detail = self._analyze_citation_detail(self._current_profile)
+            if detail:
+                minimal_habits = {"citation_detail_level": detail}
+                self._current_profile.writing_habits = minimal_habits
+                self._save_profile(self._current_profile)
+                return minimal_habits
             return None
 
-        prompt = self.WRITING_HABITS_PROMPT.replace("{paper_texts}", all_text)
-        messages = [
+        # ---- 阶段 2: 综合所有分析结果 ----
+        _emit(f"正在综合 {len(single_results)} 篇论文的写作习惯...")
+
+        analyses_text = "\n\n---\n\n".join(
+            f"【论文 {r.get('_source', '?')}】\n"
+            + json.dumps({k: v for k, v in r.items() if k != "_source"}, ensure_ascii=False, indent=2)
+            for r in single_results
+        )
+
+        import json as _json_local
+        synth_prompt = self.SYNTHESIS_HABITS_PROMPT.replace(
+            "{count}", str(len(single_results))
+        ).replace("{analyses}", analyses_text)
+
+        synth_messages = [
             {"role": "system", "content": "你是学术写作风格分析专家。只返回 JSON，不要加解释。"},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": synth_prompt},
         ]
 
         try:
-            response = parse_client.chat_sync(messages, timeout=180.0)
+            response = parse_client.chat_sync(synth_messages, timeout=300.0)
             habits = self._parse_style_guide_response(response)
             if habits:
-                # 附加计算性引用详略度指标
+                # 附加计算性引用详略度指标（基于所有论文全文的纯统计）
                 habits["citation_detail_level"] = self._analyze_citation_detail(self._current_profile)
                 self._current_profile.writing_habits = habits
                 from datetime import datetime
@@ -728,18 +963,15 @@ class WritingCoach:
         except Exception:
             pass
 
-        # 即使 LLM 失败，也尝试计算纯统计指标
-        if self._current_profile.personal_count > 0:
-            detail = self._analyze_citation_detail(self._current_profile)
-            if detail:
-                minimal_habits = {"citation_detail_level": detail}
-                self._current_profile.writing_habits = minimal_habits
-                from datetime import datetime
-                self._current_profile.updated_at = datetime.now().isoformat()
-                self._save_profile(self._current_profile)
-                return minimal_habits
-
-        return None
+        # 合成失败：用第一篇的结果兜底
+        detail = self._analyze_citation_detail(self._current_profile)
+        fallback = dict(single_results[0])
+        fallback.pop("_source", None)
+        if detail:
+            fallback["citation_detail_level"] = detail
+        self._current_profile.writing_habits = fallback
+        self._save_profile(self._current_profile)
+        return fallback
 
     # ---- Phase 2b: 期刊格式分析（基于期刊范文） ----
 
@@ -807,7 +1039,8 @@ class WritingCoach:
 
     # ---- 兼容旧 API：generate_style_guide（会调用两个新方法） ----
 
-    def generate_style_guide(self, parse_client: "LLMClient") -> dict | None:
+    def generate_style_guide(self, parse_client: "LLMClient",
+                            on_progress=None) -> dict | None:
         """生成完整的风格指南 —— 同时运行写作习惯和期刊格式分析。
 
         兼容旧版调用者。新版建议直接调用 generate_writing_habits() 和 generate_journal_style()。
@@ -818,15 +1051,19 @@ class WritingCoach:
         if not self._current_profile:
             return None
 
+        def _emit(msg: str) -> None:
+            if on_progress:
+                on_progress(msg)
+
         habits = None
         style = None
 
         if self._current_profile.personal_count > 0:
-            habits = self.generate_writing_habits(parse_client)
+            habits = self.generate_writing_habits(parse_client, on_progress=on_progress)
         if self._current_profile.journal_count > 0:
+            _emit("正在分析期刊格式...")
             style = self.generate_journal_style(parse_client)
 
-        # 返回 journal_style 用于向后兼容
         return style or habits
 
     @staticmethod

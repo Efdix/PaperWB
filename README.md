@@ -102,6 +102,33 @@ python main.py
 
 ---
 
+## 打包（Windows）
+
+推荐使用 `PyInstaller` 将程序打包为独立可执行文件。示例流程：
+
+```powershell
+conda activate PDFasker
+pip install pyinstaller
+pyinstaller PDFasker.spec
+```
+
+上述命令会根据仓库中的 `PDFasker.spec` 构建并在 `dist/PDFasker/` 生成可执行程序（如 `PDFasker.exe`），构建中间产物会在 `build/` 下生成。
+
+如果需要生成单文件可执行（onefile），可以使用：
+
+```powershell
+pyinstaller --noconfirm --onefile --windowed main.py
+```
+
+可选：将 `dist` 目录压缩为发行包：
+
+```powershell
+Compress-Archive -Path dist\PDFasker\* -DestinationPath build\PDFasker.zip
+```
+
+打包前请确保已在打包环境中安装 `requirements.txt` 中列出的依赖；在目标机器上可能还需要安装对应的 Visual C++ 运行时。
+
+
 ## 使用指南
 
 ### 论文阅读

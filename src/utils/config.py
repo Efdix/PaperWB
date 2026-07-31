@@ -476,3 +476,40 @@ def save_polish_entry(profile_name: str, entry: dict) -> None:
         history = history[-MAX_POLISH_HISTORY:]
     f = get_polish_history_dir() / f"{profile_name}.json"
     f.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ========== 草稿评价持久化 ==========
+
+
+def get_reviews_dir() -> Path:
+    """评价结果目录：{data_root}/.pdfasker/reviews/"""
+    d = _resolve_data_dir() / "reviews"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def save_review(profile_name: str, review: dict) -> None:
+    """保存整体评价结果（覆盖式）。"""
+    f = get_reviews_dir() / f"{profile_name}.json"
+    f.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_review(profile_name: str) -> dict | None:
+    """加载已保存的整体评价结果。不存在则返回 None。"""
+    f = get_reviews_dir() / f"{profile_name}.json"
+    if f.exists():
+        try:
+            return json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return None
+
+
+def delete_review(profile_name: str) -> None:
+    """删除整体评价结果。"""
+    f = get_reviews_dir() / f"{profile_name}.json"
+    if f.exists():
+        try:
+            f.unlink()
+        except OSError:
+            pass

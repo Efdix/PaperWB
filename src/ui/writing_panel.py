@@ -3,7 +3,8 @@
 布局: 顶部工具栏(类型/知识库/Zotero) | 左侧编辑器 | 右侧知识库状态 + AI辅助
 
 AI 辅助按钮:
-  - "AI 润色与核查": 统一润色+引文核查 → Diff 对话框对比
+  - "草稿整体评价": 对全文结构性诊断 → 用户确认/编辑 → 保存 → 注入润色
+  - "AI 润色与核查": 润色语言 + 引文核查（有评价时同时处理评价发现的问题）
   - "文献补充": LLM分析→用户反馈→PubMed检索
 """
 
@@ -125,7 +126,38 @@ class StyleGuideDialog(QDialog):
                         lines.append(f"  · {s.get('name', '?')}: {s.get('citation_count', '?')} 篇")
                 _section("引用密度（各章节引用分布）", "\n".join(lines), "#7aa2f7")
 
-        # 期刊格式部分
+            sp = h.get("section_paragraphs")
+            if sp and isinstance(sp, list):
+                lines = []
+                for s in sp:
+                    lines.append(
+                        f"· {s.get('section', '?')}: {s.get('paragraph_count', '?')} 段, "
+                        f"每段平均 {s.get('avg_words_per_paragraph', '?')} 字"
+                    )
+                    if s.get("notes"):
+                        lines.append(f"  ({s['notes']})")
+                _section("各章节段落组织", "\n".join(lines), "#7aa2f7")
+
+            st_habits = h.get("section_transitions")
+            if st_habits:
+                lines = [f"密度: {st_habits.get('density', '无')}"]
+                pats = st_habits.get("patterns", [])
+                if pats:
+                    lines.append("典型模式: " + "; ".join(str(p) for p in pats))
+                wb = st_habits.get("weak_boundaries", [])
+                if wb:
+                    lines.append("薄弱边界: " + "; ".join(str(w) for w in wb))
+                _section("章节过渡模式", "\n".join(lines), "#7aa2f7")
+
+            sw = h.get("section_word_counts")
+            if sw and isinstance(sw, list):
+                lines = []
+                for s in sw:
+                    lines.append(
+                        f"· {s.get('section', '?')}: 约 {s.get('word_count', '?')} 字 "
+                        f"({s.get('percentage', '?')})"
+                    )
+                _section("各部分字数分布", "\n".join(lines), "#7aa2f7")
         if profile and profile.has_journal_style:
             sep = QFrame()
             sep.setFrameShape(QFrame.Shape.HLine)
@@ -174,6 +206,7 @@ class StyleGuideWorker(QThread):
     """后台生成风格指南。"""
     finished_signal = Signal(dict)
     error_signal = Signal(str)
+    progress_signal = Signal(str)
 
     def __init__(self, coach: "WritingCoach", client: "LLMClient"):
         super().__init__()
@@ -182,7 +215,9 @@ class StyleGuideWorker(QThread):
 
     def run(self):
         try:
-            guide = self._coach.generate_style_guide(self._client)
+            guide = self._coach.generate_style_guide(
+                self._client, on_progress=lambda msg: self.progress_signal.emit(msg)
+            )
             if guide:
                 self.finished_signal.emit(guide)
             else:
@@ -220,7 +255,8 @@ class UnifiedWorker(QThread):
 
     def __init__(self, client: "LLMClient", selected_text: str,
                  coach: "WritingCoach", zotero_lib: "ZoteroLibrary | None",
-                 writing_type: str, pre_citation_sources: str = ""):
+                 writing_type: str, pre_citation_sources: str = "",
+                 review_findings: str = ""):
         super().__init__()
         self._client = client
         self._text = selected_text
@@ -228,6 +264,7 @@ class UnifiedWorker(QThread):
         self._zotero = zotero_lib
         self._writing_type = writing_type
         self._pre_citation_sources = pre_citation_sources
+        self._review_findings = review_findings
 
     def run(self):
         try:
@@ -235,8 +272,34 @@ class UnifiedWorker(QThread):
             uw = UnifiedWriter()
             result = uw.process(self._client, self._text, self._coach,
                                 self._zotero, self._writing_type,
-                                pre_citation_sources=self._pre_citation_sources)
+                                pre_citation_sources=self._pre_citation_sources,
+                                review_findings=self._review_findings)
             self.finished_signal.emit(result)
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
+
+class DraftReviewWorker(QThread):
+    """后台草稿整体评价。"""
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self, client: "LLMClient", draft_text: str,
+                 coach: "WritingCoach"):
+        super().__init__()
+        self._client = client
+        self._draft = draft_text
+        self._coach = coach
+
+    def run(self):
+        try:
+            from ..core.draft_reviewer import DraftReviewer
+            reviewer = DraftReviewer()
+            result = reviewer.review(self._client, self._draft, self._coach)
+            if result.get("error"):
+                self.error_signal.emit(result["error"])
+            else:
+                self.finished_signal.emit(result)
         except Exception as e:
             self.error_signal.emit(str(e))
 
@@ -261,6 +324,8 @@ class WritingPanel(QWidget):
         self._current_writing_type = "综述"
         self._style_worker: StyleGuideWorker | None = None
         self._unified_worker: UnifiedWorker | None = None
+        self._review_worker: DraftReviewWorker | None = None
+        self._citation_worker: CitationExtractWorker | None = None
         self._active_dialogs: list = []  # 保持非模态对话框引用防止被GC
 
         self._setup_ui()
@@ -466,20 +531,22 @@ class WritingPanel(QWidget):
         ai_layout = QVBoxLayout(ai_group)
         ai_layout.setSpacing(6)
 
+        self._review_btn = QPushButton("📊 草稿整体评价")
+        self._review_btn.setToolTip(
+            "AI 对全文进行结构性诊断：引用密度、过渡/小结、覆盖广度、\n"
+            "文献时效性、批判性深度、冗余、图表建议、术语一致性。\n"
+            "诊断后可逐项采纳/忽略/编辑，保存后将在润色时一并处理。"
+        )
+        self._review_btn.clicked.connect(self._on_review_draft)
+        ai_layout.addWidget(self._review_btn)
+
         self._polish_btn = QPushButton("✨ AI 润色与核查")
         self._polish_btn.setToolTip(
-            "选中含引文的文字后，AI 同时完成：润色语言 + 核查引文准确性（需 Zotero 连接）\n"
-            "结果以左右并排对比的方式展示，方便逐条审查"
+            "选中含引文的文字后，AI 同时完成：润色语言 + 核查引文准确性（需 Zotero 连接）。\n"
+            "如有已保存的草稿评价，将同时处理评价发现的问题。"
         )
         self._polish_btn.clicked.connect(self._on_unified_polish)
         ai_layout.addWidget(self._polish_btn)
-
-        self._verify_only_btn = QPushButton("🔍 仅核查引文")
-        self._verify_only_btn.setToolTip(
-            "仅核查选中文字的引文准确性，不修改原文表述"
-        )
-        self._verify_only_btn.clicked.connect(self._on_verify_only)
-        ai_layout.addWidget(self._verify_only_btn)
 
         self._lit_search_btn = QPushButton("🔍 文献补充")
         self._lit_search_btn.setToolTip(
@@ -708,6 +775,9 @@ class WritingPanel(QWidget):
         self._style_worker = StyleGuideWorker(self._coach, self._write_client)
         self._style_worker.finished_signal.connect(self._on_style_guide_ready)
         self._style_worker.error_signal.connect(self._on_style_guide_error)
+        self._style_worker.progress_signal.connect(
+            lambda msg: self._status_label.setText(msg)
+        )
         self._style_worker.start()
 
     def _on_view_style_guide(self):
@@ -754,7 +824,7 @@ class WritingPanel(QWidget):
         return value if ok else 0
 
     def _on_unified_polish(self):
-        """统一润色 + 引文核查。"""
+        """统一润色 + 引文核查（含草稿评价诊断）。"""
         cursor = self.editor.textCursor()
         if not cursor.hasSelection():
             QMessageBox.warning(self, "提示", "请先在编辑器中选中要处理的文字")
@@ -766,11 +836,6 @@ class WritingPanel(QWidget):
         text = cursor.selectedText().strip()
         # 归一化 Qt 富文本换行符（QTextEdit 内部使用 \u2029 而非 \n）
         text = text.replace('\u2029', '\n')
-        # 裁剪尾部参考文献列表（仅用于DiffDialog对比展示，不影响引文核查）
-        # 匹配参考文献条目的格式特征：
-        #   "Loh LS, Hanly JJ, ... 2025. Single-nucleus transcriptomics..."
-        #   "Prakash A, Dion E, Banerjee TD, Monteiro A. 2024. The molecular basis..."
-        # 和正文引用 "(Prakash et al., 2024)" 格式完全不同，不会误切
         import re
         ref_marker = re.search(
             r'\n([A-Z][a-z]+ [A-Z]{1,3}(?:, [A-Z][a-z]+ [A-Z]{1,3})*(?: et al)?\. \d{4}[a-z]?\.)',
@@ -780,6 +845,17 @@ class WritingPanel(QWidget):
         self._pending_original = display_text
         self._pending_cursor_pos = cursor.selectionStart()
         self._pending_cursor_end = cursor.selectionEnd()
+
+        # 加载已保存的草稿评价
+        review_findings = ""
+        if self._coach and self._coach.current_profile:
+            from ..utils.config import load_review
+            saved_review = load_review(self._coach.current_profile.name)
+            if saved_review:
+                from ..core.draft_reviewer import DraftReviewer
+                review_findings = DraftReviewer.format_review_for_polish(saved_review)
+                if review_findings:
+                    self._status_label.setText("已加载草稿评价，将一并处理评价发现的问题")
 
         # Zotero 可用性检查
         zotero_ok = self._zotero and hasattr(self._zotero, 'get_all_items') and len(self._zotero.get_all_items()) > 0
@@ -801,7 +877,7 @@ class WritingPanel(QWidget):
 
         self._polish_btn.setEnabled(False)
         self._polish_btn.setText("⏳ 处理中...")
-        self._verify_only_btn.setEnabled(False)
+        self._review_btn.setEnabled(False)
         self._progress_bar.setVisible(True)
         self._cancel_btn.setVisible(True)
         self._progress_bar.setRange(0, 0)
@@ -813,20 +889,19 @@ class WritingPanel(QWidget):
             self._write_client, text, citation_count
         )
         self._citation_worker.finished_signal.connect(
-            lambda citations: self._on_citations_extracted(citations, text, "polish")
+            lambda citations: self._on_citations_extracted(citations, text, review_findings)
         )
         self._citation_worker.error_signal.connect(
-            lambda err: self._on_citation_extract_error(err, text, "polish")
+            lambda err: self._on_citation_extract_error(err, text, review_findings)
         )
         self._citation_worker.start()
 
-    def _on_citation_extract_error(self, error: str, text: str, mode: str):
+    def _on_citation_extract_error(self, error: str, text: str, review_findings: str):
         self._progress_bar.setVisible(False)
         self._cancel_btn.setVisible(False)
         self._polish_btn.setEnabled(True)
         self._polish_btn.setText("✨ AI 润色与核查")
-        self._verify_only_btn.setEnabled(True)
-        self._verify_only_btn.setText("🔍 仅核查引文")
+        self._review_btn.setEnabled(True)
         self._status_label.setText("引文解析失败")
 
         answer = QMessageBox.question(
@@ -836,25 +911,22 @@ class WritingPanel(QWidget):
             "  1. API 连接异常或 Key 无效\n"
             "  2. 草稿文本过长\n"
             "  3. 服务暂不可用\n\n"
-            "点击左侧按钮重试；点中间跳过引文核查直接润色；右侧取消。",
+            "重试 / 跳过引文核查直接润色 / 取消？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
         )
 
         if answer == QMessageBox.StandardButton.Yes:
-            # 重试：重新弹数量并启动
-            self._on_unified_polish() if mode == "polish" else self._on_verify_only()
+            self._on_unified_polish()
         elif answer == QMessageBox.StandardButton.No:
-            # 跳过核查直接润色
             self._progress_bar.setVisible(True)
             self._progress_bar.setRange(0, 0)
             self._progress_bar.setFormat("正在润色修改...")
             self._status_label.setText("跳过引文核查，直接润色...")
             QApplication.processEvents()
-            self._start_polish_worker(text, "")
-        # Cancel → 什么都不做
+            self._start_polish_worker(text, "", review_findings)
 
-    def _on_citations_extracted(self, citations: list, text: str, mode: str):
-        """LLM 引文识别完成 → 在 Zotero 中搜索 → 启动润色/核查。"""
+    def _on_citations_extracted(self, citations: list, text: str, review_findings: str):
+        """LLM 引文识别完成 → 在 Zotero 中搜索 → 启动润色。"""
         pre_citation_sources = ""
         from ..core.unified_writer import UnifiedWriter
         if self._zotero:
@@ -880,21 +952,23 @@ class WritingPanel(QWidget):
             pre_citation_sources = "\n\n".join(sources_list) if sources_list else ""
         self._status_label.setText(f"已识别 {len(citations)} 处引文标记")
 
-        self._progress_bar.setFormat("正在润色修改..." if mode == "polish" else "正在核查引文...")
+        self._start_polish_worker(text, pre_citation_sources, review_findings)
+
+    def _start_polish_worker(self, text: str, pre_citation_sources: str, review_findings: str = ""):
+        """启动润色 worker（统一入口）。"""
+        self._progress_bar.setFormat("正在润色修改...")
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)
         self._polish_btn.setEnabled(False)
-        self._verify_only_btn.setEnabled(False)
+        self._review_btn.setEnabled(False)
         QApplication.processEvents()
 
         self._unified_worker = UnifiedWorker(
             self._write_client, text, self._coach, self._zotero,
-            self._current_writing_type, pre_citation_sources
+            self._current_writing_type, pre_citation_sources,
+            review_findings=review_findings,
         )
-        if mode == "polish":
-            self._unified_worker.finished_signal.connect(self._on_unified_done)
-        else:
-            self._unified_worker.finished_signal.connect(self._on_verify_done)
+        self._unified_worker.finished_signal.connect(self._on_unified_done)
         self._unified_worker.error_signal.connect(self._on_unified_error)
         self._unified_worker.start()
 
@@ -904,8 +978,7 @@ class WritingPanel(QWidget):
         self._cancel_btn.setVisible(False)
         self._polish_btn.setEnabled(True)
         self._polish_btn.setText("\u2728 AI \u6da6\u8272\u4e0e\u6838\u67e5")
-        self._verify_only_btn.setEnabled(True)
-        self._verify_only_btn.setText("\ud83d\udd0d \u4ec5\u6838\u67e5\u5f15\u6587")
+        self._review_btn.setEnabled(True)
         self._status_label.setText("\u5904\u7406\u5b8c\u6210")
 
         if result.get("error"):
@@ -959,83 +1032,10 @@ class WritingPanel(QWidget):
         self._cancel_btn.setVisible(False)
         self._progress_bar.setRange(0, 100)
         self._polish_btn.setEnabled(True)
-        self._polish_btn.setText("✨ AI 润色与核查")
-        self._verify_only_btn.setEnabled(True)
-        self._verify_only_btn.setText("🔍 仅核查引文")
-        self._status_label.setText(f"处理失败: {err[:60]}")
-        QMessageBox.warning(self, "处理失败", err)
-
-    def _on_verify_only(self):
-        """仅核查引文，不修改原文表述。"""
-        cursor = self.editor.textCursor()
-        if not cursor.hasSelection():
-            QMessageBox.warning(self, "提示", "请先在编辑器中选中要核查的文字")
-            return
-        if not self._write_client:
-            QMessageBox.warning(self, "提示", "请先配置写作 API")
-            return
-
-        text = cursor.selectedText().strip()
-        self._pending_original = text
-        self._pending_cursor_pos = cursor.selectionStart()
-        self._pending_cursor_end = cursor.selectionEnd()
-
-        # 询问用户草稿中文献数量 → 后台 LLM 识别引文
-        citation_count = self._ask_citation_count()
-        if citation_count <= 0:
-            self._verify_only_btn.setEnabled(True)
-            self._verify_only_btn.setText("🔍 仅核查引文")
-            return
-
-        self._verify_only_btn.setEnabled(False)
-        self._verify_only_btn.setText("⏳ 处理中...")
-        self._polish_btn.setEnabled(False)
-        self._progress_bar.setVisible(True)
-        self._cancel_btn.setVisible(True)
-        self._progress_bar.setRange(0, 0)
-        self._progress_bar.setFormat("AI 正在解析草稿中的引文...")
-        self._status_label.setText("AI 正在解析草稿中的引文...")
-        QApplication.processEvents()
-
-        self._citation_worker = CitationExtractWorker(
-            self._write_client, text, citation_count
-        )
-        self._citation_worker.finished_signal.connect(
-            lambda citations: self._on_citations_extracted(citations, text, "verify")
-        )
-        self._citation_worker.error_signal.connect(
-            lambda err: self._on_citation_extract_error(err, text, "verify")
-        )
-        self._citation_worker.start()
-
-    def _on_verify_done(self, result: dict):
-        self._progress_bar.setVisible(False)
-        self._cancel_btn.setVisible(False)
-        self._progress_bar.setRange(0, 100)
-        self._verify_only_btn.setEnabled(True)
-        self._verify_only_btn.setText("🔍 仅核查引文")
-        self._status_label.setText("核查完成")
-        self._polish_btn.setEnabled(True)
-
-        if result.get("error"):
-            QMessageBox.warning(self, "处理失败", result["error"])
-            return
-
-        original = getattr(self, '_pending_original', '')
-        from .diff_dialog import DiffDialog
-        dialog = DiffDialog(
-            original=original,
-            polished=result.get("polished_text", original),
-            citation_notes=result.get("citation_notes", []),
-            supervisor_notes=result.get("supervisor_notes", []),
-            write_client=self._write_client,
-            coach=self._coach,
-            zotero=self._zotero,
-            writing_type=self._current_writing_type,
-            parent=None,
-        )
-        self._active_dialogs.append(dialog)
-        dialog.show()
+        self._polish_btn.setText("\u2728 AI \u6da6\u8272\u4e0e\u6838\u67e5")
+        self._review_btn.setEnabled(True)
+        self._status_label.setText(f"\u5904\u7406\u5931\u8d25: {err[:60]}")
+        QMessageBox.warning(self, "\u5904\u7406\u5931\u8d25", err)
 
     # ---- 按钮 2: 文献补充 ----
 
@@ -1054,6 +1054,73 @@ class WritingPanel(QWidget):
         dialog.set_draft_text(draft)
         self._active_dialogs.append(dialog)
         dialog.show()
+
+    # ---- 按钮 3: 草稿整体评价 ----
+
+    def _on_review_draft(self):
+        """对全文进行结构性诊断评价。"""
+        draft = self.editor.toPlainText().strip()
+        if not draft:
+            QMessageBox.warning(self, "提示", "请先编写草稿")
+            return
+        if not self._write_client:
+            QMessageBox.warning(self, "提示", "请先配置写作 API")
+            return
+        if not self._coach or not self._coach.current_profile:
+            QMessageBox.warning(self, "提示", "请先选择知识库")
+            return
+
+        profile = self._coach.current_profile
+        if not profile.has_writing_habits and not profile.has_journal_style:
+            QMessageBox.warning(
+                self, "提示",
+                "知识库尚未生成风格指南，缺少评价基准。\n请先添加范文后点击「生成风格指南」。"
+            )
+            return
+
+        self._review_btn.setEnabled(False)
+        self._review_btn.setText("⏳ 评价中...")
+        self._polish_btn.setEnabled(False)
+        self._progress_bar.setVisible(True)
+        self._progress_bar.setRange(0, 0)
+        self._cancel_btn.setVisible(True)
+        self._status_label.setText("AI 正在诊断草稿结构（可能需要 30-60 秒）...")
+        QApplication.processEvents()
+
+        self._review_worker = DraftReviewWorker(
+            self._write_client, draft, self._coach
+        )
+        self._review_worker.finished_signal.connect(self._on_review_done)
+        self._review_worker.error_signal.connect(self._on_review_error)
+        self._review_worker.start()
+
+    def _on_review_done(self, result: dict):
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setRange(0, 100)
+        self._cancel_btn.setVisible(False)
+        self._review_btn.setEnabled(True)
+        self._review_btn.setText("📊 草稿整体评价")
+        self._polish_btn.setEnabled(True)
+        self._status_label.setText("评价完成")
+
+        profile_name = ""
+        if self._coach and self._coach.current_profile:
+            profile_name = self._coach.current_profile.name
+
+        from .review_dialog import ReviewDialog
+        dialog = ReviewDialog(result, profile_name=profile_name, parent=None)
+        self._active_dialogs.append(dialog)
+        dialog.show()
+
+    def _on_review_error(self, err: str):
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setRange(0, 100)
+        self._cancel_btn.setVisible(False)
+        self._review_btn.setEnabled(True)
+        self._review_btn.setText("📊 草稿整体评价")
+        self._polish_btn.setEnabled(True)
+        self._status_label.setText(f"评价失败: {err[:60]}")
+        QMessageBox.warning(self, "评价失败", err)
 
     # ---- Zotero ----
 
@@ -1100,19 +1167,20 @@ class WritingPanel(QWidget):
 
     def _cancel_all_workers(self):
         """终止所有后台 AI 处理线程。"""
-        for w in [self._citation_worker, self._unified_worker]:
+        for w in [self._citation_worker, self._unified_worker, self._review_worker]:
             if w and w.isRunning():
                 w.terminate()
                 w.wait(1000)
         self._citation_worker = None
         self._unified_worker = None
+        self._review_worker = None
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 100)
         self._cancel_btn.setVisible(False)
         self._polish_btn.setEnabled(True)
         self._polish_btn.setText("\u2728 AI \u6da6\u8272\u4e0e\u6838\u67e5")
-        self._verify_only_btn.setEnabled(True)
-        self._verify_only_btn.setText("\ud83d\udd0d \u4ec5\u6838\u67e5\u5f15\u6587")
+        self._review_btn.setEnabled(True)
+        self._review_btn.setText("\ud83d\udcca \u8349\u7a3f\u6574\u4f53\u8bc4\u4ef7")
         self._status_label.setText("\u5df2\u53d6\u6d88")
 
     def shutdown(self):
@@ -1126,6 +1194,9 @@ class WritingPanel(QWidget):
         if self._unified_worker and self._unified_worker.isRunning():
             self._unified_worker.quit()
             self._unified_worker.wait(2000)
+        if self._review_worker and self._review_worker.isRunning():
+            self._review_worker.quit()
+            self._review_worker.wait(2000)
 
     def _auto_save_draft(self):
         """自动保存编辑器草稿到磁盘。"""

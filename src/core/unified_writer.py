@@ -17,6 +17,8 @@ UNIFIED_PROMPT = """你是学术写作助手。请对以下文本进行润色和
 
 {style_context}
 
+{review_findings}
+
 【待处理文本】
 {selected_text}
 
@@ -153,6 +155,7 @@ class UnifiedWriter:
         writing_type: str = "综述",
         verify_only: bool = False,
         pre_citation_sources: str = "",
+        review_findings: str = "",
     ) -> dict:
         """执行统一润色+核查。
 
@@ -162,6 +165,7 @@ class UnifiedWriter:
             coach: 写作教练（提供风格指南）。
             zotero_lib: Zotero 文献库（提供原文匹配）。
             writing_type: 写作类型 key。
+            review_findings: 草稿整体评价的诊断结论（可选，作为润色指导）。
 
         Returns:
             {
@@ -187,8 +191,10 @@ class UnifiedWriter:
                 .replace("{citation_sources}", citation_sources))
             system_prompt = "你是学术写作核查专家。只返回 JSON，不要修改原文。"
         else:
+            review_section = f"【评价诊断】（以下问题来自草稿整体评价，请在润色时一并修正）\n{review_findings}" if review_findings else ""
             prompt = (UNIFIED_PROMPT
                 .replace("{style_context}", style_context)
+                .replace("{review_findings}", review_section)
                 .replace("{selected_text}", selected_text)
                 .replace("{citation_sources}", citation_sources))
 
