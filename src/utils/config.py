@@ -18,8 +18,6 @@
       │   ├── chats/                # 对话历史
       │   ├── states/               # 排版/翻译状态
       │   ├── page_cache/           # 逐页解析缓存（Stage 1）
-      │   ├── para_cache/           # 段落解析缓存
-      │   ├── image_cache/          # 图片提取缓存
       │   ├── writing_kb/           # 写作知识库
       │   ├── drafts/               # 编辑器草稿自动保存
       │   └── polish_history/       # 润色结果历史
@@ -157,20 +155,6 @@ def get_chats_dir() -> Path:
 def get_states_dir() -> Path:
     """状态缓存目录：{data_root}/.pdfasker/states/"""
     d = _resolve_data_dir() / "states"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def get_image_cache_dir() -> Path:
-    """图片缓存目录：{data_root}/.pdfasker/image_cache/"""
-    d = _resolve_data_dir() / "image_cache"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def get_para_cache_dir() -> Path:
-    """段落缓存目录：{data_root}/.pdfasker/para_cache/"""
-    d = _resolve_data_dir() / "para_cache"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -344,50 +328,6 @@ def save_doc_state(file_path: str, state: dict) -> None:
 
 def delete_doc_state(file_path: str) -> None:
     f = get_states_dir() / f"{_doc_id(file_path)}.json"
-    if f.exists():
-        f.unlink()
-
-
-# ========== 段落缓存 ==========
-
-def load_paragraph_cache(file_path: str) -> tuple[list[dict], str] | None:
-    f = get_para_cache_dir() / f"{_doc_id(file_path)}.json"
-    if not f.exists():
-        return None
-    try:
-        data = json.loads(f.read_text(encoding="utf-8"))
-        cached_mtime = data.get("_mtime", 0)
-        real_mtime = os.path.getmtime(file_path)
-        if abs(cached_mtime - real_mtime) > 1.0:
-            return None
-        paras = data.get("paragraphs", [])
-        for p in paras:
-            if "bbox" in p and isinstance(p["bbox"], list):
-                p["bbox"] = tuple(p["bbox"])
-        full_text = data.get("full_text", "")
-        return (paras, full_text)
-    except (json.JSONDecodeError, OSError, KeyError):
-        return None
-
-
-def save_paragraph_cache(file_path: str, paragraphs: list[dict], full_text: str = "") -> None:
-    f = get_para_cache_dir() / f"{_doc_id(file_path)}.json"
-    clean: list[dict] = []
-    for p in paragraphs:
-        cp = dict(p)
-        if "bbox" in cp and isinstance(cp["bbox"], tuple):
-            cp["bbox"] = list(cp["bbox"])
-        clean.append(cp)
-    data = {
-        "_mtime": os.path.getmtime(file_path),
-        "paragraphs": clean,
-        "full_text": full_text,
-    }
-    f.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def delete_paragraph_cache(file_path: str) -> None:
-    f = get_para_cache_dir() / f"{_doc_id(file_path)}.json"
     if f.exists():
         f.unlink()
 

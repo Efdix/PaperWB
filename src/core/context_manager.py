@@ -116,12 +116,9 @@ class ContextManager:
             # 图表描述
             if doc.figures:
                 fig_text = "\n".join(
-                    f"图{element_id}: {caption} — {desc}"
-                    for f in doc.figures
-                    for element_id, caption, desc in [
-                        (f.element_id, f.image_caption or "", f.image_description or "")
-                    ]
-                    if caption or desc
+                    f"图{e.element_id}: {e.image_caption or ''} — {e.image_description or ''}"
+                    for e in doc.figures
+                    if (e.image_caption or e.image_description)
                 )
                 if fig_text:
                     parts.append("【图表描述】\n" + fig_text)

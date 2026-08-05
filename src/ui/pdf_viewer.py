@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QLabel, QFrame, QFileDialog, QApplication, QProgressBar,
     QSizePolicy,
 )
-from PySide6.QtCore import Qt, Signal, QThread, QSize
+from PySide6.QtCore import Qt, Signal, QThread, QSize, QPoint
 from PySide6.QtGui import QFont, QPixmap
 
 from ..utils.layout import calc_layout_height
@@ -514,9 +514,10 @@ class PDFViewerPanel(QWidget):
         self._processor: PDFProcessor | None = None
         self._structured_doc: StructuredDocument | None = None
         self._cards: list[ParagraphCard | ImageCard] = []
-        self._trans_worker: TranslationWorker | None = None
+        self._trans_workers: dict[int, TranslationWorker] = {}
         self._auto_translate: bool = False
         self._stage1_complete: bool = False
+        self._stage1_errors: int = 0
         self._setup_ui()
 
     def set_parse_client(self, client: "LLMClient | None"):
@@ -570,8 +571,8 @@ class PDFViewerPanel(QWidget):
         self.progress_bar.setMaximumHeight(16)
         self.progress_bar.setStyleSheet(
             "QProgressBar { background-color: #24253a; border: 1px solid #3b3d54; "
-            "border-radius: 8px; }"
-            "QProgressBar::chunk { background-color: #7aa2f7; border-radius: 7px; }"
+            "border-radius: 7px; }"
+            "QProgressBar::chunk { background-color: #7aa2f7; border-radius: 6px; }"
         )
         info.addWidget(self.progress_bar)
         info.addStretch()
@@ -607,6 +608,7 @@ class PDFViewerPanel(QWidget):
 
     def load_pdf(self, file_path: str):
         """加载 PDF —— 检查缓存 → Stage1 → Stage2。"""
+        self._teardown_processor()
         self._reset_view()
         self._current_path = file_path
 
@@ -699,7 +701,13 @@ class PDFViewerPanel(QWidget):
         self.pdf_path_changed.emit(pdf_path)
 
     def _on_stage1_error(self, pdf_path: str, page_num: int, error_msg: str):
-        pass
+        self._stage1_errors += 1
+        self.info_label.setText(f"⚠️ 第 {page_num} 页解析失败：{error_msg[:80]}")
+        self.info_label.setStyleSheet("color: #f7768e;")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setToolTip(
+            f"已有 {self._stage1_errors} 页解析失败，可在论文库右键菜单选择「重新逐页解析」重试"
+        )
 
     def _on_request_integrate(self):
         if not self._processor:
@@ -736,6 +744,14 @@ class PDFViewerPanel(QWidget):
     def _reset_view(self):
         self._structured_doc = None
         self._stage1_complete = False
+        self._stage1_errors = 0
+        for worker in self._trans_workers.values():
+            if worker.isRunning():
+                worker.quit()
+                if not worker.wait(1000):
+                    worker.terminate()
+                    worker.wait()
+        self._trans_workers.clear()
         for card in self._cards:
             card.setParent(None)
             card.deleteLater()
@@ -779,23 +795,24 @@ class PDFViewerPanel(QWidget):
     def _on_translate_request(self, idx: int, text: str):
         if not self._translate_client:
             return
-        if self._trans_worker and self._trans_worker.isRunning():
-            self._trans_worker.quit()
-            if not self._trans_worker.wait(2000):
-                self._trans_worker.terminate()
-                self._trans_worker.wait()
-        self._trans_worker = TranslationWorker(self._translate_client, idx, text)
-        self._trans_worker.finished.connect(self._on_translation_done)
-        self._trans_worker.error.connect(self._on_translation_error)
-        self._trans_worker.start()
+        worker = self._trans_workers.get(idx)
+        if worker and worker.isRunning():
+            return
+        worker = TranslationWorker(self._translate_client, idx, text)
+        worker.finished.connect(self._on_translation_done)
+        worker.error.connect(self._on_translation_error)
+        self._trans_workers[idx] = worker
+        worker.start()
 
     def _on_translation_done(self, idx: int, zh: str):
+        self._trans_workers.pop(idx, None)
         for card in self._cards:
             if hasattr(card, '_index') and card._index == idx and isinstance(card, ParagraphCard):
                 card.show_translation(zh)
                 break
 
     def _on_translation_error(self, idx: int, err: str):
+        self._trans_workers.pop(idx, None)
         for card in self._cards:
             if hasattr(card, '_index') and card._index == idx and isinstance(card, ParagraphCard):
                 card.show_translation_error(err)
@@ -804,10 +821,47 @@ class PDFViewerPanel(QWidget):
     def _on_toggle_auto_translate(self):
         self._auto_translate = not self._auto_translate
         self.auto_trans_btn.setText(f"🔄 自动翻译：{'开' if self._auto_translate else '关'}")
+        if self._auto_translate:
+            self._on_scroll()
 
     def _on_scroll(self):
-        pass
+        if not self._auto_translate or not self._translate_client:
+            return
+        viewport = self.scroll_area.viewport()
+        view_top = self.scroll_area.verticalScrollBar().value()
+        view_bottom = view_top + viewport.height()
+        for card in self._cards:
+            if not isinstance(card, ParagraphCard):
+                continue
+            if not card.is_body or not card._is_english or card._translated:
+                continue
+            if not hasattr(card, 'trans_btn') or card.trans_btn is None or not card.trans_btn.isVisible():
+                continue
+            if card._index in self._trans_workers:
+                continue
+            pos = card.mapTo(viewport, QPoint(0, 0))
+            card_top = pos.y()
+            card_bottom = card_top + card.height()
+            if card_bottom > view_top and card_top < view_bottom:
+                card._request_translate()
 
     @property
     def structured_document(self) -> "StructuredDocument | None":
         return self._structured_doc
+
+    # ---- 生命周期 ----
+
+    def _teardown_processor(self):
+        """取消并断开旧的 PDF 处理器，避免切换论文时后台线程泄漏。"""
+        if self._processor is None:
+            return
+        proc = self._processor
+        try:
+            for sig in (proc.stage1_progress, proc.stage1_complete, proc.stage1_error,
+                        proc.stage2_finished, proc.stage2_error):
+                if proc.receivers(sig) > 0:
+                    sig.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        proc.cancel()
+        self._processor = None

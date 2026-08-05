@@ -6,10 +6,32 @@ from PySide6.QtWidgets import (
     QTabWidget, QWidget, QSpinBox, QRadioButton, QButtonGroup,
     QFileDialog,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal as QtSignal
 
 from ..core.llm_client import PROVIDERS
 from ..utils.config import load_config, save_config
+
+
+class _TestConnectionWorker(QThread):
+    """后台测试 API 连接，避免阻塞 UI。"""
+
+    finished_signal = QtSignal(bool, str)  # (ok, message)
+
+    def __init__(self, cfg: dict, parent=None):
+        super().__init__(parent)
+        self._cfg = cfg
+
+    def run(self):
+        try:
+            from ..core.llm_client import LLMClient
+            client = LLMClient(self._cfg["api_key"], self._cfg["base_url"], self._cfg["model"])
+            reply = client.chat_sync(
+                [{"role": "user", "content": "请回复：连接测试成功"}],
+                timeout=15, max_tokens=50,
+            )
+            self.finished_signal.emit(True, reply or "")
+        except Exception as e:
+            self.finished_signal.emit(False, str(e))
 
 
 class APIConfigTab(QWidget):
@@ -186,12 +208,12 @@ class ZoteroPathGroup(QGroupBox):
         self._path_edit.setPlaceholderText("自动检测或手动选择 Zotero 数据目录...")
         self._path_edit.setStyleSheet(
             "QLineEdit { background-color: #24253a; color: #cfd2e3; "
-            "border: 1px solid #3b3d54; border-radius: 4px; padding: 4px 8px; }"
+            "border: 1px solid #3b3d54; border-radius: 8px; padding: 4px 8px; }"
         )
         layout.addWidget(self._path_edit)
 
         browse_btn = QPushButton("📂")
-        browse_btn.setFixedWidth(64)
+        browse_btn.setFixedWidth(48)
         browse_btn.clicked.connect(self._browse)
         layout.addWidget(browse_btn)
 
@@ -254,9 +276,9 @@ class SettingsDialog(QDialog):
 
         btn = QHBoxLayout()
         btn.addStretch()
-        test = QPushButton("测试当前标签页连接")
-        test.clicked.connect(self._test)
-        btn.addWidget(test)
+        self._test_btn = QPushButton("测试当前标签页连接")
+        self._test_btn.clicked.connect(self._test)
+        btn.addWidget(self._test_btn)
         cancel = QPushButton("取消")
         cancel.clicked.connect(self.reject)
         btn.addWidget(cancel)
@@ -299,10 +321,16 @@ class SettingsDialog(QDialog):
         if not cfg.get("base_url"):
             QMessageBox.warning(self, "缺少 Base URL", "请先填写 Base URL。")
             return
-        try:
-            from ..core.llm_client import LLMClient
-            client = LLMClient(cfg["api_key"], cfg["base_url"], cfg["model"])
-            reply = client.chat_sync([{"role": "user", "content": "请回复：连接测试成功"}], timeout=15, max_tokens=50)
-            QMessageBox.information(self, "测试成功", f"API 连接正常！\n回复：{reply[:200]}")
-        except Exception as e:
-            QMessageBox.critical(self, "测试失败", f"连接失败：{e}")
+        self._test_btn.setEnabled(False)
+        self._test_btn.setText("测试中...")
+        self._test_worker = _TestConnectionWorker(cfg, self)
+        self._test_worker.finished_signal.connect(self._on_test_done)
+        self._test_worker.start()
+
+    def _on_test_done(self, ok: bool, msg: str):
+        self._test_btn.setEnabled(True)
+        self._test_btn.setText("测试当前标签页连接")
+        if ok:
+            QMessageBox.information(self, "测试成功", f"API 连接正常！\n回复：{msg[:200]}")
+        else:
+            QMessageBox.critical(self, "测试失败", f"连接失败：{msg}")

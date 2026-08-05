@@ -23,7 +23,7 @@ requirements.txt
 src/
 ├── app.py                 # MainWindow — 首次启动弹窗(FirstLaunchDialog) + 信号枢纽 + 三套 LLMClient
 ├── core/
-│   ├── pdf_parser.py      # PDF 底层工具（PyMuPDF）: 文本提取/渲染/图片提取
+│   ├── pdf_parser.py      # PDF 底层工具（PyMuPDF）: 文本提取/渲染
 │   ├── pdf_processor.py   # 核心！两阶段视觉 LLM 管线:
 │   │                      #   Stage 1: 逐页(图片+文本) → 视觉LLM → 结构化JSON → 缓存
 │   │                      #   Stage 2: 读缓存 → LLM跨页整合 → StructuredDocument → UI
@@ -31,8 +31,7 @@ src/
 │   ├── context_manager.py # Token 预算管理: 1M窗口，"前70%+后30%"截断策略
 │   ├── zotero_parser.py   # Zotero SQLite 解析器: 自动检测/文献搜索/主题排序（支持指定路径不全局探测）
 │   ├── unified_writer.py  # 统一润色+引文核查: UNIFIED_PROMPT + VERIFY_ONLY_PROMPT + 多层容错 JSON 解析
-│   ├── review_checker.py  # 引文核查引擎: 提取声明→Zotero匹配(三策略级联)→对照原文→评估
-│   ├── writing_coach.py   # 写作教练: 知识库管理/写作习惯分析/期刊格式分析/引用密度分析/润色/改写/遗漏文献检测
+│   ├── writing_coach.py   # 写作教练: 知识库管理/写作习惯分析/期刊格式分析/引用密度分析
 │   ├── writing_prompts.py # 四种写作类型的系统提示词（综述/论文/专利/软著）
 │   └── pubmed_searcher.py # PubMed E-utilities 检索客户端（esearch + efetch）
 ├── ui/

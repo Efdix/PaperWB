@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton,
     QLabel, QScrollArea, QFrame, QSplitter, QSizePolicy, QLineEdit,
+    QApplication,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor, QColor, QTextDocument
@@ -678,7 +679,6 @@ class DiffDialog(QDialog):
         self._chat_layout.addWidget(label)
 
         # 滚动到底部
-        QApplication = __import__('PySide6.QtWidgets', fromlist=['QApplication']).QApplication
         QApplication.processEvents()
         sb = self._chat_scroll.verticalScrollBar()
         sb.setValue(sb.maximum())

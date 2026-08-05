@@ -184,8 +184,6 @@ Compress-Archive -Path dist\PDFasker\* -DestinationPath build\PDFasker.zip
     │   └── {pdf_md5}/
     │       ├── _manifest.json      # 页面缓存清单
     │       └── page_001.json       # 单页解析结果
-    ├── para_cache/                 # 段落解析缓存
-    ├── image_cache/                # PDF 图片提取缓存
     ├── writing_kb/                 # 写作知识库
     │   └── {profile_name}/
     │       ├── config.json         # 含论文全文 + 风格分析结果
@@ -206,14 +204,13 @@ PDFasker/
 ├── src/
 │   ├── app.py                   # MainWindow — 首次启动弹窗 + 信号总枢纽 + 三套 LLMClient
 │   ├── core/
-│   │   ├── pdf_parser.py        # PDF 底层工具: 文本提取/渲染/图片提取 (PyMuPDF)
+│   │   ├── pdf_parser.py        # PDF 底层工具: 文本提取/渲染 (PyMuPDF)
 │   │   ├── pdf_processor.py     # 两阶段管线: PageAnalysisWorker / IntegrationWorker / PDFProcessor
 │   │   ├── llm_client.py        # OpenAI 兼容 API 客户端 + 5 个提供商预设
 │   │   ├── context_manager.py   # Token 预算管理: 1M窗口截断策略
 │   │   ├── zotero_parser.py     # Zotero SQLite 解析器: 自动检测/搜索/主题排序
 │   │   ├── unified_writer.py    # 统一润色+引文核查: prompt 模板 + JSON 多层容错解析
-│   │   ├── review_checker.py    # 引文核查引擎: 提取→匹配→对照→评估
-│   │   ├── writing_coach.py     # 写作教练: 知识库/风格分析/润色/改写/遗漏文献检测
+│   │   ├── writing_coach.py     # 写作教练: 知识库/风格分析/基准构建
 │   │   ├── writing_prompts.py   # 四种写作类型提示词
 │   │   └── pubmed_searcher.py   # PubMed E-utilities 检索客户端
 │   ├── ui/

@@ -195,8 +195,6 @@ class LitSearchDialog(QDialog):
         self._analysis_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._analysis_scroll.setStyleSheet(
             "QScrollArea { background-color: #1e2030; border: 1px solid #2a2c3d; border-radius: 6px; }"
-            "QScrollBar:vertical { background: #1a1b26; width: 8px; }"
-            "QScrollBar::handle:vertical { background: #3b3d54; border-radius: 4px; min-height: 30px; }"
         )
 
         self._analysis_label = QLabel("正在分析...")

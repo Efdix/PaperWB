@@ -30,6 +30,7 @@ class ReviewDialog(QDialog):
             self.windowFlags()
             | Qt.WindowType.WindowMaximizeButtonHint
             | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.Window
         )
         self._setup_ui()
 
@@ -42,13 +43,7 @@ class ReviewDialog(QDialog):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet(
-            "QScrollArea { border: none; background: #1a1b26; }"
-            "QScrollBar:vertical { background: #1a1b26; width: 8px; }"
-            "QScrollBar::handle:vertical { background: #3b3d54; border-radius: 4px; min-height: 30px; }"
-            "QScrollBar::handle:vertical:hover { background: #565a7a; }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-        )
+        scroll.setStyleSheet("QScrollArea { border: none; background: #1a1b26; }")
 
         container = QWidget()
         container.setStyleSheet("background: #1a1b26;")

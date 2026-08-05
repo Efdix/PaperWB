@@ -27,7 +27,6 @@ from PySide6.QtGui import QFont, QTextCursor
 if TYPE_CHECKING:
     from ..core.llm_client import LLMClient
     from ..core.zotero_parser import ZoteroLibrary
-    from ..core.review_checker import ReviewChecker
     from ..core.writing_coach import WritingCoach, WritingProfile
 
 
@@ -43,7 +42,7 @@ class StyleGuideDialog(QDialog):
         self.setWindowTitle("风格分析完成")
         self.resize(560, 500)
         self.setMinimumSize(420, 350)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.Window)
         self._setup_ui(profile)
 
     def _setup_ui(self, profile):
@@ -53,13 +52,7 @@ class StyleGuideDialog(QDialog):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet(
-            "QScrollArea { border: none; background: #1a1b26; }"
-            "QScrollBar:vertical { background: #1a1b26; width: 8px; }"
-            "QScrollBar::handle:vertical { background: #3b3d54; border-radius: 4px; min-height: 30px; }"
-            "QScrollBar::handle:vertical:hover { background: #565a7a; }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-        )
+        scroll.setStyleSheet("QScrollArea { border: none; background: #1a1b26; }")
 
         container = QWidget()
         container.setStyleSheet("background: #1a1b26;")
@@ -256,7 +249,7 @@ class UnifiedWorker(QThread):
     def __init__(self, client: "LLMClient", selected_text: str,
                  coach: "WritingCoach", zotero_lib: "ZoteroLibrary | None",
                  writing_type: str, pre_citation_sources: str = "",
-                 review_findings: str = ""):
+                 review_findings: str = "", verify_only: bool = False):
         super().__init__()
         self._client = client
         self._text = selected_text
@@ -265,6 +258,7 @@ class UnifiedWorker(QThread):
         self._writing_type = writing_type
         self._pre_citation_sources = pre_citation_sources
         self._review_findings = review_findings
+        self._verify_only = verify_only
 
     def run(self):
         try:
@@ -273,7 +267,8 @@ class UnifiedWorker(QThread):
             result = uw.process(self._client, self._text, self._coach,
                                 self._zotero, self._writing_type,
                                 pre_citation_sources=self._pre_citation_sources,
-                                review_findings=self._review_findings)
+                                review_findings=self._review_findings,
+                                verify_only=self._verify_only)
             self.finished_signal.emit(result)
         except Exception as e:
             self.error_signal.emit(str(e))
@@ -319,9 +314,9 @@ class WritingPanel(QWidget):
         super().__init__(parent)
         self._write_client: LLMClient | None = None
         self._zotero: ZoteroLibrary | None = None
-        self._review_checker: ReviewChecker | None = None
         self._coach = self._create_coach()
         self._current_writing_type = "综述"
+        self._verify_only = False
         self._style_worker: StyleGuideWorker | None = None
         self._unified_worker: UnifiedWorker | None = None
         self._review_worker: DraftReviewWorker | None = None
@@ -349,9 +344,6 @@ class WritingPanel(QWidget):
     def set_zotero_library(self, zotero: "ZoteroLibrary | None"):
         self._zotero = zotero
         self._update_zotero_status()
-
-    def set_checker(self, checker: "ReviewChecker | None"):
-        self._review_checker = checker
 
     # ---- UI 构建 ----
 
@@ -410,16 +402,18 @@ class WritingPanel(QWidget):
         self._zotero_path_edit.setMaximumWidth(200)
         self._zotero_path_edit.setStyleSheet(
             "QLineEdit { background-color: #24253a; color: #a9b1d6; "
-            "border: 1px solid #3b3d54; border-radius: 4px; padding: 2px 6px; "
+            "border: 1px solid #3b3d54; border-radius: 8px; padding: 2px 6px; "
             "font-size: 12px; }"
         )
         toolbar.addWidget(self._zotero_path_edit)
 
         self._zotero_browse_btn = QPushButton("📂")
-        self._zotero_browse_btn.setFixedWidth(45)
+        self._zotero_browse_btn.setFixedWidth(48)
         self._zotero_browse_btn.setToolTip("浏览选择 Zotero 数据目录")
         self._zotero_browse_btn.clicked.connect(self._on_zotero_browse)
         toolbar.addWidget(self._zotero_browse_btn)
+
+        self._zotero_path_edit.editingFinished.connect(self._on_zotero_path_edited)
 
         toolbar.addStretch()
         main_layout.addLayout(toolbar)
@@ -547,6 +541,13 @@ class WritingPanel(QWidget):
         )
         self._polish_btn.clicked.connect(self._on_unified_polish)
         ai_layout.addWidget(self._polish_btn)
+
+        self._verify_btn = QPushButton("🔍 仅核查引文")
+        self._verify_btn.setToolTip(
+            "不修改原文措辞，仅验证引文是否准确反映原文发现（需 Zotero 连接）。"
+        )
+        self._verify_btn.clicked.connect(self._on_verify_only)
+        ai_layout.addWidget(self._verify_btn)
 
         self._lit_search_btn = QPushButton("🔍 文献补充")
         self._lit_search_btn.setToolTip(
@@ -682,12 +683,23 @@ class WritingPanel(QWidget):
         path = QFileDialog.getExistingDirectory(self, "选择 Zotero 数据目录", current or "")
         if path:
             self._zotero_path_edit.setText(path)
-            from ..utils.config import load_config, save_config
-            cfg = load_config()
-            cfg["zotero_data_dir"] = path
-            save_config(cfg)
-            self._status_label.setText(f"Zotero 路径已更新: {path}")
-            self.zotero_path_changed.emit(path)
+            self._save_zotero_path(path)
+
+    def _on_zotero_path_edited(self):
+        """手动编辑 Zotero 路径并回车/失焦后保存。"""
+        path = self._zotero_path_edit.text().strip()
+        if path:
+            self._save_zotero_path(path)
+
+    def _save_zotero_path(self, path: str):
+        from ..utils.config import load_config, save_config
+        cfg = load_config()
+        if cfg.get("zotero_data_dir") == path:
+            return
+        cfg["zotero_data_dir"] = path
+        save_config(cfg)
+        self._status_label.setText(f"Zotero 路径已更新: {path}")
+        self.zotero_path_changed.emit(path)
 
     def _on_writing_type_changed(self, idx: int):
         self._current_writing_type = self._type_combo.itemData(idx) or "综述"
@@ -825,6 +837,15 @@ class WritingPanel(QWidget):
 
     def _on_unified_polish(self):
         """统一润色 + 引文核查（含草稿评价诊断）。"""
+        self._verify_only = False
+        self._run_polish_flow()
+
+    def _on_verify_only(self):
+        """仅核查引文 —— 不修改原文措辞。"""
+        self._verify_only = True
+        self._run_polish_flow()
+
+    def _run_polish_flow(self):
         cursor = self.editor.textCursor()
         if not cursor.hasSelection():
             QMessageBox.warning(self, "提示", "请先在编辑器中选中要处理的文字")
@@ -877,6 +898,7 @@ class WritingPanel(QWidget):
 
         self._polish_btn.setEnabled(False)
         self._polish_btn.setText("⏳ 处理中...")
+        self._verify_btn.setEnabled(False)
         self._review_btn.setEnabled(False)
         self._progress_bar.setVisible(True)
         self._cancel_btn.setVisible(True)
@@ -901,6 +923,7 @@ class WritingPanel(QWidget):
         self._cancel_btn.setVisible(False)
         self._polish_btn.setEnabled(True)
         self._polish_btn.setText("✨ AI 润色与核查")
+        self._verify_btn.setEnabled(True)
         self._review_btn.setEnabled(True)
         self._status_label.setText("引文解析失败")
 
@@ -956,10 +979,11 @@ class WritingPanel(QWidget):
 
     def _start_polish_worker(self, text: str, pre_citation_sources: str, review_findings: str = ""):
         """启动润色 worker（统一入口）。"""
-        self._progress_bar.setFormat("正在润色修改...")
+        self._progress_bar.setFormat("正在润色修改..." if not self._verify_only else "正在核查引文...")
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)
         self._polish_btn.setEnabled(False)
+        self._verify_btn.setEnabled(False)
         self._review_btn.setEnabled(False)
         QApplication.processEvents()
 
@@ -967,6 +991,7 @@ class WritingPanel(QWidget):
             self._write_client, text, self._coach, self._zotero,
             self._current_writing_type, pre_citation_sources,
             review_findings=review_findings,
+            verify_only=self._verify_only,
         )
         self._unified_worker.finished_signal.connect(self._on_unified_done)
         self._unified_worker.error_signal.connect(self._on_unified_error)
@@ -978,6 +1003,7 @@ class WritingPanel(QWidget):
         self._cancel_btn.setVisible(False)
         self._polish_btn.setEnabled(True)
         self._polish_btn.setText("\u2728 AI \u6da6\u8272\u4e0e\u6838\u67e5")
+        self._verify_btn.setEnabled(True)
         self._review_btn.setEnabled(True)
         self._status_label.setText("\u5904\u7406\u5b8c\u6210")
 
@@ -1033,6 +1059,7 @@ class WritingPanel(QWidget):
         self._progress_bar.setRange(0, 100)
         self._polish_btn.setEnabled(True)
         self._polish_btn.setText("\u2728 AI \u6da6\u8272\u4e0e\u6838\u67e5")
+        self._verify_btn.setEnabled(True)
         self._review_btn.setEnabled(True)
         self._status_label.setText(f"\u5904\u7406\u5931\u8d25: {err[:60]}")
         QMessageBox.warning(self, "\u5904\u7406\u5931\u8d25", err)
@@ -1081,6 +1108,7 @@ class WritingPanel(QWidget):
         self._review_btn.setEnabled(False)
         self._review_btn.setText("⏳ 评价中...")
         self._polish_btn.setEnabled(False)
+        self._verify_btn.setEnabled(False)
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)
         self._cancel_btn.setVisible(True)
@@ -1101,6 +1129,7 @@ class WritingPanel(QWidget):
         self._review_btn.setEnabled(True)
         self._review_btn.setText("📊 草稿整体评价")
         self._polish_btn.setEnabled(True)
+        self._verify_btn.setEnabled(True)
         self._status_label.setText("评价完成")
 
         profile_name = ""
@@ -1119,6 +1148,7 @@ class WritingPanel(QWidget):
         self._review_btn.setEnabled(True)
         self._review_btn.setText("📊 草稿整体评价")
         self._polish_btn.setEnabled(True)
+        self._verify_btn.setEnabled(True)
         self._status_label.setText(f"评价失败: {err[:60]}")
         QMessageBox.warning(self, "评价失败", err)
 
@@ -1179,6 +1209,7 @@ class WritingPanel(QWidget):
         self._cancel_btn.setVisible(False)
         self._polish_btn.setEnabled(True)
         self._polish_btn.setText("\u2728 AI \u6da6\u8272\u4e0e\u6838\u67e5")
+        self._verify_btn.setEnabled(True)
         self._review_btn.setEnabled(True)
         self._review_btn.setText("\ud83d\udcca \u8349\u7a3f\u6574\u4f53\u8bc4\u4ef7")
         self._status_label.setText("\u5df2\u53d6\u6d88")

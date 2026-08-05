@@ -853,31 +853,6 @@ class DocumentIntegrator:
         self._worker.error.connect(on_error)
         self._worker.start()
 
-    def integrate_sync(self) -> StructuredDocument | None:
-        """同步执行跨页整合（用于测试或简单场景）。"""
-        all_page_data = self._load_all_page_caches()
-        if not all_page_data:
-            return None
-
-        pages_json = json.dumps(all_page_data, ensure_ascii=False, indent=2)
-        user_prompt = (
-            f"请整合以下 {len(all_page_data)} 页论文的结构化数据。\n\n"
-            f"【逐页数据】\n{pages_json}"
-        )
-        messages = [
-            {"role": "system", "content": INTEGRATION_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ]
-        response = self._client.chat_sync(messages, timeout=300.0)
-        result = _validate_integration_result(response)
-
-        if "error" in result:
-            return None
-
-        doc = StructuredDocument.from_dict(result)
-        doc.raw_page_count = len(all_page_data)
-        return doc
-
     def cancel(self) -> None:
         """取消整合。"""
         if self._worker and self._worker.isRunning():
@@ -1051,30 +1026,17 @@ class PDFProcessor(QObject):
         mode = config.get("stage1_mode", "async")
         concurrency = config.get("stage1_concurrency", 3)
 
-        if mode == "sync":
-            # 同步模式：单个 QThread 逐页顺序处理
-            self._analyzer = PageAnalyzer(
-                self._pdf_path, self._client, self._cache_dir, self._manifest,
-                max_concurrent=1,
-            )
-            self._analyzer.set_callbacks(
-                on_page_done=self._on_stage1_page_done,
-                on_all_done=self._on_stage1_all_done,
-                on_error=self._on_stage1_page_error,
-            )
-            self._analyzer.start()
-        else:
-            # 异步模式：多页并发
-            self._analyzer = PageAnalyzer(
-                self._pdf_path, self._client, self._cache_dir, self._manifest,
-                max_concurrent=max(1, min(10, concurrency)),
-            )
-            self._analyzer.set_callbacks(
-                on_page_done=self._on_stage1_page_done,
-                on_all_done=self._on_stage1_all_done,
-                on_error=self._on_stage1_page_error,
-            )
-            self._analyzer.start()
+        max_concurrent = 1 if mode == "sync" else max(1, min(10, concurrency))
+        self._analyzer = PageAnalyzer(
+            self._pdf_path, self._client, self._cache_dir, self._manifest,
+            max_concurrent=max_concurrent,
+        )
+        self._analyzer.set_callbacks(
+            on_page_done=self._on_stage1_page_done,
+            on_all_done=self._on_stage1_all_done,
+            on_error=self._on_stage1_page_error,
+        )
+        self._analyzer.start()
 
     def start_stage2(self) -> None:
         """启动 Stage 2 跨页整合（异步）。"""

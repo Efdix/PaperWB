@@ -136,7 +136,7 @@ class ChatPanel(QWidget):
         # 分隔线
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #313244; max-height: 1px;")
+        sep.setStyleSheet("background-color: #2a2c3d; max-height: 1px;")
         layout.addWidget(sep)
 
         # 消息滚动区域

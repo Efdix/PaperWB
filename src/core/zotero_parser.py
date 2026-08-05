@@ -66,6 +66,12 @@ class ZoteroLibrary:
     构造函数会自动向上/向下查找 zotero.sqlite 和 storage 目录。
     """
 
+    _STOP_WORDS: frozenset[str] = frozenset({
+        'the', 'and', 'that', 'this', 'for', 'with', 'are', 'was',
+        'were', 'have', 'has', 'been', 'from', 'their', 'which',
+        '等', '了', '的', '是', '在', '和', '与', '或',
+    })
+
     def __init__(self, zotero_data_dir: str = "") -> None:
         """初始化 Zotero 库管理器。
 
@@ -81,7 +87,8 @@ class ZoteroLibrary:
         self._items_by_key: dict[str, ZoteroItem] = {}
         self._loaded = False
 
-        if zotero_data_dir and os.path.isdir(zotero_data_dir):
+        if zotero_data_dir:
+            # 用户显式指定路径时，仅在该目录下查找，不做全局探测
             self._resolve_paths(zotero_data_dir, allow_global=False)
         else:
             self._data_dir = self._auto_detect()
@@ -486,25 +493,6 @@ class ZoteroLibrary:
 
     # ========== 搜索/匹配 ==========
 
-    def find_by_title(self, title: str) -> ZoteroItem | None:
-        """按标题精确或模糊查找文献。"""
-        if not self._items:
-            self.load()
-
-        title_clean = re.sub(r'[^\w\s]', '', title.lower()).strip()
-
-        # 精确匹配
-        if title_clean in self._items_by_title:
-            return self._items_by_title[title_clean]
-
-        # 子串匹配
-        for item in self._items:
-            item_clean = re.sub(r'[^\w\s]', '', item.title.lower()).strip()
-            if title_clean in item_clean or item_clean in title_clean:
-                return item
-
-        return None
-
     def find_by_citation(self, authors: str, year: str, title_hint: str = "") -> list[ZoteroItem]:
         """按作者 + 年份 + 标题提示查找文献，返回所有匹配的候选列表。"""
         if not self._items:
@@ -554,14 +542,9 @@ class ZoteroLibrary:
         topic_lower = topic_text.lower()
         # 提取主题关键词（2-4 字中文词 或 3+ 字母英文词，排除停用词）
         keywords: set[str] = set()
-        stop_words = self._STOP_WORDS if hasattr(self, '_STOP_WORDS') else {
-            'the', 'and', 'that', 'this', 'for', 'with', 'are', 'was',
-            'were', 'have', 'has', 'been', 'from', 'their', 'which',
-            '等', '了', '的', '是', '在', '和', '与', '或',
-        }
         for m in re.finditer(r'[\u4e00-\u9fff]{2,4}|[a-zA-Z]{3,}', topic_lower):
             kw = m.group()
-            if kw not in stop_words:
+            if kw not in self._STOP_WORDS:
                 keywords.add(kw)
 
         if not keywords:
@@ -642,12 +625,6 @@ class ZoteroLibrary:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:max_results]]
-
-    def get_items_with_pdf(self) -> list[ZoteroItem]:
-        """获取所有有本地 PDF 的条目"""
-        if not self._items:
-            self.load()
-        return [item for item in self._items if item.pdf_path and os.path.isfile(item.pdf_path)]
 
     def get_all_items(self) -> list[ZoteroItem]:
         if not self._items:

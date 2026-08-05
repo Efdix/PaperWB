@@ -53,30 +53,6 @@ class LLMClient:
         content = response.choices[0].message.content
         return content or ""
 
-    def chat_with_image(self, system_prompt: str, user_text: str,
-                        image_base64: str, timeout: float = 180.0,
-                        max_tokens: int | None = None) -> str:
-        """发送图片+文本给视觉 LLM，返回回复文本。
-
-        Args:
-            system_prompt: 系统提示词
-            user_text: 用户文本指令
-            image_base64: 图片 base64 编码（含 data:image/png;base64, 前缀）
-            timeout: 超时秒数（视觉模型较慢，默认 180s）
-            max_tokens: 最大生成 token 数
-        """
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {"url": image_base64}},
-                ],
-            },
-        ]
-        return self.chat_sync(messages, timeout=timeout, max_tokens=max_tokens)
-
 
 # ---- 预设提供商 ----
 

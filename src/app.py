@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
 
 from .core.context_manager import ContextManager
 from .core.llm_client import LLMClient
-from .core.review_checker import ReviewChecker
 from .core.zotero_parser import ZoteroLibrary
 from .ui.chat_panel import ChatPanel
 from .ui.pdf_list_panel import PDFListPanel
@@ -168,7 +167,6 @@ class MainWindow(QMainWindow):
 
         self._processors: dict[str, object] = {}
         self._zotero: ZoteroLibrary | None = None
-        self._review_checker: ReviewChecker | None = None
 
         self._setup_ui()
         self._apply_styles()
@@ -320,39 +318,40 @@ class MainWindow(QMainWindow):
             return
         self._save_current_chat()
         self._current_pdf_path = ""
-        self.pdf_viewer._reset_view()
-        self.pdf_viewer.set_parse_client(self._llm_parse)
-        self.pdf_viewer.set_translate_client(self._llm_translate)
-        self.pdf_viewer.load_pdf(path)
-
-        if hasattr(self.pdf_viewer, '_processor') and self.pdf_viewer._processor:
-            proc = self.pdf_viewer._processor
-            self._processors[path] = proc
-            proc.stage1_progress.connect(self._on_processor_progress)
+        self._load_pdf_into_viewer(path)
 
     def _on_library_pdf_selected(self, path: str):
         if not path:
             return
         if path != self.pdf_viewer.get_current_path():
             self._save_current_chat()
-            self.pdf_viewer.set_parse_client(self._llm_parse)
-            self.pdf_viewer.set_translate_client(self._llm_translate)
-            self.pdf_viewer.load_pdf(path)
-            if hasattr(self.pdf_viewer, '_processor') and self.pdf_viewer._processor:
-                proc = self.pdf_viewer._processor
-                self._processors[path] = proc
-                proc.stage1_progress.connect(self._on_processor_progress)
+            self._load_pdf_into_viewer(path)
 
     def _on_library_pdf_reload(self, path: str):
         if path:
             self._save_current_chat()
             self._current_pdf_path = ""
-            from .utils.config import delete_page_cache
-            delete_page_cache(path)
-            self.pdf_viewer._reset_view()
-            self.pdf_viewer.set_parse_client(self._llm_parse)
-            self.pdf_viewer.set_translate_client(self._llm_translate)
-            self.pdf_viewer.load_pdf(path)
+            self._load_pdf_into_viewer(path)
+
+    def _load_pdf_into_viewer(self, path: str) -> None:
+        """统一入口：取消其他论文的后台处理器 → 注入客户端 → 加载 PDF → 登记进度回调。"""
+        self._cleanup_processors(keep_path=path)
+        self.pdf_viewer.set_parse_client(self._llm_parse)
+        self.pdf_viewer.set_translate_client(self._llm_translate)
+        self.pdf_viewer.load_pdf(path)
+        proc = getattr(self.pdf_viewer, '_processor', None)
+        if proc is not None:
+            self._processors[path] = proc
+            proc.stage1_progress.connect(self._on_processor_progress)
+
+    def _cleanup_processors(self, keep_path: str = "") -> None:
+        """取消并移除其他 PDF 的后台解析处理器，避免切换论文时线程泄漏。"""
+        for p in list(self._processors):
+            if p == keep_path:
+                continue
+            proc = self._processors.pop(p)
+            if hasattr(proc, 'cancel'):
+                proc.cancel()
 
     # ---- 右键菜单：分开重跑 ----
     def _on_restage1(self, path: str):
@@ -360,20 +359,14 @@ class MainWindow(QMainWindow):
         from .utils.config import delete_page_cache
         delete_page_cache(path)
         self._current_pdf_path = ""
-        self.pdf_viewer._reset_view()
-        self.pdf_viewer.set_parse_client(self._llm_parse)
-        self.pdf_viewer.set_translate_client(self._llm_translate)
-        self.pdf_viewer.load_pdf(path)
+        self._load_pdf_into_viewer(path)
 
     def _on_restage2(self, path: str):
         """重新跨页整合 —— 只清除整合结果。"""
         from .utils.config import save_doc_state
         save_doc_state(path, {})  # 清空
         self._current_pdf_path = ""
-        self.pdf_viewer._reset_view()
-        self.pdf_viewer.set_parse_client(self._llm_parse)
-        self.pdf_viewer.set_translate_client(self._llm_translate)
-        self.pdf_viewer.load_pdf(path)
+        self._load_pdf_into_viewer(path)
 
     def _on_processor_progress(self, pdf_path: str, current: int, total: int):
         self.pdf_list.update_pdf_progress(pdf_path, current, total)
@@ -450,6 +443,7 @@ class MainWindow(QMainWindow):
     def _on_clear_chat(self):
         self._context_manager.clear_history()
         self.chat_panel.clear_messages()
+        self.chat_panel.set_token_count(0)
         if self._current_pdf_path:
             delete_chat_history(self._current_pdf_path)
         self.status_bar.showMessage("对话已清空")
@@ -487,10 +481,10 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self, "关于 PDFasker",
             "<h3>PDFasker</h3>"
-            "<p>AI 论文解读助手 v2.0</p>"
-            "<p>支持 DeepSeek V4、Mimo 及所有 OpenAI 兼容接口。</p>"
+            "<p>AI 论文解读助手 v1.0.0</p>"
+            "<p>支持 DeepSeek、Mimo、OpenCode 及所有 OpenAI 兼容接口。</p>"
             "<p>三套 API：阅读-解析（视觉解析+整合+问答）、阅读-翻译、写作（引文核查+风格分析+文献推荐）</p>"
-            "<p>🆕 视觉 LLM 两阶段管线 · 结构化阅读视图 · 知识库驱动写作辅助 · Semantic Scholar 集成</p>"
+            "<p>🆕 视觉 LLM 两阶段管线 · 结构化阅读视图 · 知识库驱动写作辅助 · Zotero 引文核查 · PubMed 文献检索</p>"
         )
 
     def closeEvent(self, event) -> None:
@@ -565,15 +559,11 @@ class MainWindow(QMainWindow):
                 self, "Zotero 加载失败",
                 f"未能从指定目录加载到文献：\n{zotero_dir}\n\n请检查该目录是否包含 zotero.sqlite 和 storage/ 子目录。"
             )
-        if self._llm_write:
-            self._review_checker = ReviewChecker(self._llm_write, self._zotero)
-            self._writing_panel.set_checker(self._review_checker)
         self._writing_panel.set_write_client(self._llm_write)
         self._writing_panel.set_zotero_library(self._zotero)
 
     def _validate_data_root(self) -> None:
         """启动时校验数据根目录是否可访问。"""
-        import os as _os
         dr = self._config.get("data_root", "")
         if not dr:
             return
@@ -588,7 +578,7 @@ class MainWindow(QMainWindow):
                     f"数据根目录无法创建：\n{dr}\n\n请在菜单「设置 → 数据目录...」中重新设置。"
                 )
                 return
-        if not _os.access(str(p), _os.W_OK):
+        if not os.access(str(p), os.W_OK):
             QMessageBox.warning(
                 self, "数据目录无写入权限",
                 f"数据根目录无写入权限：\n{dr}\n\n请检查权限或在菜单「设置 → 数据目录...」中重新设置。"

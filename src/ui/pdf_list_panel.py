@@ -128,6 +128,7 @@ class PDFListPanel(QWidget):
             file_item.setData(0, Qt.ItemDataRole.UserRole, {
                 "type": "pdf",
                 "path": pdf.get("path"),
+                "name": fname,
             })
             file_item.setToolTip(0, pdf.get("path", ""))
             # 根据文件是否存在设置颜色
@@ -182,9 +183,49 @@ class PDFListPanel(QWidget):
             self.pdf_imported.emit(path)
 
     def _new_folder(self) -> None:
-        """新建文件夹分类（作为标签存在，不需要单独存储）。"""
+        """新建文件夹分类，并把选中的论文移入。"""
         name, ok = QInputDialog.getText(self, "新建文件夹", "文件夹名称：")
         if ok and name.strip():
+            self._move_pdfs_into_folder(name.strip())
+
+    def _move_pdfs_into_folder(self, folder: str) -> None:
+        """弹出多选对话框，将勾选的论文移入指定文件夹。"""
+        from PySide6.QtWidgets import (
+            QDialog, QListWidget, QListWidgetItem, QDialogButtonBox,
+            QVBoxLayout, QLabel,
+        )
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"移入文件夹「{folder}」")
+        dialog.setMinimumWidth(420)
+        lay = QVBoxLayout(dialog)
+        lay.addWidget(QLabel("勾选要移入该文件夹的论文（可多选；直接确定则只创建空文件夹）："))
+        lst = QListWidget()
+        for pdf in self._library:
+            fname = pdf.get("name", os.path.basename(pdf.get("path", "")))
+            item = QListWidgetItem(fname)
+            item.setData(Qt.ItemDataRole.UserRole, pdf.get("path"))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            lst.addItem(item)
+        lay.addWidget(lst)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dialog.accept)
+        btns.rejected.connect(dialog.reject)
+        lay.addWidget(btns)
+
+        if dialog.exec():
+            chosen = {
+                lst.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(lst.count())
+                if lst.item(i).checkState() == Qt.CheckState.Checked
+            }
+            lib = load_library()
+            for entry in lib:
+                if entry.get("path") in chosen:
+                    entry["folder"] = folder
+            save_library(lib)
             self._refresh()
 
     def _on_item_clicked(self, item: QTreeWidgetItem, col: int):
@@ -227,16 +268,17 @@ class PDFListPanel(QWidget):
                 a = move_menu.addAction(f)
                 a.triggered.connect(lambda checked, folder=f: self._move_pdf(path, folder))
             menu.addSeparator()
-            a = menu.addAction("  � 重新逐页解析")
+            a = menu.addAction("  🔁 重新逐页解析")
             a.triggered.connect(lambda: self._on_restage1(path))
             a = menu.addAction("  🔄 重新跨页整合")
             a.triggered.connect(lambda: self._on_restage2(path))
             a = menu.addAction("  🗑️ 从库中移除")
             a.triggered.connect(lambda: self._remove_pdf(path))
+            menu.addSeparator()
+            a = menu.addAction("  📂 重新加载 PDF")
+            a.triggered.connect(lambda: self._reload_pdf(path))
         elif data and data.get("type") == "folder":
             name = data.get("name", "")
-            a = menu.addAction("  + 新建子文件夹")
-            a.triggered.connect(self._new_folder)
             menu.addSeparator()
             a = menu.addAction("  重命名")
             a.triggered.connect(lambda: self._rename_folder(name))
@@ -296,18 +338,14 @@ class PDFListPanel(QWidget):
             self._refresh()
 
     def _reload_pdf(self, path: str):
-        """清除所有缓存并重新加载 PDF"""
+        """清除所有缓存并重新加载 PDF。"""
         r = QMessageBox.question(self, "确认",
-            f"重新加载此 PDF？\n\n这将清除段落缓存、排版/翻译状态和图像分析缓存，\n"
+            f"重新加载此 PDF？\n\n这将清除逐页解析缓存、跨页整合结果和对话历史，\n"
             f"然后重新解析 PDF。下次需要重新运行 LLM。")
         if r == QMessageBox.StandardButton.Yes:
-            from ..utils.config import (
-                delete_chat_history, delete_doc_state, delete_paragraph_cache
-            )
             delete_chat_history(path)
             delete_doc_state(path)
-            delete_paragraph_cache(path)
-            # 触发重新加载
+            delete_page_cache(path)
             self.pdf_reload_requested.emit(path)
 
     def _rename_folder(self, old: str):
@@ -340,33 +378,26 @@ class PDFListPanel(QWidget):
             current: 当前已完成页数
             total: 总页数
         """
+        def _apply(item: "QTreeWidgetItem"):
+            data = item.data(0, Qt.ItemDataRole.UserRole) or {}
+            if data.get("path") != pdf_path:
+                return False
+            base_name = data.get("name") or item.text(0)
+            base_name = base_name.lstrip("✅🔄 ").strip()
+            if current >= total:
+                item.setText(0, f"✅ {base_name}")
+                item.setToolTip(0, f"{pdf_path}\n解析完成: {current}/{total} 页")
+            else:
+                item.setText(0, f"🔄 {base_name} ({current}/{total})")
+                item.setToolTip(0, f"{pdf_path}\n解析中: {current}/{total} 页")
+            return True
+
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
-            data = item.data(0, Qt.ItemDataRole.UserRole)
-            if data and data.get("path") == pdf_path:
-                pct = int(current / max(total, 1) * 100)
-                fname = item.text(0)
-                # 追加进度标识
-                if current >= total:
-                    item.setText(0, f"✅ {fname}")
-                    item.setToolTip(0, f"{pdf_path}\n解析完成: {current}/{total} 页")
-                else:
-                    item.setText(0, f"🔄 {fname} ({current}/{total})")
-                    item.setToolTip(0, f"{pdf_path}\n解析中: {current}/{total} 页")
+            if _apply(item):
                 return
-            # 也检查子节点
             for j in range(item.childCount()):
-                child = item.child(j)
-                cdata = child.data(0, Qt.ItemDataRole.UserRole)
-                if cdata and cdata.get("path") == pdf_path:
-                    pct = int(current / max(total, 1) * 100)
-                    cfname = child.text(0)
-                    if current >= total:
-                        child.setText(0, f"✅ {cfname}")
-                        child.setToolTip(0, f"{pdf_path}\n解析完成: {current}/{total} 页")
-                    else:
-                        child.setText(0, f"🔄 {cfname} ({current}/{total})")
-                        child.setToolTip(0, f"{pdf_path}\n解析中: {current}/{total} 页")
+                if _apply(item.child(j)):
                     return
 
     # ========== 拖拽导入 ==========
