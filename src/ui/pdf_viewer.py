@@ -52,9 +52,14 @@ class TranslationWorker(QThread):
         try:
             result = self._client.chat_sync([
                 {"role": "system", "content": (
-                    "你是学术论文翻译助手。将以下段落译成中文。"
-                    "要求：术语准确，首次出现保留英文括号注中文；"
-                    "保持段落结构；自然流畅；只输出译文。"
+                    "你是一位学术论文专业翻译，精通中英双语与科研写作。请将用户提供的英文段落译成中文。\n\n"
+                    "翻译要求：\n"
+                    "1. 术语准确：专业术语首次出现时保留英文并括号注释中文（如 single-cell RNA-seq（单细胞 RNA 测序）），"
+                    "后续沿用；人名、机构名、基因/蛋白名保留原文\n"
+                    "2. 表达自然：按中文语序拆句重排，避免欧化句式与机翻腔；长难句可适当拆分\n"
+                    "3. 忠实原意：不增删信息，不改变数字、单位、引用标记（如 [1]、Smith et al., 2020）\n"
+                    "4. 保持段落结构与逻辑连接词\n"
+                    "5. 只输出译文本身，不要添加任何解释、注释或原文。"
                 )},
                 {"role": "user", "content": self._text},
             ])
@@ -776,12 +781,8 @@ class PDFViewerPanel(QWidget):
             image_base_dir = str(get_page_cache_dir(self._current_path))
 
         for i, elem in enumerate(doc.display_elements):
-            if elem.element_type in ("figure", "table") and elem.image_path:
-                full_img_path = elem.image_path
-                if not _os.path.isabs(full_img_path) and image_base_dir:
-                    full_img_path = _os.path.join(image_base_dir, elem.image_path)
-                if _os.path.exists(full_img_path):
-                    elem.image_path = full_img_path
+            if elem.element_type in ("figure", "table"):
+                elem.image_path = self._resolve_image_path(elem, image_base_dir)
                 card = ImageCard(elem, parent=self.container)
             elif elem.element_type in ("header_footer", "publisher_logo"):
                 continue
@@ -791,6 +792,25 @@ class PDFViewerPanel(QWidget):
             self._cards.append(card)
             self.card_layout.addWidget(card)
         self.card_layout.addStretch()
+
+    def _resolve_image_path(self, elem, image_base_dir: str) -> str:
+        """解析图表截图路径：优先元素自带路径，否则按 element_id 重建（兼容旧缓存）。
+
+        裁剪文件名格式: page_{page:03d}_{element_id}.png。
+        """
+        if elem.image_path:
+            p = elem.image_path
+            if not _os.path.isabs(p) and image_base_dir:
+                p = _os.path.join(image_base_dir, p)
+            if _os.path.exists(p):
+                return p
+        if elem.element_id and image_base_dir:
+            p = _os.path.join(
+                image_base_dir, f"page_{elem.page:03d}_{elem.element_id}.png"
+            )
+            if _os.path.exists(p):
+                return p
+        return ""
 
     def _on_translate_request(self, idx: int, text: str):
         if not self._translate_client:

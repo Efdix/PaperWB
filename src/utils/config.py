@@ -79,6 +79,8 @@ DEFAULT_CONFIG: dict = {
     "zotero_data_dir": "",
     "stage1_mode": "async",
     "stage1_concurrency": 3,
+    "stage1_parser": "vision",   # 逐页解析引擎: vision（视觉LLM） | docling（本地，快/省）
+    "custom_writing_types": {},  # 自定义写作类型: {key: {"label": str, "system_prompt": str}}
 }
 
 
@@ -225,6 +227,32 @@ def save_config(config: dict) -> None:
         config["zotero_data_dir"] = os.path.normpath(str(config["zotero_data_dir"]))
     cf = _config_file()
     cf.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ---- 自定义写作类型 ----
+
+def get_custom_writing_types() -> dict:
+    """返回用户自定义写作类型: {key: {"label": str, "system_prompt": str}}。"""
+    return load_config().get("custom_writing_types", {}) or {}
+
+
+def add_custom_writing_type(key: str, label: str, system_prompt: str) -> None:
+    """新增或更新一个自定义写作类型。"""
+    config = load_config()
+    custom = config.get("custom_writing_types", {}) or {}
+    custom[key] = {"label": label, "system_prompt": system_prompt}
+    config["custom_writing_types"] = custom
+    save_config(config)
+
+
+def remove_custom_writing_type(key: str) -> None:
+    """删除一个自定义写作类型。"""
+    config = load_config()
+    custom = config.get("custom_writing_types", {}) or {}
+    if key in custom:
+        custom.pop(key)
+        config["custom_writing_types"] = custom
+        save_config(config)
 
 
 def has_data_root() -> bool:

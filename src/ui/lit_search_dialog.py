@@ -36,7 +36,7 @@ class LitAnalysisWorker(QThread):
             {"role": "user", "content": prompt},
         ]
         try:
-            response = self._client.chat_sync(messages, timeout=120.0)
+            response = self._client.chat_sync(messages, timeout=120.0, json_mode=True)
             if not response or not response.strip():
                 self.error.emit("LLM 返回空响应，请稍后重试")
                 return
@@ -71,7 +71,7 @@ class LitRefineWorker(QThread):
             {"role": "user", "content": prompt},
         ]
         try:
-            response = self._client.chat_sync(messages, timeout=120.0)
+            response = self._client.chat_sync(messages, timeout=120.0, json_mode=True)
             if not response or not response.strip():
                 self.error.emit("LLM 返回空响应，请稍后重试")
                 return
@@ -117,8 +117,10 @@ class LitSearchDialog(QDialog):
     2. 发送反馈让 LLM 重新分析（可多轮）
     3. 执行 PubMed 检索查看文献
     4. 查看检索结果后继续反馈重新分析 + 重新检索
-    5. 随时导出 CSV 或关闭
+    5. 随时导出 CSV、将 PubMed 结果交叉验证 LLM 推断文献、插入引用或关闭
     """
+
+    insert_requested = Signal(str)
 
     ANALYSIS_PROMPT = """你是学术文献检索专家。请分析以下综述草稿，找出可能遗漏的研究方向、列出你已知的相关文献、并生成 PubMed 检索关键词。
 
@@ -274,6 +276,11 @@ class LitSearchDialog(QDialog):
 
         # 底部按钮
         bottom_row = QHBoxLayout()
+        self._insert_btn = QPushButton("📥 插入引用")
+        self._insert_btn.setToolTip("将选中的 PubMed 文献以 (Author et al., Year) 格式插入到编辑器光标处")
+        self._insert_btn.clicked.connect(self._on_insert_selected)
+        self._insert_btn.setEnabled(False)
+        bottom_row.addWidget(self._insert_btn)
         bottom_row.addStretch()
         self._export_btn = QPushButton("导出 CSV")
         self._export_btn.clicked.connect(self._export_csv)
@@ -443,6 +450,7 @@ class LitSearchDialog(QDialog):
         self._refine_btn.setEnabled(True)
         self._search_btn.setEnabled(True)
         self._export_btn.setVisible(True)
+        self._insert_btn.setEnabled(bool(papers))
         self._results_list.clear()
 
         kw_str = ", ".join(self._search_keywords[:6])
@@ -459,8 +467,58 @@ class LitSearchDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, p)
             self._results_list.addItem(item)
 
+        # 交叉验证：LLM 推断的 known_papers 能否在 PubMed 结果中匹配到
+        known = getattr(self, '_known_papers', []) or []
+        if known:
+            verified = sum(
+                1 for kp in known if self._title_match(kp.get("title", ""), papers)
+            )
+            if verified >= len(known):
+                self._results_list.addItem(
+                    f"✅ 交叉验证：LLM 推断的 {len(known)} 篇文献全部能在 PubMed 检索结果中匹配到。"
+                )
+            elif verified > 0:
+                self._results_list.addItem(
+                    f"🔍 交叉验证：LLM 推断的 {len(known)} 篇文献中，仅 {verified} 篇能在 PubMed 检索结果中匹配到，"
+                    f"其余 {len(known) - verified} 篇未检索到，请人工核实。"
+                )
+            else:
+                self._results_list.addItem(
+                    f"⚠️ 交叉验证：LLM 推断的 {len(known)} 篇文献均未在 PubMed 检索结果中匹配到，请警惕编造风险。"
+                )
+
         self._results_list.addItem("")
         self._results_list.addItem("💡 如结果不理想，可修改反馈后重新分析，再次检索。")
+
+    @staticmethod
+    def _normalize_title(title: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", (title or "").lower())
+
+    @staticmethod
+    def _title_match(title: str, papers: list) -> bool:
+        """按规范化标题判断某篇文献是否在 PubMed 结果中存在。"""
+        n = LitSearchDialog._normalize_title(title)
+        if not n:
+            return False
+        for p in papers:
+            if n == LitSearchDialog._normalize_title(p.title):
+                return True
+        return False
+
+    def _on_insert_selected(self):
+        """将选中的 PubMed 文献以 (Author et al., Year) 格式插入编辑器。"""
+        item = self._results_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "提示", "请先选中一条 PubMed 文献结果")
+            return
+        p = item.data(Qt.ItemDataRole.UserRole)
+        if not p:
+            QMessageBox.information(self, "提示", "请选中一条 PubMed 文献结果")
+            return
+        first_author = (p.authors or "Unknown").split(" ")[0]
+        year = p.year or "?"
+        marker = f"({first_author} et al., {year})"
+        self.insert_requested.emit(marker)
 
     def _on_search_error(self, err: str):
         self._set_busy(False)
@@ -536,52 +594,13 @@ class LitSearchDialog(QDialog):
     @staticmethod
     def _parse_json(raw: str) -> dict | None:
         """解析 LLM 返回，多层容错 + 兜底降级。"""
+        from ..core.json_utils import parse_json_response
         if not raw or not raw.strip():
             return None
+        result = parse_json_response(raw)
+        if result is not None:
+            return result
         text = raw.strip()
-
-        # 尝试 1: 直接解析
-        try:
-            return _json.loads(text)
-        except (_json.JSONDecodeError, TypeError):
-            pass
-
-        # 尝试 2: ```json ... ```
-        for pattern in [r'```json\s*\n?(.*?)\n?```', r'```\s*\n?(.*?)\n?```']:
-            m = re.search(pattern, text, re.DOTALL)
-            if m:
-                try:
-                    return _json.loads(m.group(1).strip())
-                except (_json.JSONDecodeError, TypeError):
-                    pass
-
-        # 尝试 3: 提取 { ... }
-        first = text.find('{')
-        last = text.rfind('}')
-        if first >= 0 and last > first:
-            json_str = text[first:last + 1]
-            try:
-                return _json.loads(json_str)
-            except (_json.JSONDecodeError, TypeError):
-                pass
-            # 尝试 3b: 清洗未转义换行符
-            try:
-                cleaned = re.sub(r'(?<!\\)"\s*\n\s*', r'\\n', json_str)
-                cleaned = re.sub(r'(?<!\\)\n\s*"', r'\\n"', cleaned)
-                cleaned = cleaned.replace('\uff5b', '{').replace('\uff5d', '}')
-                return _json.loads(cleaned)
-            except Exception:
-                pass
-
-        # 尝试 4: 中文花括号替换后重试
-        alt = text.replace('\uff5b', '{').replace('\uff5d', '}')
-        first_a = alt.find('{')
-        last_a = alt.rfind('}')
-        if first_a >= 0 and last_a > first_a and (first_a != first or last_a != last):
-            try:
-                return _json.loads(alt[first_a:last_a + 1])
-            except (_json.JSONDecodeError, TypeError):
-                pass
 
         # 兜底降级: 把 LLM 原始返回作为分析文本展示
         return {

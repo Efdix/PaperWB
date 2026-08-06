@@ -683,8 +683,9 @@ class WritingCoach:
     def _analyze_citation_detail(profile: "WritingProfile") -> dict | None:
         """从写作范文中计算平均每引用字数/句数/分布（纯统计指标）。
 
-        提取所有引文标记 [n] 或 [n,m]，取标记前后各 2 句作为引用上下文，
-        统计字符数和句子数，输出均值、中位数、四分位数、分布描述。
+        提取所有引文标记（[n] 编号制 + (Author, Year) 括号制 + 中文括号制），
+        取标记前后各 2 句作为引用上下文，统计字符数和句子数，
+        输出均值、中位数、四分位数、分布描述。
 
         Returns:
             {
@@ -704,10 +705,19 @@ class WritingCoach:
 
         joined = "\n\n".join(all_texts)
 
-        # 提取所有引文标记及其位置（支持 [1]、[2,3]、[4-7]、[4,5,6]）
-        cite_pattern = re.compile(r'\[(\d+(?:[,\-]\d+)*)\]')
-        markers = list(cite_pattern.finditer(joined))
-        if not markers:
+        # 收集所有引文标记位置（编号制 + Author-Year 制 + 中文制）
+        marker_spans: list[tuple[int, int]] = []
+        patterns = [
+            r'\[(\d+(?:[,\-]\d+)*)\]',
+            r'\([^)]+?,\s*(?:19|20)\d{2}[a-z]?\)',
+            r'（[^）]+?，\s*(?:19|20)\d{2}[a-z]?）',
+            r'[A-Z][a-z]+等（(?:19|20)\d{2}）',
+        ]
+        for pat in patterns:
+            for m in re.finditer(pat, joined):
+                marker_spans.append((m.start(), m.end()))
+        marker_spans.sort()
+        if not marker_spans:
             return None
 
         # 句子切分：以句号、问号、感叹号后跟空白或行尾为界
@@ -726,12 +736,14 @@ class WritingCoach:
         char_counts: list[int] = []
         sent_counts: list[int] = []
 
-        for m in markers:
-            m_start = m.start()
+        def _has_other_marker(ss: int, se: int) -> bool:
+            return any(ss <= o_s < se for o_s, _ in marker_spans)
+
+        for ms, _me in marker_spans:
             # 找到包含此标记的句子索引
             sent_idx = -1
             for si, (ss, se) in enumerate(sent_spans):
-                if ss <= m_start < se:
+                if ss <= ms < se:
                     sent_idx = si
                     break
             if sent_idx < 0:
@@ -746,8 +758,7 @@ class WritingCoach:
                 if si < 0:
                     break
                 ss, se = sent_spans[si]
-                other = cite_pattern.search(joined, ss, se)
-                if other:
+                if _has_other_marker(ss, se):
                     ctx_start_idx = max(ctx_start_idx, si + 1)
                     break
 
@@ -755,8 +766,7 @@ class WritingCoach:
                 if si >= len(sent_spans):
                     break
                 ss, se = sent_spans[si]
-                other = cite_pattern.search(joined, ss, se)
-                if other:
+                if _has_other_marker(ss, se):
                     ctx_end_idx = min(ctx_end_idx, si)
                     break
 
@@ -766,8 +776,7 @@ class WritingCoach:
             )
             if ctx_text.strip():
                 char_counts.append(len(ctx_text))
-                ctx_sents = [s for s in sent_spans[ctx_start_idx:ctx_end_idx]]
-                sent_counts.append(len(ctx_sents))
+                sent_counts.append(ctx_end_idx - ctx_start_idx)
 
         if not char_counts:
             return None
@@ -899,7 +908,7 @@ class WritingCoach:
             ]
 
             try:
-                response = parse_client.chat_sync(messages, timeout=600.0)
+                response = parse_client.chat_sync(messages, timeout=600.0, json_mode=True)
                 analysis = self._parse_style_guide_response(response)
                 if analysis:
                     analysis["_source"] = filename
@@ -939,7 +948,7 @@ class WritingCoach:
         ]
 
         try:
-            response = parse_client.chat_sync(synth_messages, timeout=300.0)
+            response = parse_client.chat_sync(synth_messages, timeout=300.0, json_mode=True)
             habits = self._parse_style_guide_response(response)
             if habits:
                 # 附加计算性引用详略度指标（基于所有论文全文的纯统计）
@@ -1013,7 +1022,7 @@ class WritingCoach:
         ]
 
         try:
-            response = parse_client.chat_sync(messages, timeout=180.0)
+            response = parse_client.chat_sync(messages, timeout=180.0, json_mode=True)
             style = self._parse_style_guide_response(response)
             if style:
                 self._current_profile.journal_style = style
@@ -1057,37 +1066,6 @@ class WritingCoach:
 
     @staticmethod
     def _parse_style_guide_response(raw: str) -> dict | None:
-        """解析 LLM 返回的风格指南 JSON。"""
-        import json as _json
-        import re
-
-        if not raw or not raw.strip():
-            return None
-
-        text = raw.strip()
-
-        # 尝试 1: 直接解析
-        try:
-            return _json.loads(text)
-        except (_json.JSONDecodeError, TypeError):
-            pass
-
-        # 尝试 2: 提取 ```json ... ```
-        for pattern in [r'```json\s*\n?(.*?)\n?```', r'```\s*\n?(.*?)\n?```']:
-            m = re.search(pattern, text, re.DOTALL)
-            if m:
-                try:
-                    return _json.loads(m.group(1).strip())
-                except (_json.JSONDecodeError, TypeError):
-                    pass
-
-        # 尝试 3: 提取 { ... }
-        first = text.find('{')
-        last = text.rfind('}')
-        if first >= 0 and last > first:
-            try:
-                return _json.loads(text[first:last + 1])
-            except (_json.JSONDecodeError, TypeError):
-                pass
-
-        return None
+        """解析 LLM 返回的风格指南 JSON（多层容错）。"""
+        from .json_utils import parse_json_response
+        return parse_json_response(raw)

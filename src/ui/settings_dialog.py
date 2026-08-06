@@ -180,6 +180,26 @@ class ProcessingSettingsGroup(QGroupBox):
             lambda checked: self._concurrency_widget.setVisible(not checked)
         )
 
+        # 解析引擎选择
+        parser_label = QLabel("逐页解析引擎：")
+        parser_label.setStyleSheet("color: #a9b1d6; font-size: 13px;")
+        layout.addWidget(parser_label)
+        self._parser_group = QButtonGroup(self)
+        parser_row = QHBoxLayout()
+        self._vision_radio = QRadioButton("👁️ 视觉 LLM")
+        self._vision_radio.setToolTip("整页渲染图片交给多模态 LLM 解析（准确、贵、慢）")
+        self._docling_radio = QRadioButton("⚡ Docling 本地")
+        self._docling_radio.setToolTip(
+            "本地版式解析（快、免费、离线；首次使用需下载模型）\n"
+            "图表描述仍需视觉 LLM，但整体成本大幅下降"
+        )
+        self._parser_group.addButton(self._vision_radio, 0)
+        self._parser_group.addButton(self._docling_radio, 1)
+        parser_row.addWidget(self._vision_radio)
+        parser_row.addWidget(self._docling_radio)
+        parser_row.addStretch()
+        layout.addLayout(parser_row)
+
     def load(self, config: dict):
         mode = config.get("stage1_mode", "async")
         if mode == "sync":
@@ -188,11 +208,17 @@ class ProcessingSettingsGroup(QGroupBox):
             self._async_radio.setChecked(True)
         concurrency = config.get("stage1_concurrency", 3)
         self._concurrency_spin.setValue(max(1, min(10, concurrency)))
+        parser = config.get("stage1_parser", "vision")
+        if parser == "docling":
+            self._docling_radio.setChecked(True)
+        else:
+            self._vision_radio.setChecked(True)
 
     def get(self) -> dict:
         return {
             "stage1_mode": "sync" if self._sync_radio.isChecked() else "async",
             "stage1_concurrency": self._concurrency_spin.value(),
+            "stage1_parser": "docling" if self._docling_radio.isChecked() else "vision",
         }
 
 

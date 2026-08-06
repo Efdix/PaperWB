@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from .core.context_manager import ContextManager
 from .core.llm_client import LLMClient
 from .core.zotero_parser import ZoteroLibrary
+from .core.zotero_watcher import ZoteroWatcher
 from .ui.chat_panel import ChatPanel
 from .ui.pdf_list_panel import PDFListPanel
 from .ui.pdf_viewer import PDFViewerPanel
@@ -167,6 +168,7 @@ class MainWindow(QMainWindow):
 
         self._processors: dict[str, object] = {}
         self._zotero: ZoteroLibrary | None = None
+        self._zotero_watcher: ZoteroWatcher | None = None
 
         self._setup_ui()
         self._apply_styles()
@@ -216,6 +218,7 @@ class MainWindow(QMainWindow):
         self.pdf_list.pdf_imported.connect(self._on_pdf_imported)
         self.pdf_list.restage1_requested.connect(self._on_restage1)
         self.pdf_list.restage2_requested.connect(self._on_restage2)
+        self.pdf_list.zotero_pdf_selected.connect(self._on_zotero_pdf_selected)
 
         inner_splitter = QSplitter(Qt.Orientation.Horizontal)
         inner_splitter.setHandleWidth(3)
@@ -499,6 +502,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._writing_panel.shutdown()
+        if self._zotero_watcher is not None:
+            self._zotero_watcher.stop()
         for proc in self._processors.values():
             if hasattr(proc, 'cancel'):
                 proc.cancel()
@@ -552,6 +557,12 @@ class MainWindow(QMainWindow):
         else:
             self._config = load_config()
             zotero_dir = self._config.get("zotero_data_dir", "")
+
+        # 停掉旧 watcher（重建 ZoteroLibrary）
+        if self._zotero_watcher is not None:
+            self._zotero_watcher.stop()
+            self._zotero_watcher = None
+
         self._zotero = ZoteroLibrary(zotero_dir)
         count = self._zotero.load()
         if count == 0 and zotero_dir:
@@ -561,6 +572,29 @@ class MainWindow(QMainWindow):
             )
         self._writing_panel.set_write_client(self._llm_write)
         self._writing_panel.set_zotero_library(self._zotero)
+
+        # 实时同步 watcher
+        self._zotero_watcher = ZoteroWatcher(self._zotero, parent=self)
+        self._zotero_watcher.changed.connect(self._on_zotero_changed)
+        if self._zotero.is_available:
+            self._zotero_watcher.start()
+        self.pdf_list.zotero_panel.set_library(self._zotero)
+        self.pdf_list.zotero_panel.set_watcher(self._zotero_watcher)
+
+    def _on_zotero_pdf_selected(self, path: str) -> None:
+        """点击 Zotero 文献 PDF —— 直接进入两阶段阅读管线（只读，不导入本地库）。"""
+        if not path:
+            return
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "文件缺失", f"找不到 PDF 文件：\n{path}")
+            return
+        self._save_current_chat()
+        self._current_pdf_path = ""
+        self._load_pdf_into_viewer(path)
+
+    def _on_zotero_changed(self, diff: dict) -> None:
+        """Zotero 侧增删改 → 刷新写作面板状态。"""
+        self._writing_panel.refresh_zotero_status()
 
     def _validate_data_root(self) -> None:
         """启动时校验数据根目录是否可访问。"""

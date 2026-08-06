@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json as _json
 import os
 import re
 from typing import TYPE_CHECKING
@@ -134,6 +133,61 @@ VERIFY_ONLY_PROMPT = """你是学术写作核查专家。只核查引文，不�
 }"""
 
 
+DEAI_PROMPT = """你是学术写作编辑，专注于提升论文的自然度与可读性。请将以下文本进行「去 AI 化」重写，使其语言风格接近人类母语研究者的自然学术表达。
+
+{style_context}
+
+【待处理文本】
+{selected_text}
+
+## 任务
+1. 词汇规范化：优先使用朴实、精准的学术词汇，避免被过度滥用的复杂词汇（如 leverage、delve into、tapestry、彰显、赋能、范式转移 等），改用直白的日常学术表达（use、investigate、context 等）。
+2. 结构自然化：删除生硬的机械连接词（如 First and foremost、It is worth noting that、综上所述、由此可见 等），通过句子间的逻辑递进自然衔接；尽量减少破折号（—）。
+3. 排版规范：正文中不使用加粗、斜体或强调标记。
+4. 修改阈值（关键）：宁缺毋滥。如果输入文本已经非常自然、地道且无明显 AI 特征，请保留原文，不要为了修改而修改。对高质量输入在 modification_log 中给出肯定。
+
+## 禁止事项
+1. 不要改变学术术语（除非原始术语本身错误）
+2. 不要改变引用标记与数字
+3. 不要增加或删减实质信息
+4. 输出语言必须与输入文本的语言一致（中文保持中文，英文保持英文）
+
+## 输出格式（严格 JSON，不要加 Markdown 标记）
+
+{
+  "polished_text": "重写后的完整文本（如原文已足够好则原样输出）",
+  "modification_log": ["改动说明1", "改动说明2"]
+}
+"""
+
+
+CN2EN_PROMPT = """你是兼具顶尖科研写作专家与资深会议审稿人双重身份的学术翻译助手。请将以下【中文草稿】翻译并润色为符合顶级会议/期刊标准的【英文学术论文片段】。
+
+{style_context}
+
+【中文草稿】
+{selected_text}
+
+## 要求
+1. 视觉与排版：不使用加粗、斜体或引号；不使用列表，用连贯段落表达。
+2. 风格与逻辑：逻辑严谨、用词准确、表达凝练连贯，尽量使用常见单词，避免生僻词；尽量避免破折号（—），用从句或同位语替代。
+3. 时态规范：描述方法、架构和实验结论统一用一般现在时。
+4. 术语：专业术语保留英文惯例表达，避免中式英语；首次出现可保留原文术语。
+
+## 禁止事项
+1. 不要改变引用标记与数字
+2. 不要增减信息，忠实原意
+3. 不要输出中文解释或多余说明
+
+## 输出格式（严格 JSON，不要加 Markdown 标记）
+
+{
+  "polished_text": "翻译润色后的英文学术文本",
+  "modification_log": ["翻译/润色要点说明（中文）"]
+}
+"""
+
+
 class UnifiedWriter:
     """统一的润色+引文核查处理器。
 
@@ -144,7 +198,57 @@ class UnifiedWriter:
     """
 
     def __init__(self) -> None:
-        pass
+        # PDF 段落索引缓存（按 pdf_path），避免同一文献多次重复建索引
+        self._pdf_indexes: dict[str, object] = {}
+
+    @staticmethod
+    def _sentence_around(text: str, marker: str, max_prefix: int = 200) -> str:
+        """提取包含引文标记的上下文句子，作为检索查询。"""
+        idx = text.find(marker)
+        if idx < 0:
+            return text[:max_prefix]
+        start = max(text.rfind("。", 0, idx), text.rfind(".", 0, idx),
+                    text.rfind("；", 0, idx), text.rfind(";", 0, idx),
+                    text.rfind("\n", 0, idx))
+        start = start + 1 if start >= 0 else max(0, idx - max_prefix)
+        end = idx + len(marker)
+        for sep in ("。", ".", "；", ";"):
+            j = text.find(sep, end)
+            if j >= 0:
+                end = j + 1
+                break
+        return text[start:end].strip() or text[:max_prefix]
+
+    def _extract_relevant_context(self, pdf_path: str, query: str, top_k: int = 3) -> str:
+        """从文献 PDF 中检索与声明最相关的段落作为证据（不再整篇塞全文）。"""
+        if not pdf_path or not os.path.isfile(pdf_path):
+            return "(PDF 文件缺失)"
+        try:
+            import fitz
+            from .retriever import Bm25Retriever
+
+            index = self._pdf_indexes.get(pdf_path)
+            if index is None:
+                doc = fitz.open(pdf_path)
+                paras = []
+                for page in doc:
+                    for chunk in page.get_text().split("\n\n"):
+                        c = chunk.strip()
+                        if len(c) >= 40:
+                            paras.append(c)
+                doc.close()
+                if not paras:
+                    return "(PDF 无可检索文本)"
+                index = Bm25Retriever()
+                index.index([{"text": p, "section": "", "page": 0} for p in paras])
+                self._pdf_indexes[pdf_path] = index
+
+            hits = index.search(query or "", top_k=top_k)
+            if not hits:
+                return "(未检索到与声明相关的原文段落)"
+            return "\n\n".join(f"…{h['text'][:600]}…" for h in hits)
+        except Exception:
+            return "(PDF 读取失败)"
 
     def process(
         self,
@@ -156,6 +260,7 @@ class UnifiedWriter:
         verify_only: bool = False,
         pre_citation_sources: str = "",
         review_findings: str = "",
+        mode: str = "polish",
     ) -> dict:
         """执行统一润色+核查。
 
@@ -165,12 +270,17 @@ class UnifiedWriter:
             coach: 写作教练（提供风格指南）。
             zotero_lib: Zotero 文献库（提供原文匹配）。
             writing_type: 写作类型 key。
+            verify_only: 仅核查引文，不修改原文。
+            pre_citation_sources: 预构建的引文原文上下文。
             review_findings: 草稿整体评价的诊断结论（可选，作为润色指导）。
+            mode: "polish"（润色+核查）| "deai"（去 AI 味）| "cn2en"（中译英）。
 
         Returns:
             {
                 "polished_text": str,
-                "citation_notes": [{"marker": str, "status": str, "note": str}],
+                "citation_notes": [...],
+                "supervisor_notes": [...],
+                "modification_log": [...],
                 "error": str | None
             }
         """
@@ -180,6 +290,38 @@ class UnifiedWriter:
         # 构建风格指南（精简版：仅含润色和核查需要的字段）
         system_prompt = coach.build_polish_system_prompt(writing_type) if coach else ""
         style_context = f"【风格约束】\n{system_prompt}" if system_prompt else ""
+
+        # 去 AI 味 / 中译英：不核查引文，直接按任务 prompt 处理
+        if mode in ("deai", "cn2en"):
+            template = DEAI_PROMPT if mode == "deai" else CN2EN_PROMPT
+            prompt = (template
+                      .replace("{style_context}", style_context)
+                      .replace("{selected_text}", selected_text))
+            system_prompt = "你是学术写作编辑。只返回 JSON，不要加解释。"
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+            try:
+                response = write_client.chat_sync(messages, timeout=180.0, json_mode=True)
+                if not response or not response.strip():
+                    return {"polished_text": selected_text, "citation_notes": [],
+                            "supervisor_notes": [], "modification_log": [],
+                            "error": "LLM 返回了空响应。"}
+                result = self._parse_response(response)
+                polished = result.get("polished_text", "")
+                if not polished.strip():
+                    polished = selected_text
+                return {"polished_text": polished,
+                        "citation_notes": [],
+                        "supervisor_notes": [],
+                        "modification_log": result.get("modification_log", []),
+                        "citation_sources_text": "",
+                        "error": None}
+            except Exception as e:
+                return {"polished_text": selected_text, "citation_notes": [],
+                        "supervisor_notes": [], "modification_log": [],
+                        "citation_sources_text": "", "error": str(e)}
 
         # 构建引文原文上下文（优先使用预构建的，否则本地匹配）
         citation_sources = pre_citation_sources or self._build_citation_sources(selected_text, zotero_lib)
@@ -204,7 +346,7 @@ class UnifiedWriter:
         ]
 
         try:
-            response = write_client.chat_sync(messages, timeout=180.0)
+            response = write_client.chat_sync(messages, timeout=180.0, json_mode=True)
             if not response or not response.strip():
                 return {"polished_text": selected_text, "citation_notes": [],
                         "supervisor_notes": [], "citation_sources_text": citation_sources,
@@ -216,6 +358,7 @@ class UnifiedWriter:
             return {"polished_text": polished,
                     "citation_notes": result.get("citation_notes", []),
                     "supervisor_notes": result.get("supervisor_notes", []),
+                    "modification_log": result.get("modification_log", []),
                     "citation_sources_text": citation_sources,
                     "error": None}
         except Exception as e:
@@ -228,14 +371,16 @@ class UnifiedWriter:
     ) -> str:
         """从 Zotero 库中匹配选中文字中的引文，返回原文摘要。
 
-        支持引文格式: (Author et al., Year), (Author & Author, Year), (Author, Year)
+        支持引文格式: (Author et al., Year), (Author & Author, Year),
+        (Author, Year)、（作者等，年份）、（作者，年份）
         """
         if not zotero_lib or not hasattr(zotero_lib, 'get_all_items'):
             return "（Zotero 未连接，无法提供引文原文）"
 
-        # 从选中文字中提取 Author-Year 引文对
-        cite_pattern = re.compile(r'\(([^)]+?,\s*\d{4}[a-z]?)\)')
-        markers = cite_pattern.findall(selected_text)
+        # 从选中文字中提取 Author-Year 引文对（ASCII 括号 + 全角中文括号）
+        markers: list[str] = []
+        markers.extend(re.findall(r'\(([^)]+?,\s*\d{4}[a-z]?)\)', selected_text))
+        markers.extend(re.findall(r'（([^）]+?，\s*\d{4}[a-z]?)）', selected_text))
 
         if not markers:
             # 尝试 [1] 编号格式
@@ -250,8 +395,9 @@ class UnifiedWriter:
         matched_authors: set[str] = set()
 
         for marker_text in markers:
-            # 解析作者和年份
-            parts = marker_text.split(",")
+            # 解析作者和年份（兼容中英文逗号）
+            separator = "，" if "，" in marker_text else ","
+            parts = marker_text.split(separator)
             if len(parts) < 2:
                 continue
             author_part = parts[0].strip()
@@ -260,6 +406,7 @@ class UnifiedWriter:
 
             first_author = author_part.split("&")[0].split("and")[0].strip()
             first_author = re.sub(r'\s+et\s+al\.?\s*', '', first_author).strip()
+            first_author = re.sub(r'等$', '', first_author).strip()  # 中文作者去掉"等"
 
             dedup_key = f"{first_author.lower()}|{year_clean}"
             if dedup_key in matched_authors:
@@ -276,12 +423,14 @@ class UnifiedWriter:
             no_pdf_items = [c for c in candidates if not c.pdf_path or not os.path.isfile(c.pdf_path)]
             best = pdf_items + no_pdf_items
             seen_titles = set()
+            full_marker = f"({marker_text})"
+            query = self._sentence_around(selected_text, full_marker)
             for item in best:
                 key = item.title.lower()
                 if key in seen_titles:
                     continue
                 seen_titles.add(key)
-                source_text = self._extract_pdf_text(item)
+                source_text = self._extract_relevant_context(item.pdf_path, query)
                 title = item.title[:100] if item.title else "?"
                 authors = ", ".join(item.authors[:3]) if item.authors else "?"
                 sources.append(
@@ -297,7 +446,12 @@ class UnifiedWriter:
     def _build_numbered_sources(
         self, selected_text: str, zotero_lib, num_pattern,
     ) -> str:
-        """处理 [1] / [2,3] 编号格式的引文匹配。"""
+        """处理 [1] / [2,3] 编号格式的引文匹配。
+
+        优先从选中文本末尾的参考文献列表解析 编号 → 作者/年份，再走
+        find_by_citation 作者/年份匹配（不再依赖库顺序）。无参考文献列表
+        时退回位置映射兜底（并提示用户人工核对）。
+        """
         cited_nums: set[int] = set()
         for m in num_pattern.finditer(selected_text):
             for num_str in re.split(r'[,，\-]+', m.group(1)):
@@ -308,22 +462,72 @@ class UnifiedWriter:
         if not cited_nums:
             return "（未检测到有效编号引用）"
 
+        ref_map = self._parse_numbered_reference_list(selected_text)
+
         sources: list[str] = []
-        items = getattr(zotero_lib, 'get_all_items', lambda: [])()
+        matched_nums: set[int] = set()
+
+        # 参考列表驱动：编号 → 作者/年份 → Zotero 匹配
         for num in sorted(cited_nums):
-            if 1 <= num <= len(items):
-                item = items[num - 1]
-                source_text = self._extract_pdf_text(item)
+            entry = ref_map.get(num)
+            if not entry or not entry.get("year"):
+                continue
+            candidates = zotero_lib.find_by_citation(entry["author"], entry["year"])
+            if not candidates:
+                continue
+            matched_nums.add(num)
+            query = self._sentence_around(selected_text, f"[{num}]")
+            for item in candidates[:2]:
+                source_text = self._extract_relevant_context(item.pdf_path, query)
                 title = item.title[:100] if item.title else "?"
                 authors = ", ".join(item.authors[:3]) if item.authors else "?"
                 sources.append(
-                    f"--- 引文 [{num}] → {authors} ({item.year}) {title} ---\n"
-                    f"{source_text}"
+                    f"--- 引文 [{num}]（参考列表: {entry['author']}, {entry['year']}）"
+                    f"→ {authors} ({item.year}) {title} ---\n{source_text}"
                 )
+
+        # 兜底：未能通过参考列表匹配的编号，位置映射（按库顺序，提示人工核对）
+        items = getattr(zotero_lib, 'get_all_items', lambda: [])()
+        for num in sorted(cited_nums):
+            if num in matched_nums or not (1 <= num <= len(items)):
+                continue
+            item = items[num - 1]
+            query = self._sentence_around(selected_text, f"[{num}]")
+            source_text = self._extract_relevant_context(item.pdf_path, query)
+            title = item.title[:100] if item.title else "?"
+            authors = ", ".join(item.authors[:3]) if item.authors else "?"
+            sources.append(
+                f"--- 引文 [{num}] → {authors} ({item.year}) {title}（按库顺序匹配，请人工核对）---\n"
+                f"{source_text}"
+            )
 
         if not sources:
             return "（Zotero 库中无对应编号的文献）"
         return "\n\n".join(sources)
+
+    @staticmethod
+    def _parse_numbered_reference_list(text: str) -> dict[int, dict]:
+        """从文本末尾的参考文献列表解析 编号 → {author, year}。
+
+        支持 [1] ... 2024. 与 1. ... 2024. 两种常见编号格式。
+        """
+        result: dict[int, dict] = {}
+        lines = text.splitlines()
+        start = max(0, len(lines) - 40)
+        for line in lines[start:]:
+            m = re.match(
+                r'^\s*\[?(\d+)\]?[\.\s、]\s*(.*?)\b((?:19|20)\d{2})\b.*$', line
+            )
+            if not m:
+                continue
+            num = int(m.group(1))
+            year = m.group(3)
+            # 第一作者姓氏 = 条目中的第一个词（兼容 Smith J, ... / Zhang W. ... / Zhang等）
+            author = (m.group(2).strip().split() or [""])[0]
+            author = re.sub(r'[,，;；、]+$', '', author).strip()
+            if author:
+                result[num] = {"author": author, "year": year}
+        return result
 
     @staticmethod
     def _extract_pdf_text(item) -> str:
@@ -353,87 +557,35 @@ class UnifiedWriter:
             {"role": "user", "content": prompt},
         ]
         try:
-            response = llm_client.chat_sync(messages, timeout=60.0)
+            response = llm_client.chat_sync(messages, timeout=60.0, json_mode=True)
             if not response or not response.strip():
                 return []
-            # 复用 _parse_response 的JSON解析逻辑，但只取 citations 数组
-            obj = UnifiedWriter._try_parse_json(response)
+            from .json_utils import parse_json_response
+            obj = parse_json_response(response)
             if obj:
                 return obj.get("citations", [])
-            # fallback: 提取{...}再试
-            import re as _re
-            first = response.find('{')
-            last = response.rfind('}')
-            if first >= 0 and last > first:
-                obj = UnifiedWriter._try_parse_json(response[first:last + 1])
-                if obj:
-                    return obj.get("citations", [])
         except Exception:
             pass
         return []
 
     @staticmethod
     def _try_parse_json(text: str) -> dict | None:
-        try:
-            return _json.loads(text)
-        except (_json.JSONDecodeError, TypeError):
-            return None
+        from .json_utils import parse_json_response
+        return parse_json_response(text)
 
     @staticmethod
     def _parse_response(raw: str) -> dict:
-        """解析 LLM 返回的 JSON（五层容错 + 兜底降级）。"""
+        """解析 LLM 返回的 JSON（多层容错 + 兜底降级）。"""
+        from .json_utils import parse_json_response
         if not raw or not raw.strip():
             return {"polished_text": "", "citation_notes": [], "supervisor_notes": []}
 
-        text = raw.strip()
-
-        parse = UnifiedWriter._try_parse_json
-
-        # 尝试 1: 直接解析
-        obj = parse(text)
+        obj = parse_json_response(raw)
         if obj is not None:
             return obj
 
-        # 尝试 2: 提取 ```json ... ```
-        for pattern in [r'```json\s*\n?(.*?)\n?```', r'```\s*\n?(.*?)\n?```']:
-            m = re.search(pattern, text, re.DOTALL)
-            if m:
-                obj = parse(m.group(1).strip())
-                if obj is not None:
-                    return obj
-
-        # 尝试 3: 提取 { ... }
-        first = text.find('{')
-        last = text.rfind('}')
-        if first >= 0 and last > first:
-            json_str = text[first:last + 1]
-            obj = parse(json_str)
-            if obj is not None:
-                return obj
-            # 尝试 3b: 清洗文本中未转义的换行符（LLM 常见错误）
-            try:
-                cleaned = re.sub(r'(?<!\\)"\s*\n\s*', r'\\n', json_str)
-                cleaned = re.sub(r'(?<!\\)\n\s*"', r'\\n"', cleaned)
-                obj = parse(cleaned)
-                if obj is not None:
-                    return obj
-            except Exception:
-                pass
-
-        # 尝试 4: 用中文全角花括号替换后重试
-        try:
-            alt = text.replace('\uff5b', '{').replace('\uff5d', '}')
-            first_a = alt.find('{')
-            last_a = alt.rfind('}')
-            if first_a >= 0 and last_a > first_a:
-                obj = parse(alt[first_a:last_a + 1])
-                if obj is not None:
-                    return obj
-        except Exception:
-            pass
-
         # 兜底降级: 所有 JSON 解析都失败，将整个原始返回作为 polished_text
-        return {"polished_text": text, "citation_notes": [], "supervisor_notes": []}
+        return {"polished_text": raw.strip(), "citation_notes": [], "supervisor_notes": []}
 
 
 CITATION_EXTRACT_PROMPT = """你是一位学术文献识别专家。请分析以下草稿，找出文中所有的引文标记并推断出对应的文献信息。

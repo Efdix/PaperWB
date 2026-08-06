@@ -8,8 +8,21 @@ import re
 import sqlite3
 import tempfile
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+@dataclass
+class ZoteroCollection:
+    """Zotero 集合（目录）。"""
+
+    collection_id: int
+    key: str                          # Zotero 集合 key（稳定，用于重命名/移动识别）
+    name: str = ""
+    parent_id: int | None = None
+    child_ids: list[int] = field(default_factory=list)
+    item_ids: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -25,6 +38,7 @@ class ZoteroItem:
     doi: str = ""
     pdf_path: str = ""                # 本地 PDF 绝对路径
     item_type: str = ""               # journalArticle / conferencePaper / book / ...
+    collection_ids: list[int] = field(default_factory=list)
 
     @property
     def first_author_last(self) -> str:
@@ -85,6 +99,10 @@ class ZoteroLibrary:
         self._items: list[ZoteroItem] = []
         self._items_by_title: dict[str, ZoteroItem] = {}
         self._items_by_key: dict[str, ZoteroItem] = {}
+        self._items_by_id: dict[int, ZoteroItem] = {}
+        self._collections: list[ZoteroCollection] = []
+        self._collections_by_id: dict[int, ZoteroCollection] = {}
+        self._item_collections: dict[int, list[int]] = {}
         self._loaded = False
 
         if zotero_data_dir:
@@ -280,15 +298,69 @@ class ZoteroLibrary:
         return self._data_dir
 
     @property
+    def storage_dir(self) -> str:
+        return self._storage_dir
+
+    @property
+    def sqlite_path(self) -> str:
+        return self._sqlite_path
+
+    @property
     def item_count(self) -> int:
         return len(self._items)
+
+    @property
+    def collection_count(self) -> int:
+        return len(self._collections)
+
+    @property
+    def collections(self) -> list["ZoteroCollection"]:
+        return list(self._collections)
+
+    def get_collections_tree(self) -> list["ZoteroCollection"]:
+        """返回顶层集合（子集合适通过 child_ids 关联）。"""
+        return [c for c in self._collections
+                if c.parent_id is None or c.parent_id not in self._collections_by_id]
+
+    def get_collection(self, collection_id: int) -> "ZoteroCollection | None":
+        return self._collections_by_id.get(collection_id)
+
+    def get_items_in_collection(self, collection_id: int) -> list[ZoteroItem]:
+        """返回某个集合直接包含的文献条目。"""
+        coll = self._collections_by_id.get(collection_id)
+        if not coll:
+            return []
+        return [self._items_by_id[i] for i in coll.item_ids if i in self._items_by_id]
+
+    def get_item(self, item_id: int) -> ZoteroItem | None:
+        return self._items_by_id.get(item_id)
+
+    def snapshot(self) -> dict:
+        """返回可比较的库结构快照，供同步引擎做差异对比。"""
+        return {
+            "collections": {c.key: c.name for c in self._collections},
+            "collections_by_id": {c.collection_id: c.key for c in self._collections},
+            "items": {i.key: (i.title, bool(i.pdf_path)) for i in self._items},
+        }
 
     # ========== 加载 ==========
 
     def load(self) -> int:
-        """加载 Zotero 数据库，返回条目数"""
+        """加载 Zotero 数据库，返回条目数（若已加载则直接返回）。"""
         if self._loaded:
             return len(self._items)
+        return self.reload()
+
+    def reload(self) -> int:
+        """重新从磁盘加载 Zotero 数据库（Zotero 侧发生变更后调用）。"""
+        self._items = []
+        self._items_by_title = {}
+        self._items_by_key = {}
+        self._items_by_id = {}
+        self._collections = []
+        self._collections_by_id = {}
+        self._item_collections = {}
+        self._loaded = False
 
         if not self.is_available:
             return 0
@@ -313,17 +385,59 @@ class ZoteroLibrary:
         db_conn = None
 
         try:
-            # 复制主数据库 + WAL/SHM 文件到临时目录
-            shutil.copy2(sqlite_path, tmp_db)
+            # 复制主数据库 + WAL/SHM 文件到临时目录（带重试，应对 Zotero 写入锁竞争）
+            def _copy(src: str, dst: str) -> None:
+                for attempt in range(3):
+                    try:
+                        shutil.copy2(src, dst)
+                        return
+                    except OSError:
+                        if attempt >= 2:
+                            raise
+                        time.sleep(0.2 * (attempt + 1))
+
+            _copy(sqlite_path, tmp_db)
             for suffix in ("-wal", "-shm"):
                 src = sqlite_path + suffix
                 if os.path.isfile(src):
-                    shutil.copy2(src, tmp_db + suffix)
+                    _copy(src, tmp_db + suffix)
             print(f"[ZoteroLibrary] 已复制数据库到临时文件")
 
             db_conn = sqlite3.connect(tmp_db)
             db_conn.row_factory = sqlite3.Row
             cursor = db_conn.cursor()
+
+            # ---- 集合层级 ----
+            try:
+                cursor.execute(
+                    "SELECT collectionID, collectionName, parentCollectionID, key "
+                    "FROM collections"
+                )
+                for row in cursor.fetchall():
+                    coll = ZoteroCollection(
+                        collection_id=row["collectionID"],
+                        key=row["key"],
+                        name=row["collectionName"] or "",
+                        parent_id=row["parentCollectionID"],
+                    )
+                    self._collections.append(coll)
+                    self._collections_by_id[coll.collection_id] = coll
+                for coll in self._collections:
+                    if coll.parent_id is not None and coll.parent_id in self._collections_by_id:
+                        self._collections_by_id[coll.parent_id].child_ids.append(coll.collection_id)
+            except sqlite3.Error as e:
+                print(f"[ZoteroLibrary] 集合读取失败: {e}")
+
+            # ---- 条目 ↔ 集合映射 ----
+            try:
+                cursor.execute("SELECT collectionID, itemID FROM collectionItems")
+                for row in cursor.fetchall():
+                    cid, iid = row["collectionID"], row["itemID"]
+                    if cid in self._collections_by_id:
+                        self._collections_by_id[cid].item_ids.append(iid)
+                        self._item_collections.setdefault(iid, []).append(cid)
+            except sqlite3.Error as e:
+                print(f"[ZoteroLibrary] collectionItems 读取失败: {e}")
 
             # 诊断：列出数据库中实际存在的条目类型
             try:
@@ -365,6 +479,7 @@ class ZoteroLibrary:
                     item_id=row["itemID"],
                     key=row["key"],
                     item_type=type_name,
+                    collection_ids=self._item_collections.get(row["itemID"], []),
                 )
                 self._fill_metadata(cursor, item)
                 self._fill_pdf_path(cursor, item)
@@ -374,6 +489,7 @@ class ZoteroLibrary:
 
                 self._items.append(item)
                 self._items_by_key[item.key] = item
+                self._items_by_id[item.item_id] = item
                 title_clean = re.sub(r'[^\w\s]', '', item.title.lower()).strip()
                 if title_clean:
                     self._items_by_title[title_clean] = item

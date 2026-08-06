@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json as _json
-import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,6 +17,8 @@ DRAFT_REVIEW_PROMPT = """你是学术写作审稿专家。请对以下草稿进�
 【草稿全文】
 {draft_text}
 
+{local_stats}
+
 ## 评价维度
 
 请从以下维度逐一分析，返回严格 JSON（不要 Markdown 标记）：
@@ -26,13 +26,13 @@ DRAFT_REVIEW_PROMPT = """你是学术写作审稿专家。请对以下草稿进�
 ### 1. 各部分分析 (section_analysis)
 识别草稿中的章节结构（Introduction/Methods/Results/Discussion/Conclusion 等，根据草稿实际内容判断边界）。对每个章节：
 - section: 章节名
-- word_count: 估计字数
+- word_count: 章节字数 —— 优先采用上方【本地实测章节统计】中对应章节的数值，不要重新估算；若该章节不在上表中再自行估算
 - word_count_benchmark: 知识库中该章节的字数基准（若知识库无此章数据填 -1）
 - word_count_status: "达标" / "偏少" / "偏多" / "无基准"
-- paragraph_count: 段数
+- paragraph_count: 段数 —— 同样优先采用本地实测值
 - paragraph_benchmark: 知识库中该章节的段数基准（无数据填 -1）
 - paragraph_count_status: "达标" / "偏多" / "偏少" / "无基准"
-- citation_count: 引用数
+- citation_count: 引用数 —— 同样优先采用本地实测值
 - citation_benchmark: 知识库基准引用数（若知识库无此章数据填 -1）
 - citation_status: "达标" / "偏少" / "偏多" / "无基准"
 - citation_detail_issue: 是否有某条引用描述过详或过略（null 或"引用[3]描述过详，超出基准范围"）
@@ -141,6 +141,33 @@ DRAFT_REVIEW_PROMPT = """你是学术写作审稿专家。请对以下草稿进�
 }}"""
 
 
+LOGIC_CHECK_PROMPT = """你是负责论文终稿校对的学术助手。请对以下草稿进行「红线审查」，只检查致命错误。
+
+## 审查阈值（高容忍度）
+1. 默认假设：草稿已经过多轮修改，质量较高。
+2. 仅报错原则：只有在遇到阻碍读者理解的逻辑断层、引起歧义的术语混乱、或严重的语法错误时才提出意见。
+3. 严禁优化：对于「可改可不改」的风格问题，或仅仅是「换个词听起来更高级」的建议，请直接忽略，不要通过挑刺来体现存在感。
+
+## 审查维度
+1. 致命逻辑：是否存在前后完全矛盾的陈述？
+2. 术语一致性：核心概念是否在没有说明的情况下换了名字？
+3. 严重语病：是否存在导致句意不清的中式英语或语法结构错误。
+
+【草稿】
+{draft_text}
+
+## 输出格式（严格 JSON，不要加 Markdown 标记）
+
+{
+  "passed": true,
+  "issues": [
+    {"type": "逻辑矛盾/术语不一致/语法错误", "quote": "原文引用", "explanation": "问题说明", "suggestion": "修改建议"}
+  ],
+  "summary": "总体结论一句话"
+}
+"""
+
+
 class DraftReviewer:
     """草稿整体评价器 —— 发送全文 + 知识库基准给 LLM，获取结构性诊断报告。"""
 
@@ -168,8 +195,25 @@ class DraftReviewer:
 
         kb_benchmarks = coach.build_review_benchmarks()
 
-        prompt_text = DRAFT_REVIEW_PROMPT.replace("{kb_benchmarks}", kb_benchmarks).replace(
-            "{draft_text}", draft_text
+        # 本地实测章节统计（供 LLM 直接使用，避免估算偏差）
+        local_block = ""
+        local_stats = self._compute_local_section_stats(draft_text)
+        if local_stats:
+            lines = [
+                "以下是本地程序按标题切分实测的章节统计。请直接采用这些数值作为 "
+                "section_analysis 中对应章节的 word_count / paragraph_count / citation_count，不要重新估算。"
+            ]
+            for name, st in local_stats.items():
+                lines.append(
+                    f"- {name}: 约{st['word_count']}字, {st['paragraph_count']}段, "
+                    f"{st['citation_count']}处引用标记"
+                )
+            local_block = "【本地实测章节统计】\n" + "\n".join(lines)
+
+        prompt_text = (
+            DRAFT_REVIEW_PROMPT.replace("{kb_benchmarks}", kb_benchmarks)
+            .replace("{local_stats}", local_block)
+            .replace("{draft_text}", draft_text)
         )
 
         messages = [
@@ -181,7 +225,7 @@ class DraftReviewer:
         ]
 
         try:
-            response = write_client.chat_sync(messages, timeout=1800.0)
+            response = write_client.chat_sync(messages, timeout=1800.0, json_mode=True)
             if not response or not response.strip():
                 return {"error": "LLM 返回了空响应"}
             result = self._parse_response(response)
@@ -193,63 +237,99 @@ class DraftReviewer:
 
     @staticmethod
     def _parse_response(raw: str) -> dict:
-        """解析 LLM 返回的 JSON（五层容错 + 兜底降级）。"""
-        if not raw or not raw.strip():
-            return {"error": "LLM 返回为空"}
+        """解析 LLM 返回的 JSON（多层容错 + 兜底降级）。"""
+        from .json_utils import parse_json_response
+        result = parse_json_response(raw)
+        if result is not None:
+            return result
+        return {"error": f"JSON 解析失败，LLM 原始返回前 200 字符：{raw[:200]}"}
 
-        text = raw.strip()
+    @staticmethod
+    def _compute_local_section_stats(draft_text: str) -> dict:
+        """本地按标题切分草稿，实测各章节字数/段数/引用数（纯统计，不依赖 LLM）。
 
-        # 尝试 1: 直接解析
+        Returns:
+            {章节名: {"word_count": int, "paragraph_count": int, "citation_count": int}}
+        """
+        import re as _re
+
+        lines = draft_text.splitlines()
+        sections: list[tuple[str, int]] = []  # (heading, start_line_idx)
+        heading_re = _re.compile(
+            r'^(\d+(\.\d+)*[\.\s、．]?'
+            r'|[一二三四五六七八九十]+[、.．]'
+            r'|\b(Abstract|Introduction|Background|Materials|Methods|Results|Discussion|Conclusion|References|Acknowledg(e)?ments)\b'
+            r'|摘要|引言|前言|材料与方法|方法|结果|讨论|结论|参考文献|致谢)',
+            _re.IGNORECASE,
+        )
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # 标题启发式：长度适中 + 数字编号或常见章节词开头，
+            # 且不以句末标点结尾（避免把正文句子误判为标题）
+            if (2 <= len(stripped) <= 60
+                    and not stripped.endswith(("。", "！", "？", ".", "!", "?"))
+                    and heading_re.match(stripped)):
+                sections.append((stripped, i))
+
+        if not sections:
+            return {}
+
+        stats: dict[str, dict] = {}
+        for idx, (name, start) in enumerate(sections):
+            end = sections[idx + 1][1] if idx + 1 < len(sections) else len(lines)
+            body = "\n".join(lines[start:end])
+            paras = [p for p in _re.split(r'\n\s*\n', body) if p.strip()]
+            word_count = len(_re.sub(r'\s', '', body))
+            cites = 0
+            for pat in (r'\[(\d+(?:[,\-]\d+)*)\]',
+                        r'\([^)]+?,\s*(?:19|20)\d{2}[a-z]?\)',
+                        r'（[^）]+?，\s*(?:19|20)\d{2}[a-z]?）'):
+                cites += len(_re.findall(pat, body))
+            stats[name] = {
+                "word_count": word_count,
+                "paragraph_count": len(paras),
+                "citation_count": cites,
+            }
+        return stats
+
+    def logic_check(self, write_client: "LLMClient", draft_text: str) -> dict:
+        """红线逻辑检查 —— 高容忍度终检，只报致命问题。
+
+        Returns:
+            {"passed": bool, "issues": [...], "summary": str} 或 {"error": ...}
+        """
+        if not draft_text.strip():
+            return {"error": "草稿为空"}
+
+        prompt = LOGIC_CHECK_PROMPT.replace("{draft_text}", draft_text)
+        messages = [
+            {"role": "system",
+             "content": "你是负责论文终稿校对的学术助手。只返回 JSON，不要加解释。"},
+            {"role": "user", "content": prompt},
+        ]
         try:
-            return _json.loads(text)
-        except (_json.JSONDecodeError, TypeError):
-            pass
-
-        # 尝试 2: 提取 ```json ... ```
-        for pattern in [r'```json\s*\n?(.*?)\n?```', r'```\s*\n?(.*?)\n?```']:
-            m = re.search(pattern, text, re.DOTALL)
-            if m:
-                try:
-                    return _json.loads(m.group(1).strip())
-                except (_json.JSONDecodeError, TypeError):
-                    pass
-
-        # 尝试 3: 提取 { ... }
-        first = text.find('{')
-        last = text.rfind('}')
-        if first >= 0 and last > first:
-            json_str = text[first : last + 1]
-            try:
-                return _json.loads(json_str)
-            except (_json.JSONDecodeError, TypeError):
-                pass
-            # 尝试 3b: 清洗未转义换行符
-            try:
-                cleaned = re.sub(r'(?<!\\)"\s*\n\s*', r'\\n', json_str)
-                cleaned = re.sub(r'(?<!\\)\n\s*"', r'\\n"', cleaned)
-                result = _json.loads(cleaned)
-                if result is not None:
-                    return result
-            except Exception:
-                pass
-
-        # 尝试 4: 中文全角花括号
-        try:
-            alt = text.replace('\uff5b', '{').replace('\uff5d', '}')
-            first_a = alt.find('{')
-            last_a = alt.rfind('}')
-            if first_a >= 0 and last_a > first_a:
-                return _json.loads(alt[first_a : last_a + 1])
-        except Exception:
-            pass
-
-        return {"error": f"JSON 解析失败，LLM 原始返回前 200 字符：{text[:200]}"}
+            response = write_client.chat_sync(messages, timeout=600.0, json_mode=True)
+            if not response or not response.strip():
+                return {"error": "LLM 返回了空响应"}
+            result = self._parse_response(response)
+            if "error" in result:
+                return result
+            if not isinstance(result, dict):
+                return {"error": "解析结果格式异常"}
+            result.setdefault("passed", not bool(result.get("issues")))
+            return result
+        except Exception as e:
+            return {"error": str(e)}
 
     @staticmethod
     def format_review_for_polish(review: dict) -> str:
         """将评价结果格式化为润色用的指导文字。
 
-        提取所有诊断中发现的问题，转化为润色 LLM 可以直接处理的指令。
+        优先使用用户在 ReviewDialog 中采纳/编辑过的发现项（_accepted_items），
+        未采纳项（_rejected_items）不会进入润色指令。旧格式评价（无
+        _accepted_items）时回退到原始字段重建。
 
         Args:
             review: 完整的评价结果 dict（通常来自 load_review）
@@ -257,6 +337,26 @@ class DraftReviewer:
         Returns:
             格式化的指导文字，或空字符串（无发现问题时）
         """
+        # ---- 新格式：用户采纳/编辑过的发现项 ----
+        accepted = review.get("_accepted_items")
+        if isinstance(accepted, list) and accepted:
+            lines: list[str] = []
+            for item in accepted:
+                cat = item.get("category", "")
+                title = item.get("title", "").strip()
+                sug = item.get("suggestion", "").strip()
+                prefix = f"【{cat}】" if cat else ""
+                if title and sug:
+                    lines.append(f"· {prefix}{title} → 处理：{sug}")
+                elif sug:
+                    lines.append(f"· {prefix}处理：{sug}")
+                elif title:
+                    lines.append(f"· {prefix}{title}")
+            if lines:
+                return "【以下问题来自草稿整体评价（已按你的采纳选择过滤），请在润色时一并修正】\n" + "\n".join(lines)
+            return ""
+
+        # ---- 旧格式回退：原始字段重建 ----
         lines: list[str] = []
 
         def _add(line: str) -> None:

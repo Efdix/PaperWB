@@ -28,6 +28,7 @@ class DiffDialog(QDialog):
     def __init__(self, original: str, polished: str,
                  citation_notes: list[dict] | None = None,
                  supervisor_notes: list[dict] | None = None,
+                 modification_log: list[str] | None = None,
                  citation_sources_text: str = "",
                  write_client: "LLMClient | None" = None,
                  coach: "WritingCoach | None" = None,
@@ -44,6 +45,7 @@ class DiffDialog(QDialog):
         self._polished = polished
         self._citation_notes = citation_notes or []
         self._supervisor_notes = supervisor_notes or []
+        self._modification_log = modification_log or []
         self._citation_sources_text = citation_sources_text
         self._write_client = write_client
         self._coach = coach
@@ -52,6 +54,7 @@ class DiffDialog(QDialog):
         self._accepted = False
         self._change_anchors: list[tuple[int, int, str]] = []  # (start, end, type)
         self._current_anchor_idx = -1
+        self._skip_recompute = False  # 防止渲染/apply 过程中的 textChanged 干扰锚点重算
 
         self._chat_history: list[dict] = []  # [{"role": "user"|"assistant", "content": str}]
 
@@ -59,6 +62,7 @@ class DiffDialog(QDialog):
         self._render_diff()
         self._render_notes()
         self._render_supervisor_notes()
+        self._render_modification_log()
 
     @property
     def accepted(self) -> bool:
@@ -126,6 +130,7 @@ class DiffDialog(QDialog):
             "border: 1px solid #3b3d54; border-radius: 6px; "
             "padding: 12px; font-size: 14px; line-height: 2.0; }"
         )
+        self._diff_edit.textChanged.connect(self._on_diff_text_changed)
         diff_layout.addWidget(self._diff_edit, 1)
         self._main_splitter.addWidget(diff_container)
 
@@ -260,42 +265,112 @@ class DiffDialog(QDialog):
     # ============================================================
 
     def _render_diff(self):
-        self._diff_edit.clear()
-        self._change_anchors = []
-        matcher = difflib.SequenceMatcher(None, self._original, self._polished)
+        self._skip_recompute = True
+        try:
+            self._diff_edit.clear()
+            self._change_anchors = []
+            matcher = difflib.SequenceMatcher(None, self._original, self._polished)
 
-        fmt_equal = self._fmt(QColor("#a9b1d6"))
-        fmt_del = self._fmt(QColor("#f7768e"), bg=QColor("#2d1a22"))
-        fmt_insert = self._fmt(QColor("#9ece6a"), bg=QColor("#1d2a1d"))
+            fmt_equal = self._fmt(QColor("#a9b1d6"))
+            fmt_del = self._fmt(QColor("#f7768e"), bg=QColor("#2d1a22"))
+            fmt_insert = self._fmt(QColor("#9ece6a"), bg=QColor("#1d2a1d"))
 
-        cursor = self._diff_edit.textCursor()
-        cursor.beginEditBlock()
+            cursor = self._diff_edit.textCursor()
+            cursor.beginEditBlock()
 
-        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-            if tag == "equal":
-                self._insert(cursor, self._original[i1:i2], fmt_equal)
-            elif tag == "delete":
-                start = cursor.position()
-                del_fmt = QTextCharFormat(fmt_del)
-                del_fmt.setFontStrikeOut(True)
-                self._insert(cursor, self._original[i1:i2], del_fmt)
-                self._change_anchors.append((start, cursor.position(), "delete"))
-            elif tag == "insert":
-                start = cursor.position()
-                self._insert(cursor, self._polished[j1:j2], fmt_insert)
-                self._change_anchors.append((start, cursor.position(), "insert"))
-            elif tag == "replace":
-                start = cursor.position()
-                del_fmt = QTextCharFormat(fmt_del)
-                del_fmt.setFontStrikeOut(True)
-                self._insert(cursor, self._original[i1:i2], del_fmt)
-                self._insert(cursor, self._polished[j1:j2], fmt_insert)
-                self._change_anchors.append((start, cursor.position(), "replace"))
+            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                if tag == "equal":
+                    self._insert(cursor, self._original[i1:i2], fmt_equal)
+                elif tag == "delete":
+                    start = cursor.position()
+                    del_fmt = QTextCharFormat(fmt_del)
+                    del_fmt.setFontStrikeOut(True)
+                    self._insert(cursor, self._original[i1:i2], del_fmt)
+                    self._change_anchors.append((start, cursor.position(), "delete"))
+                elif tag == "insert":
+                    start = cursor.position()
+                    self._insert(cursor, self._polished[j1:j2], fmt_insert)
+                    self._change_anchors.append((start, cursor.position(), "insert"))
+                elif tag == "replace":
+                    start = cursor.position()
+                    del_fmt = QTextCharFormat(fmt_del)
+                    del_fmt.setFontStrikeOut(True)
+                    self._insert(cursor, self._original[i1:i2], del_fmt)
+                    self._insert(cursor, self._polished[j1:j2], fmt_insert)
+                    self._change_anchors.append((start, cursor.position(), "replace"))
 
-        cursor.endEditBlock()
+            cursor.endEditBlock()
+            self._current_anchor_idx = -1
+            self._anchor_label.setText(f"修改: {len(self._change_anchors)} 处")
+            self._highlight_citations()
+        finally:
+            self._skip_recompute = False
+
+    def _on_diff_text_changed(self):
+        """用户手动编辑 diff 后重算修改锚点（位置偏移后仍可正确导航/接受/拒绝）。"""
+        if self._skip_recompute:
+            return
+        self._recompute_anchors()
+
+    def _recompute_anchors(self):
+        """从当前文档的字符格式重建修改锚点。
+
+        - 删除线 → delete
+        - 绿底（非删除线）→ insert
+        - 相邻 delete+insert 合并为 replace
+        """
+        doc = self._diff_edit.document()
+        n = doc.characterCount()
+        deletes: list[tuple[int, int]] = []
+        inserts: list[tuple[int, int]] = []
+
+        i = 0
+        while i < n:
+            fmt = doc.characterFormat(i)
+            if fmt.fontStrikeOut():
+                j = i
+                while j < n and doc.characterFormat(j).fontStrikeOut():
+                    j += 1
+                deletes.append((i, j))
+                i = j
+                continue
+            bg = fmt.background().color()
+            if bg.isValid() and bg.red() < 50 and bg.green() > 100 and bg.blue() < 50:
+                j = i
+                while j < n:
+                    f2 = doc.characterFormat(j)
+                    b2 = f2.background().color()
+                    if (not f2.fontStrikeOut()
+                            and b2.isValid() and b2.red() < 50
+                            and b2.green() > 100 and b2.blue() < 50):
+                        j += 1
+                    else:
+                        break
+                inserts.append((i, j))
+                i = j
+                continue
+            i += 1
+
+        anchors: list[tuple[int, int, str]] = []
+        d_idx = 0
+        ins_idx = 0
+        while d_idx < len(deletes) or ins_idx < len(inserts):
+            d = deletes[d_idx] if d_idx < len(deletes) else None
+            ins = inserts[ins_idx] if ins_idx < len(inserts) else None
+            if d and ins and d[1] == ins[0]:
+                anchors.append((d[0], ins[1], "replace"))
+                d_idx += 1
+                ins_idx += 1
+            elif d and (not ins or d[0] < ins[0]):
+                anchors.append((d[0], d[1], "delete"))
+                d_idx += 1
+            else:
+                anchors.append((ins[0], ins[1], "insert"))
+                ins_idx += 1
+
+        self._change_anchors = anchors
         self._current_anchor_idx = -1
         self._anchor_label.setText(f"修改: {len(self._change_anchors)} 处")
-        self._highlight_citations()
 
     def _highlight_citations(self):
         """高亮引用标记：Author-Year / [n] / 中文格式。"""
@@ -374,6 +449,7 @@ class DiffDialog(QDialog):
         cursor = QTextCursor(doc)
         cursor.setPosition(start)
         cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        self._skip_recompute = True
         cursor.beginEditBlock()
 
         if accept:
@@ -400,6 +476,7 @@ class DiffDialog(QDialog):
                 self._strip_green_in_selection(cursor, start, end)
 
         cursor.endEditBlock()
+        self._skip_recompute = False
         new_len = len(doc.toPlainText())
         delta = new_len - old_len
 
@@ -573,6 +650,30 @@ class DiffDialog(QDialog):
             row_layout.addWidget(text_label, 1)
 
             self._notes_layout.addWidget(row)
+
+    def _render_modification_log(self):
+        """渲染任务修改说明（去 AI 味 / 中译英 等任务的 modification_log）。"""
+        if not self._modification_log:
+            return
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("background-color: #2a2c3d; max-height: 1px; margin: 4px 0;")
+        self._notes_layout.addWidget(sep)
+
+        header = QLabel("<b>修改说明</b>")
+        header.setStyleSheet("color: #7aa2f7; font-size: 12px; padding: 2px 0;")
+        self._notes_layout.addWidget(header)
+
+        for item in self._modification_log:
+            text = str(item)
+            if not text:
+                continue
+            label = QLabel(f"· {text}")
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.setStyleSheet("color: #a9b1d6; font-size: 12px; padding: 1px 0;")
+            self._notes_layout.addWidget(label)
 
     # ============================================================
     # AI 聊天

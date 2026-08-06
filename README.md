@@ -15,10 +15,11 @@
 | 功能 | 说明 |
 |------|------|
 | 两阶段视觉解析 | **Stage 1** 逐页(图片+文本)发给多模态 LLM 识别结构 → **Stage 2** LLM 跨页整合为完整结构化文档 |
+| 解析引擎可切换 | 设置中可切换 **Docling 本地解析**（快/省/离线，首次下载模型）或 **视觉 LLM**；引擎切换自动失效旧缓存 |
 | 结构化阅读视图 | 标题/章节/正文/图表/参考文献按 `element_type` 分类渲染，关键章节暖金色高亮 |
 | 图表智能提取 | LLM 标注图表 bbox → 自动裁剪保存，附带 AI 生成的图表描述 |
 | 中英对照翻译 | 英文段落一键翻译为中文，逐段对照阅读（独立翻译 API） |
-| 论文问答 | 基于结构化全文上下文（正文+元信息+图表描述+参考文献）的流式 AI 对话 |
+| 论文问答 | 基于结构化全文上下文（正文+元信息+图表描述+参考文献）的流式 AI 对话；长文档自动启用 **BM25 检索增强**（只发相关段落） |
 | 断点续传 | Stage 1 每页独立缓存，重新打开无需重新解析；支持右键分开重跑 |
 | 并发控制 | Stage 1 支持同步/异步两种模式，可配置并发页数避免 API 限流 |
 
@@ -33,7 +34,7 @@
 | 仅核查引文 | 不修改原文表述，仅验证引文是否准确反映原文发现 |
 | 可编辑 diff | 润色结果可直接手动修改、打字、删除，最终版按「替换原文」写回编辑器 |
 | 参考文献高亮 | diff 编辑器中自动标黄所有引用标记（Author-Year / [1] / 中文格式） |
-| 引文原文全文 | 自动从 Zotero 提取匹配文献的 PDF 全文发送给 LLM，支持深入验证引文细节 |
+| 引文原文全文 | 自动从 Zotero 提取匹配文献的 PDF **相关段落**（BM25 检索证据）发送给 LLM，支持深入验证引文细节 |
 | 文献补充 | 双轨制：① LLM 直接推荐已知道的文献（含标题/DOI，可导出 CSV）② 生成 PubMed 搜索词检索更多 |
 | 引用密度分析 | 风格分析时 LLM 按章节统计范文的引用分布，润色时提示引用密度参考 |
 | 小结与过渡 | LLM 根据范文风格自动判断何时添加过渡句或小结段落 |
@@ -47,7 +48,7 @@
 |------|------|
 | 多 API 预设 | DeepSeek / Mimo / OpenCode Go / OpenCode Zen / 自定义，共 5 个预设、50+ 模型 |
 | 三套独立 API | 阅读-解析 / 阅读-翻译 / 写作 各可独立配置不同的 API Key、Base URL、模型 |
-| Zotero 集成 | 自动探测或手动指定 Zotero 数据目录，引文核查时提取 PDF 全文 |
+| Zotero 集成 | 左侧「Zotero」标签页只读镜像集合树，**实时同步**增删改（QFileSystemWatcher + 防抖 + 后台重载）；引文核查提取 PDF 相关段落 |
 | 流式对话 | AI 回复实时逐字显示，Markdown 渲染，上下文自动管理（1M token 窗口） |
 | 论文库 | 拖拽导入 PDF，文件夹分类管理，对话和解析状态按文档持久化 |
 | Catppuccin 暗色主题 | 护眼舒适的暗色配色方案，全组件自定义 QSS 样式 |
@@ -73,7 +74,13 @@ conda activate PDFasker
 pip install -r requirements.txt
 ```
 
-依赖：`PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3`
+依赖：`PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3` `docling` `rank_bm25`
+
+> **Docling 说明**：用于 Stage 1 的 PDF 版式本地解析（标题/正文/表格/公式/参考文献分区）。
+> - 首次使用时自动从 Hugging Face 下载模型（约数百 MB，一次性，缓存在 `~/.cache/huggingface`），之后离线运行
+> - 国内网络可在设置 → API 配置 → 处理设置中勾选「Hugging Face 镜像 (hf-mirror.com)」加速下载（默认开启）
+> - 无需 Java / Docker / GPU，纯 CPU 即可运行；若机器未安装 Visual Studio C++ 编译器，Docling 会自动禁用 torch JIT 编译
+> - 启动入口 `main.py` 会自动以 UTF-8 模式运行（避免中文 Windows 编码问题）
 
 ### 获取 API Key
 
@@ -104,29 +111,28 @@ python main.py
 
 ## 打包（Windows）
 
-推荐使用 `PyInstaller` 将程序打包为独立可执行文件。示例流程：
+使用 `PyInstaller` 按仓库的 `PDFasker.spec`（**onedir** 目录式）打包：
 
 ```powershell
 conda activate PDFasker
 pip install pyinstaller
-pyinstaller PDFasker.spec
+pyinstaller --noconfirm --clean PDFasker.spec
 ```
 
-上述命令会根据仓库中的 `PDFasker.spec` 构建并在 `dist/PDFasker/` 生成可执行程序（如 `PDFasker.exe`），构建中间产物会在 `build/` 下生成。
+产物在 `dist/PDFasker/`（`PDFasker.exe` + `_internal/` 依赖目录），构建中间产物在 `build/` 下。
 
-如果需要生成单文件可执行（onefile），可以使用：
+> **为什么用 onedir 而非单文件 onefile**：程序体积约 500MB（含 torch/PySide6/Docling），onefile 每次启动需解压 30 秒以上且易踩 PyInstaller 大包解压竞态；onedir 秒开、更新只需替换 `PDFasker.exe`、DLL 就近加载更稳。
 
-```powershell
-pyinstaller --noconfirm --onefile --windowed main.py
-```
+**打包要点**：
+- **Docling 模型不打进包**：首次使用 Docling 引擎时自动从 Hugging Face 下载到用户缓存（`~/.cache/huggingface`），之后离线；国内网络可在设置中勾选镜像
+- **运行验证**：`dist\PDFasker\PDFasker.exe --selftest <样例.pdf>` 会无头自检（模块导入、Zotero 只读加载、Docling 解析），结果写入 `%TEMP%\pdfasker_selftest.log`
+- 打包前请确保已安装 `requirements.txt` 中的依赖；目标机器如缺 Visual C++ 运行时请安装对应版本
 
-可选：将 `dist` 目录压缩为发行包：
+**分发**：将 `dist\PDFasker` 整个目录压缩为发行包：
 
 ```powershell
 Compress-Archive -Path dist\PDFasker\* -DestinationPath build\PDFasker.zip
 ```
-
-打包前请确保已在打包环境中安装 `requirements.txt` 中列出的依赖；在目标机器上可能还需要安装对应的 Visual C++ 运行时。
 
 
 ## 使用指南
@@ -237,7 +243,11 @@ PDFasker/
 
 **支持多长的论文？** DeepSeek V4 支持 1M token 上下文，几百页论文可以一次性处理。
 
-**Stage 1 解析太慢？** 设置中可切换为"异步（并发处理）"模式，调整并发页数（推荐 2-4）。注意并发过高可能触发 API 限流。
+**Stage 1 解析太慢？** 设置 → API 配置 → 阅读-解析标签页底部可切换为 **Docling 本地引擎**（快、免费、离线），或选择"异步（并发处理）"并调整并发页数（推荐 2-4）。注意并发过高可能触发 API 限流。
+
+**Docling 首次使用要下载模型？** 是，约数百 MB，一次性缓存在用户目录；国内网络可在设置中勾选「Hugging Face 镜像」加速。下载失败时自动回退到视觉 LLM 管线。
+
+**Zotero 文献怎么实时同步到软件？** 左侧面板切换到「📚 Zotero」标签页，软件会自动监听 Zotero 数据库与附件目录，增删改在约 1 秒内刷新；点击带 📄 的文献直接用两阶段管线阅读（只读，不会改动你的 Zotero 库）。
 
 **引文核查匹配不上文献？** 确保 Zotero 中该文献已附加 PDF 附件。引文年份带字母后缀（如 `2025a`）会被自动去后缀匹配。支持 Author-Year 和 [1] 编号两种引用格式。
 

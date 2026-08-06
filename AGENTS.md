@@ -18,33 +18,37 @@ python main.py
 ## 项目结构
 
 ```
-main.py                    # 入口: QApplication + MainWindow
+main.py                    # 入口: QApplication + MainWindow（自动 UTF-8 重启；打包版: DLL 路径/解压等待/重库预加载 + --selftest 无头自检）
 requirements.txt
 src/
-├── app.py                 # MainWindow — 首次启动弹窗(FirstLaunchDialog) + 信号枢纽 + 三套 LLMClient
+├── app.py                 # MainWindow — 首次启动弹窗(FirstLaunchDialog) + 信号枢纽 + 三套 LLMClient + Zotero watcher
 ├── core/
 │   ├── pdf_parser.py      # PDF 底层工具（PyMuPDF）: 文本提取/渲染
-│   ├── pdf_processor.py   # 核心！两阶段视觉 LLM 管线:
-│   │                      #   Stage 1: 逐页(图片+文本) → 视觉LLM → 结构化JSON → 缓存
+│   ├── pdf_processor.py   # 核心！两阶段管线:
+│   │                      #   Stage 1: 引擎可切换 vision(逐页视觉LLM) / docling(本地布局解析) → JSON → 缓存
 │   │                      #   Stage 2: 读缓存 → LLM跨页整合 → StructuredDocument → UI
-│   ├── llm_client.py      # OpenAI 兼容 API 客户端 + 5 个提供商预设(DeepSeek/Mimo/OpenCode Go/OpenCode Zen/自定义)
-│   ├── context_manager.py # Token 预算管理: 1M窗口，"前70%+后30%"截断策略
-│   ├── zotero_parser.py   # Zotero SQLite 解析器: 自动检测/文献搜索/主题排序（支持指定路径不全局探测）
-│   ├── unified_writer.py  # 统一润色+引文核查: UNIFIED_PROMPT + VERIFY_ONLY_PROMPT + 多层容错 JSON 解析
+│   ├── docling_parser.py  # Docling 本地解析器: PDF → 与视觉管线兼容的逐页元素（设置 HF 镜像/禁用编译）
+│   ├── llm_client.py      # OpenAI 兼容 API 客户端 + json_mode(response_format) + 5 个提供商预设
+│   ├── context_manager.py # Token 预算管理: 长文档走 BM25 检索增强（只发相关段落），短文档用"前70%+后30%"
+│   ├── retriever.py       # 轻量本地检索器: Retriever 接口 + Bm25Retriever（预留向量升级）
+│   ├── zotero_parser.py   # Zotero SQLite 解析器: 集合层级/文献/附件 + reload()（临时副本只读，支持指定路径不全局探测）
+│   ├── zotero_watcher.py  # Zotero 实时同步: QFileSystemWatcher 监听 db/wal/shm/storage + 防抖 + 后台重载
+│   ├── unified_writer.py  # 统一润色+引文核查: 证据检索化(按声明检索相关段落) + json_mode + 多层容错 JSON
 │   ├── writing_coach.py   # 写作教练: 知识库管理/写作习惯分析/期刊格式分析/引用密度分析
 │   ├── writing_prompts.py # 四种写作类型的系统提示词（综述/论文/专利/软著）
 │   └── pubmed_searcher.py # PubMed E-utilities 检索客户端（esearch + efetch）
 ├── ui/
-│   ├── pdf_viewer.py      # 结构化阅读面板: ParagraphCard 按 element_type 渲染+中英文翻译
-│   ├── pdf_list_panel.py  # 论文库侧边栏: 拖拽导入/文件夹分类/右键菜单/进度显示
+│   ├── pdf_viewer.py      # 结构化阅读面板: ParagraphCard 按 element_type 渲染+中英文翻译(多并发+滚动自动翻译)
+│   ├── pdf_list_panel.py  # 左侧面板: Tab1 论文库 + Tab2 Zotero 只读文献库
+│   ├── zotero_panel.py    # Zotero 树形视图: 集合树+文献+PDF附件标记，watcher 驱动实时刷新
 │   ├── chat_panel.py      # 聊天面板: Markdown 气泡/流式渲染
-│   ├── writing_panel.py   # 写作面板: 编辑器+知识库管理+Zotero+AI辅助(润色/核查/文献补充)+自动保存+字数统计
+│   ├── writing_panel.py   # 写作面板: 编辑器+知识库管理+Zotero+AI辅助(润色/仅核查/文献补充)+自动保存+字数统计
 │   ├── diff_dialog.py     # 润色对比对话框: 内联 diff(单编辑框)+导航栏(上一处/下一处/接受/拒绝)+AI 对话+引用高亮
 │   ├── lit_search_dialog.py # 文献补充对话框: LLM 双轨推荐(已知文献+搜索词)→PubMed 检索→导出 CSV（非模态）
-│   ├── settings_dialog.py # API 设置对话框: 三标签页+处理设置(同步/异步)+Zotero路径
+│   ├── settings_dialog.py # API 设置对话框: 三标签页+处理设置(引擎/同步异步/并发)+Zotero路径+连接测试(后台线程)
 │   └── styles.py          # Catppuccin 暗色主题 QSS
 └── utils/
-    ├── config.py          # 持久化层: 配置(含多API/数据根目录/Zotero)+图书馆+聊天+缓存+草稿+润色历史
+    ├── config.py          # 持久化层: 配置(含多API/数据根目录/Zotero/stage1_parser)+图书馆+聊天+缓存+草稿+润色历史
     └── layout.py          # 递归布局高度计算（heightForWidth）
 ```
 
@@ -60,9 +64,12 @@ src/
 
 ### 两阶段解析管线（阅读）
 
-- **Stage 1**: PDF 导入后自动逐页发给视觉 LLM，每页独立缓存，支持断点续传和并发控制
+- **Stage 1**: PDF 导入后逐页解析，每页独立缓存，支持断点续传。引擎可切换：
+  - `vision`（默认）: 整页渲染图片 → 视觉 LLM → 结构化 JSON
+  - `docling`: 本地布局解析（快/省/离线，图表描述仍走视觉 LLM；解析失败自动回退 vision）
 - **Stage 2**: 用户点击论文时，LLM 跨页整合为 StructuredDocument
-- 右键菜单支持分开重跑 Stage 1 / Stage 2
+- 右键菜单支持分开重跑 Stage 1 / Stage 2；引擎切换会自动失效旧缓存（manifest.parser）
+- 长文档问答走 BM25 检索增强（`context_manager` + `retriever`），只发相关段落而非全量截断
 
 ### 三套独立 API
 
@@ -73,7 +80,7 @@ src/
 ### 写作系统
 
 - **WritingCoach**: 知识库(CRUD)→风格分析(六维度+引用密度)→AI辅助(润色/核查/文献补充)
-- **UnifiedWriter**: 统一润色+引文核查，支持常规模式和仅核查模式(verify_only)
+- **UnifiedWriter**: 统一润色+引文核查，支持常规模式和仅核查模式(verify_only)；引文证据按声明检索相关段落，不再整篇塞全文
 - **DiffDialog**: 内联 diff 展示 + 导航工具栏 + 逐项接受/拒绝 + 可编辑 diff + AI 对话（非模态）
 - **LitSearchDialog**: 双轨文献推荐——LLM 已知文献 + PubMed 检索词（非模态）
 - 支持 4 种写作类型: 综述/研究型论文/专利/软著
@@ -88,8 +95,11 @@ src/
 - `（中文等，2024）` 中文括号
 - `Author等（2024）` 无括号中文
 
-### Zotero 集成
+### Zotero 集成（只读 + 实时同步）
 
+- 左侧面板 Tab2「📚 Zotero」: 只读镜像 Zotero 集合树（集合→文献→PDF 附件），点击文献直接用两阶段管线阅读（不导入本地库）
+- 实时同步: `ZoteroWatcher` 用 QFileSystemWatcher 监听 `zotero.sqlite`/`-wal`/`-shm`/`storage/`，防抖 1s + 每 60s 安全网重扫，后台线程 `reload()` 后按 key 做差异并刷新 UI
+- **只读铁律**: 所有访问通过系统临时目录的数据库副本（`tempfile`），绝不写 Zotero 数据目录；PDF 只读打开
 - 写作面板工具栏 + API 设置写作标签页，两处联动设置 Zotero 数据目录
 - 用户显式指定路径时，仅在该目录下搜索 zotero.sqlite（不全局探测）
 - 年份后缀自动去字母（`2025a` → `2025`）匹配 Zotero

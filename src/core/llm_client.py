@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Generator
 
-from openai import OpenAI
+from openai import (
+    OpenAI, BadRequestError, APIConnectionError, APITimeoutError,
+    InternalServerError, RateLimitError,
+)
 
 
 class LLMClient:
@@ -16,21 +20,38 @@ class LLMClient:
         self.model = model
         self._client = OpenAI(api_key=api_key, base_url=base_url)
 
+    @staticmethod
+    def _retry(fn, max_retries: int = 2, base_delay: float = 2.0):
+        """对瞬时错误（限流/网络/超时/5xx）做指数退避重试。"""
+        last_exc: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                return fn()
+            except (RateLimitError, APIConnectionError,
+                    APITimeoutError, InternalServerError) as e:
+                last_exc = e
+                if attempt >= max_retries:
+                    break
+                time.sleep(base_delay * (2 ** attempt))
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("重试逻辑异常")
+
     def chat_stream(self, messages: list[dict]) -> Generator[str, None, None]:
         """流式对话生成器，自动跳过 reasoning_content（如 DeepSeek R1）。"""
-        response = self._client.chat.completions.create(
+        response = self._retry(lambda: self._client.chat.completions.create(
             model=self.model,
             messages=messages,
             stream=True,
             temperature=0.3,
-        )
+        ))
         for chunk in response:
             delta = chunk.choices[0].delta
             if delta.content:
                 yield delta.content
 
     def chat_sync(self, messages: list[dict], timeout: float = 120.0,
-                  max_tokens: int | None = None) -> str:
+                  max_tokens: int | None = None, json_mode: bool = False) -> str:
         """同步对话，返回完整回复文本。
 
         支持纯文本和视觉（图片+文本）两种消息格式。
@@ -40,6 +61,8 @@ class LLMClient:
             messages: 消息列表
             timeout: API 调用超时秒数（默认 120s）
             max_tokens: 最大生成 token 数（None=不限制）
+            json_mode: 要求输出 JSON 对象（response_format=json_object）。
+                       部分兼容服务不支持该参数时自动降级为普通请求。
         """
         kwargs: dict = dict(
             model=self.model,
@@ -49,7 +72,20 @@ class LLMClient:
         )
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
-        response = self._client.chat.completions.create(**kwargs)
+        use_json = False
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+            use_json = True
+
+        try:
+            response = self._retry(lambda: self._client.chat.completions.create(**kwargs))
+        except BadRequestError:
+            if use_json:
+                # 该接口不支持 response_format → 降级普通请求
+                kwargs.pop("response_format", None)
+                response = self._retry(lambda: self._client.chat.completions.create(**kwargs))
+            else:
+                raise
         content = response.choices[0].message.content
         return content or ""
 

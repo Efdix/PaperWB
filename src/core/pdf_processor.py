@@ -192,6 +192,7 @@ class PageManifest:
     created_at: float = 0.0
     updated_at: float = 0.0
     integration_version: int = 0  # 跨页整合版本号（变更prompt时可递增使缓存失效）
+    parser: str = "vision"        # 逐页解析引擎: vision | docling
 
     @property
     def done_count(self) -> int:
@@ -221,6 +222,7 @@ class PageManifest:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "integration_version": self.integration_version,
+            "parser": self.parser,
         }
 
     @staticmethod
@@ -236,6 +238,7 @@ class PageManifest:
             created_at=d.get("created_at", 0.0),
             updated_at=d.get("updated_at", 0.0),
             integration_version=d.get("integration_version", 0),
+            parser=d.get("parser", "vision"),
         )
 
 
@@ -293,7 +296,19 @@ PAGE_ANALYSIS_SYSTEM_PROMPT = """你是一位学术论文结构分析专家。�
 8. 每个元素必须包含 "text" 字段（不是 content），值为该元素的文本内容
 9. 每个元素必须包含 "id" 字段，格式如 "p1_e1", "p1_e2" 等（p页码_e序号）
 10. bbox 坐标是像素坐标 [x0, y0, x1, y1]，原点在页面左上角
-11. 可选字段 "section_name": 如果你能确定该元素所属的章节（如 "Abstract", "Introduction", "Results", "Discussion", "Methods", "Conclusion"），请填写；不确定则留空字符串 """""
+11. 可选字段 "section_name": 如果你能确定该元素所属的章节（如 "Abstract", "Introduction", "Results", "Discussion", "Methods", "Conclusion"），请填写；不确定则留空字符串 ""
+
+## 输出示例（仅作格式参考，实际元素按页面内容增减）
+
+{"page": 1, "page_role": "title_page", "elements": [
+  {"id": "p1_e1", "type": "title", "text": "Deep Learning for Medical Image Analysis", "bbox": [120, 80, 780, 130], "is_bold": true, "section_name": ""},
+  {"id": "p1_e2", "type": "authors", "text": "Y. Wang, X. Li, Z. Chen", "bbox": [120, 150, 500, 170], "section_name": ""},
+  {"id": "p1_e3", "type": "affiliations", "text": "School of Medicine, Peking University", "bbox": [120, 175, 600, 200], "section_name": ""},
+  {"id": "p1_e4", "type": "abstract_heading", "text": "Abstract", "bbox": [120, 240, 220, 260], "section_name": "Abstract"},
+  {"id": "p1_e5", "type": "abstract_body", "text": "This paper presents a novel framework ...", "bbox": [120, 265, 780, 380], "section_name": "Abstract"},
+  {"id": "p1_e6", "type": "body", "text": "Recent advances in deep learning have ...", "bbox": [120, 400, 780, 520], "section_name": "Introduction"}
+]}
+"""
 
 
 INTEGRATION_SYSTEM_PROMPT = """你是一位学术论文编辑专家。你会收到一篇论文所有页面的结构化解析结果。
@@ -407,10 +422,8 @@ def _validate_page_result(raw: str, page_num: int) -> dict:
 
 
 def _try_parse_json(text: str) -> dict | None:
-    try:
-        return json.loads(text)
-    except (json.JSONDecodeError, TypeError):
-        return None
+    from .json_utils import parse_json_response
+    return parse_json_response(text)
 
 
 def _normalize_page_result(obj: dict, page_num: int) -> dict:
@@ -442,6 +455,7 @@ def _normalize_page_result(obj: dict, page_num: int) -> dict:
             "is_meaningful": bool(elem.get("is_meaningful", True)),
             "description": str(elem.get("description", "")),
             "section_name": str(elem.get("section_name", "")),  # Stage 1 可选建议
+            "image_path": str(elem.get("image_path", "")),
         }
         normalized_elements.append(normalized)
 
@@ -536,7 +550,7 @@ class PageAnalysisWorker(QThread):
                     ],
                 },
             ]
-            response = self._client.chat_sync(messages, timeout=180.0)
+            response = self._client.chat_sync(messages, timeout=180.0, json_mode=True)
             result = _validate_page_result(response, self._page_num)
             self.finished.emit(self._page_num, result)
         except Exception as e:
@@ -569,7 +583,7 @@ class IntegrationWorker(QThread):
                 {"role": "system", "content": INTEGRATION_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ]
-            response = self._client.chat_sync(messages, timeout=300.0)
+            response = self._client.chat_sync(messages, timeout=300.0, json_mode=True)
             result = _validate_integration_result(response)
 
             if "error" in result:
@@ -581,6 +595,130 @@ class IntegrationWorker(QThread):
             self.finished.emit(doc)
         except Exception as e:
             self.error.emit(str(e))
+
+
+# ============================================================
+# 通用工具
+# ============================================================
+
+def crop_meaningful_images(pdf_path: str, cache_dir: str,
+                           page_num: int, elements: list[dict]) -> None:
+    """裁剪 figure/table 元素区域为 PNG，写回 image_path/image_caption。
+
+    bbox 坐标为页面渲染像素坐标（150dpi，左上原点），裁剪时映射回 PDF 点坐标。
+    """
+    import fitz
+
+    meaningful = [
+        e for e in elements
+        if e.get("type") in ("figure", "table") and e.get("is_meaningful", True)
+    ]
+    if not meaningful:
+        return
+
+    try:
+        doc = fitz.open(pdf_path)
+        if page_num > len(doc):
+            doc.close()
+            return
+        page = doc[page_num - 1]
+        page_rect = page.rect  # 单位：点
+        scale = 72.0 / 150.0  # 像素 → 点
+
+        for elem in meaningful:
+            bbox = elem.get("bbox", [0, 0, 0, 0])
+            if len(bbox) != 4:
+                continue
+            x0, y0, x1, y1 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+            if x1 <= x0 or y1 <= y0:
+                continue
+            # 像素→PDF 点坐标
+            px0, py0, px1, py1 = x0 * scale, y0 * scale, x1 * scale, y1 * scale
+            # 越界裁剪
+            px0 = max(0.0, px0); py0 = max(0.0, py0)
+            px1 = min(page_rect.width, px1); py1 = min(page_rect.height, py1)
+            if px1 <= px0 or py1 <= py0:
+                continue
+
+            elem_id = elem.get("id", f"p{page_num}_e_img")
+            filename = f"page_{page_num:03d}_{elem_id}.png"
+            output_path = os.path.join(cache_dir, filename)
+
+            clip = fitz.Rect(px0 - 2, py0 - 2, px1 + 2, py1 + 2)
+            mat = fitz.Matrix(200 / 72, 200 / 72)
+            pix = page.get_pixmap(matrix=mat, clip=clip)
+            pix.save(output_path)
+
+            elem["image_path"] = filename
+            elem["image_caption"] = elem.get("caption", "")
+
+        doc.close()
+    except Exception:
+        pass  # 裁剪失败不阻塞流程
+
+
+class DoclingParseWorker(QThread):
+    """Docling 本地解析整本 PDF → 逐页缓存（Stage 1 的本地引擎）。"""
+
+    page_done = Signal(int)            # page_num（复用 PDFProcessor._on_stage1_page_done）
+    progress = Signal(int, int)        # current, total
+    finished = Signal()
+    error = Signal(str)
+
+    def __init__(self, pdf_path: str, cache_dir: str, manifest: "PageManifest",
+                 parent=None):
+        super().__init__(parent)
+        self._pdf_path = pdf_path
+        self._cache_dir = cache_dir
+        self._manifest = manifest
+
+    def run(self) -> None:
+        try:
+            from .docling_parser import parse_pdf
+            pages = parse_pdf(self._pdf_path)
+        except Exception as e:  # noqa: BLE001
+            self.error.emit(f"Docling 解析失败：{e}")
+            return
+
+        self._manifest.total_pages = len(pages)
+        for i, page in enumerate(pages):
+            page_num = int(page.get("page", i + 1))
+            elements = page.get("elements", [])
+
+            # 裁剪图表区域
+            crop_meaningful_images(self._pdf_path, self._cache_dir, page_num, elements)
+
+            result = {
+                "page": page_num,
+                "status": "done",
+                "page_role": page.get("page_role", "content_page"),
+                "elements": elements,
+                "raw_text": "",
+                "error_message": "",
+                "processed_at": time.time(),
+                "parser": "docling",
+            }
+            self._save_page_cache(page_num, result)
+            self._manifest.pages[page_num] = "done"
+            self._manifest.updated_at = time.time()
+            self._save_manifest()
+
+            self.page_done.emit(page_num)
+            self.progress.emit(i + 1, len(pages))
+
+        self.finished.emit()
+
+    def _save_page_cache(self, page_num: int, data: dict) -> None:
+        os.makedirs(self._cache_dir, exist_ok=True)
+        filepath = os.path.join(self._cache_dir, f"page_{page_num:03d}.json")
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _save_manifest(self) -> None:
+        os.makedirs(self._cache_dir, exist_ok=True)
+        filepath = os.path.join(self._cache_dir, "_manifest.json")
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(self._manifest.to_dict(), f, ensure_ascii=False, indent=2)
 
 
 # ============================================================
@@ -709,6 +847,9 @@ class PageAnalyzer:
             self._manifest.pages[page_num] = "done"
             result["status"] = "done"
 
+        # 裁剪有意义的图片/表格（先裁剪后保存，image_path 才能进入页面缓存）
+        self._crop_meaningful_images(page_num, result.get("elements", []))
+
         # 保存缓存页
         result["raw_text"] = self._page_texts.get(page_num, "")
         result["processed_at"] = time.time()
@@ -717,9 +858,6 @@ class PageAnalyzer:
         # 更新 manifest
         self._manifest.updated_at = time.time()
         self._save_manifest()
-
-        # 裁剪有意义的图片/表格
-        self._crop_meaningful_images(page_num, result.get("elements", []))
 
         if self._on_page_done:
             self._on_page_done(page_num, result)
@@ -754,47 +892,7 @@ class PageAnalyzer:
 
     def _crop_meaningful_images(self, page_num: int, elements: list[dict]) -> None:
         """裁剪 LLM 标注的有意义图片/表格区域，保存为 PNG。"""
-        import fitz
-
-        meaningful = [
-            e for e in elements
-            if e.get("type") in ("figure", "table") and e.get("is_meaningful", True)
-        ]
-        if not meaningful:
-            return
-
-        try:
-            doc = fitz.open(self._pdf_path)
-            if page_num > len(doc):
-                doc.close()
-                return
-            page = doc[page_num - 1]
-
-            for elem in meaningful:
-                bbox = elem.get("bbox", [0, 0, 0, 0])
-                if len(bbox) != 4:
-                    continue
-                x0, y0, x1, y1 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
-                if x1 <= x0 or y1 <= y0:
-                    continue
-
-                elem_id = elem.get("id", f"p{page_num}_e_img")
-                filename = f"page_{page_num:03d}_{elem_id}.png"
-                output_path = os.path.join(self._cache_dir, filename)
-
-                # 放大裁剪区域 2pt 避免边缘裁切
-                clip = fitz.Rect(x0 - 2, y0 - 2, x1 + 2, y1 + 2)
-                mat = fitz.Matrix(200 / 72, 200 / 72)
-                pix = page.get_pixmap(matrix=mat, clip=clip)
-                pix.save(output_path)
-
-                # 更新 element 中的图片路径
-                elem["image_path"] = filename
-                elem["image_caption"] = elem.get("caption", "")
-
-            doc.close()
-        except Exception:
-            pass  # 裁剪失败不阻塞流程
+        crop_meaningful_images(self._pdf_path, self._cache_dir, page_num, elements)
 
     # ---- 缓存读写 ----
 
@@ -916,6 +1014,7 @@ class PDFProcessor(QObject):
         self._client = llm_client
         self._analyzer: PageAnalyzer | None = None
         self._integrator: DocumentIntegrator | None = None
+        self._docling_worker: DoclingParseWorker | None = None
         self._manifest: PageManifest | None = None
         self._cache_dir: str = ""
         self._integrated_doc: StructuredDocument | None = None
@@ -939,13 +1038,20 @@ class PDFProcessor(QObject):
 
                 # 检查 PDF 是否被修改（mtime 变化 → 缓存失效）
                 current_mtime = os.path.getmtime(self._pdf_path)
-                if abs(self._manifest.pdf_mtime - current_mtime) > 1.0:
-                    # PDF 已修改，重置 manifest
+                parser_now = self._current_parser()
+                if abs(self._manifest.pdf_mtime - current_mtime) > 1.0 \
+                        or self._manifest.parser != parser_now:
+                    # PDF 已修改或解析引擎切换 → 重置 manifest
                     self._manifest = self._create_fresh_manifest()
             except (json.JSONDecodeError, OSError):
                 self._manifest = self._create_fresh_manifest()
         else:
             self._manifest = self._create_fresh_manifest()
+
+    @staticmethod
+    def _current_parser() -> str:
+        from ..utils.config import load_config
+        return load_config().get("stage1_parser", "vision")
 
     def _create_fresh_manifest(self) -> PageManifest:
         """创建全新的 manifest（通过 PyMuPDF 获取总页数）。"""
@@ -967,6 +1073,7 @@ class PDFProcessor(QObject):
             pages={p: "pending" for p in range(1, total + 1)},
             created_at=time.time(),
             updated_at=time.time(),
+            parser=self._current_parser(),
         )
 
     # ---- 公共 API ----
@@ -1001,14 +1108,15 @@ class PDFProcessor(QObject):
             return None
 
     def start_stage1(self) -> None:
-        """启动 Stage 1 逐页分析（根据配置选择同步/异步）。"""
-        if self._client is None:
-            self.stage1_error.emit(self._pdf_path, 0, "未配置 API 客户端")
-            return
-
+        """启动 Stage 1 逐页分析（根据配置选择引擎与同步/异步）。"""
         if self._manifest is None:
             self.stage1_error.emit(self._pdf_path, 0, "Manifest 初始化失败")
             return
+
+        # 读取用户配置
+        from ..utils.config import load_config
+        config = load_config()
+        parser = config.get("stage1_parser", "vision")
 
         # 如果全部已完成，直接发信号
         if self._manifest.is_complete:
@@ -1020,9 +1128,15 @@ class PDFProcessor(QObject):
             self.stage1_complete.emit(self._pdf_path)
             return
 
-        # 读取用户配置
-        from ..utils.config import load_config
-        config = load_config()
+        if parser == "docling":
+            self._start_stage1_docling()
+            return
+
+        # 视觉 LLM 管线需要客户端
+        if self._client is None:
+            self.stage1_error.emit(self._pdf_path, 0, "未配置 API 客户端")
+            return
+
         mode = config.get("stage1_mode", "async")
         concurrency = config.get("stage1_concurrency", 3)
 
@@ -1030,6 +1144,36 @@ class PDFProcessor(QObject):
         self._analyzer = PageAnalyzer(
             self._pdf_path, self._client, self._cache_dir, self._manifest,
             max_concurrent=max_concurrent,
+        )
+        self._analyzer.set_callbacks(
+            on_page_done=self._on_stage1_page_done,
+            on_all_done=self._on_stage1_all_done,
+            on_error=self._on_stage1_page_error,
+        )
+        self._analyzer.start()
+
+    def _start_stage1_docling(self) -> None:
+        """用 Docling 本地解析 Stage 1（快、省；失败自动回退视觉 LLM）。"""
+        self._docling_worker = DoclingParseWorker(
+            self._pdf_path, self._cache_dir, self._manifest
+        )
+        self._docling_worker.page_done.connect(
+            lambda pn: self._on_stage1_page_done(pn, {})
+        )
+        self._docling_worker.progress.connect(
+            lambda cur, tot: self.stage1_progress.emit(self._pdf_path, cur, tot)
+        )
+        self._docling_worker.finished.connect(lambda: self._on_stage1_all_done(self._manifest))
+        self._docling_worker.error.connect(self._on_stage1_docling_error)
+        self._docling_worker.start()
+
+    def _on_stage1_docling_error(self, error_msg: str) -> None:
+        """Docling 解析失败 → 提示并回退视觉 LLM 管线。"""
+        self.stage1_error.emit(self._pdf_path, 0, error_msg)
+        self._manifest = self._create_fresh_manifest()
+        self._analyzer = PageAnalyzer(
+            self._pdf_path, self._client, self._cache_dir, self._manifest,
+            max_concurrent=1,
         )
         self._analyzer.set_callbacks(
             on_page_done=self._on_stage1_page_done,
@@ -1067,6 +1211,11 @@ class PDFProcessor(QObject):
             self._analyzer.cancel()
         if self._integrator:
             self._integrator.cancel()
+        if self._docling_worker and self._docling_worker.isRunning():
+            self._docling_worker.quit()
+            if not self._docling_worker.wait(1500):
+                self._docling_worker.terminate()
+                self._docling_worker.wait()
 
     # ---- 内部回调 ----
 
@@ -1088,8 +1237,46 @@ class PDFProcessor(QObject):
 
     def _on_stage2_finished(self, doc: StructuredDocument) -> None:
         """Stage 2 整合完成。"""
+        self._backfill_image_paths(doc)
         self._integrated_doc = doc
         self.stage2_finished.emit(self._pdf_path, doc)
+
+    def _backfill_image_paths(self, doc: StructuredDocument) -> None:
+        """整合后按 element_id 从页面缓存回填图表截图路径，不依赖 LLM 透传。
+
+        裁剪产生的 PNG 文件名格式为 page_{page:03d}_{element_id}.png，
+        与页面缓存中元素一一对应，可直接确定性回填。
+        """
+        if not self._cache_dir or not doc:
+            return
+        targets: list[StructuredElement] = []
+        for e in doc.display_elements:
+            if e.element_type in ("figure", "table"):
+                targets.append(e)
+        for e in (doc.figures or []) + (doc.tables or []):
+            if e.element_type in ("figure", "table"):
+                targets.append(e)
+        seen: set[str] = set()
+        for elem in targets:
+            if not elem.element_id or elem.element_id in seen:
+                continue
+            seen.add(elem.element_id)
+            filepath = os.path.join(self._cache_dir, f"page_{elem.page:03d}.json")
+            if not os.path.exists(filepath):
+                continue
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    cache = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+            for e in cache.get("elements", []):
+                if e.get("id") == elem.element_id:
+                    img = e.get("image_path", "")
+                    if img:
+                        elem.image_path = img
+                    if not elem.image_caption:
+                        elem.image_caption = e.get("caption", "")
+                    break
 
     def _on_stage2_error(self, error_msg: str) -> None:
         """Stage 2 整合失败。"""

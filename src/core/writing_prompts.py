@@ -56,10 +56,24 @@ WRITING_TYPES: dict[str, dict] = {
 
 
 def get_writing_type_config(writing_type: str) -> dict:
-    """获取指定写作类型的配置，不存在则返回综述默认。"""
-    return WRITING_TYPES.get(writing_type, WRITING_TYPES["综述"])
+    """获取指定写作类型的配置，不存在则返回综述默认（支持用户自定义类型）。"""
+    if writing_type in WRITING_TYPES:
+        return WRITING_TYPES[writing_type]
+    custom = _get_custom()
+    return custom.get(writing_type) or WRITING_TYPES["综述"]
 
 
 def get_all_writing_types() -> list[tuple[str, str]]:
-    """返回 [(key, label), ...] 供下拉菜单使用。"""
-    return [(k, v["label"]) for k, v in WRITING_TYPES.items()]
+    """返回 [(key, label), ...] 供下拉菜单使用（内置 + 自定义）。"""
+    items = [(k, v["label"]) for k, v in WRITING_TYPES.items()]
+    items.extend((k, v["label"]) for k, v in _get_custom().items())
+    return items
+
+
+def _get_custom() -> dict:
+    """读取用户自定义写作类型（惰性导入避免循环依赖）。"""
+    try:
+        from ..utils.config import get_custom_writing_types
+        return get_custom_writing_types()
+    except Exception:
+        return {}
