@@ -43,10 +43,10 @@ class ReviewDialog(QDialog):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: #1a1b26; }")
+        scroll.setStyleSheet("QScrollArea { border: none; background: #f4f1eb; }")
 
         container = QWidget()
-        container.setStyleSheet("background: #1a1b26;")
+        container.setStyleSheet("background: #f4f1eb;")
         self._cl = QVBoxLayout(container)
         self._cl.setContentsMargins(24, 20, 24, 20)
         self._cl.setSpacing(10)
@@ -84,7 +84,7 @@ class ReviewDialog(QDialog):
 
         # 底部按钮
         btn_row = QWidget()
-        btn_row.setStyleSheet("background: #1a1b26;")
+        btn_row.setStyleSheet("background: #f4f1eb;")
         btn_lo = QHBoxLayout(btn_row)
         btn_lo.setContentsMargins(24, 10, 24, 16)
         btn_lo.addStretch()
@@ -92,27 +92,27 @@ class ReviewDialog(QDialog):
         cancel_btn = QPushButton("\u53d6\u6d88")
         cancel_btn.clicked.connect(self.reject)
         cancel_btn.setStyleSheet(
-            "QPushButton { background: #3b3d54; color: #cfd2e3; "
-            "border-radius: 6px; padding: 6px 18px; font-size: 13px; }"
-            "QPushButton:hover { background: #4a4d6a; }"
+            "QPushButton { background: #e9efed; color: #29434a; "
+            "border-radius: 7px; padding: 7px 18px; font-size: 13px; }"
+            "QPushButton:hover { background: #dcebe7; }"
         )
         btn_lo.addWidget(cancel_btn)
 
         save_btn = QPushButton("\ud83d\udcbe \u4fdd\u5b58\u8bc4\u4ef7")
         save_btn.clicked.connect(self._on_save)
         save_btn.setStyleSheet(
-            "QPushButton { background: #7aa2f7; color: #1a1b26; font-weight: bold; "
-            "border-radius: 6px; padding: 6px 24px; font-size: 13px; }"
-            "QPushButton:hover { background: #89b4fa; }"
+            "QPushButton { background: #147c7c; color: #ffffff; font-weight: bold; "
+            "border-radius: 7px; padding: 7px 24px; font-size: 13px; }"
+            "QPushButton:hover { background: #0e696a; }"
         )
         btn_lo.addWidget(save_btn)
 
         export_btn = QPushButton("\ud83d\udcc4 \u5bfc\u51fa TXT")
         export_btn.clicked.connect(self._export_txt)
         export_btn.setStyleSheet(
-            "QPushButton { background: #3b3d54; color: #cfd2e3; "
-            "border-radius: 6px; padding: 6px 18px; font-size: 13px; }"
-            "QPushButton:hover { background: #4a4d6a; }"
+            "QPushButton { background: #e9efed; color: #29434a; "
+            "border-radius: 7px; padding: 7px 18px; font-size: 13px; }"
+            "QPushButton:hover { background: #dcebe7; }"
         )
         btn_lo.addWidget(export_btn)
         layout.addWidget(btn_row)
@@ -120,7 +120,7 @@ class ReviewDialog(QDialog):
     # ---- 辅助方法 ----
 
     @staticmethod
-    def _section_header(title: str, color: str = "#7aa2f7") -> QLabel:
+    def _section_header(title: str, color: str = "#147c7c") -> QLabel:
         header = QLabel(title)
         header.setStyleSheet(
             f"color: {color}; font-size: 15px; font-weight: bold; "
@@ -132,17 +132,17 @@ class ReviewDialog(QDialog):
     def _sep():
         s = QFrame()
         s.setFrameShape(QFrame.Shape.HLine)
-        s.setStyleSheet("background-color: #2a2c3d; max-height: 1px;")
+        s.setStyleSheet("background-color: #e4e0d8; max-height: 1px;")
         return s
 
     @staticmethod
-    def _static_text(content: str, color: str = "#a9b1d6") -> QLabel:
+    def _static_text(content: str, color: str = "#526b6c") -> QLabel:
         body = QLabel(content)
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         body.setStyleSheet(
             f"color: {color}; font-size: 12px; line-height: 1.7; "
-            "padding: 6px 12px; background: #1e2030; border-radius: 6px;"
+            "padding: 8px 12px; background: #fffdfa; border: 1px solid #e5e1d9; border-radius: 8px;"
         )
         return body
 
@@ -151,7 +151,7 @@ class ReviewDialog(QDialog):
         """添加一个可交互的发现项卡片：复选框 + 标题 + 可编辑建议。"""
         card = QFrame()
         card.setStyleSheet(
-            "QFrame { background: #1e2030; border-radius: 8px; "
+            "QFrame { background: #fffdfa; border: 1px solid #e5e1d9; border-radius: 8px; "
             "padding: 2px; margin-bottom: 4px; }"
         )
         card_layout = QVBoxLayout(card)
@@ -164,7 +164,7 @@ class ReviewDialog(QDialog):
         cb = QCheckBox()
         cb.setChecked(accepted)
         cb.setStyleSheet(
-            "QCheckBox { color: #a9b1d6; font-size: 12px; }"
+            "QCheckBox { color: #526b6c; font-size: 12px; }"
             "QCheckBox::indicator { width: 16px; height: 16px; }"
         )
         top_row.addWidget(cb)
@@ -175,7 +175,7 @@ class ReviewDialog(QDialog):
 
         title_label = QLabel(title)
         title_label.setWordWrap(True)
-        title_label.setStyleSheet("color: #cfd2e3; font-size: 12px; font-weight: bold;")
+        title_label.setStyleSheet("color: #29434a; font-size: 12px; font-weight: bold;")
         top_row.addWidget(title_label, 1)
         card_layout.addLayout(top_row)
 
@@ -185,10 +185,10 @@ class ReviewDialog(QDialog):
         edit.setMaximumHeight(60)
         edit.setMinimumHeight(40)
         edit.setStyleSheet(
-            "QTextEdit { background-color: #24253a; color: #a9b1d6; "
-            "border: 1px solid #3b3d54; border-radius: 4px; "
+            "QTextEdit { background-color: #ffffff; color: #526b6c; "
+            "border: 1px solid #d9e1de; border-radius: 6px; "
             "padding: 4px 6px; font-size: 11px; }"
-            "QTextEdit:focus { border-color: #7aa2f7; }"
+            "QTextEdit:focus { border-color: #54aaa0; }"
         )
         card_layout.addWidget(edit)
 
@@ -196,15 +196,15 @@ class ReviewDialog(QDialog):
             edit.setReadOnly(not checked)
             if checked:
                 edit.setStyleSheet(
-                    "QTextEdit { background-color: #24253a; color: #a9b1d6; "
-                    "border: 1px solid #3b3d54; border-radius: 4px; "
+                    "QTextEdit { background-color: #ffffff; color: #526b6c; "
+                    "border: 1px solid #d9e1de; border-radius: 6px; "
                     "padding: 4px 6px; font-size: 11px; }"
-                    "QTextEdit:focus { border-color: #7aa2f7; }"
+                    "QTextEdit:focus { border-color: #54aaa0; }"
                 )
             else:
                 edit.setStyleSheet(
-                    "QTextEdit { background-color: #1a1b26; color: #565a7a; "
-                    "border: 1px solid #2a2c3d; border-radius: 4px; "
+                    "QTextEdit { background-color: #f4f1eb; color: #82908d; "
+                    "border: 1px solid #e5e1d9; border-radius: 6px; "
                     "padding: 4px 6px; font-size: 11px; }"
                 )
 
@@ -224,13 +224,13 @@ class ReviewDialog(QDialog):
         result = self._result
         grade = result.get("overall_grade", "?")
         grade_color = {
-            "A+": "#9ece6a", "A": "#9ece6a",
-            "B+": "#e0af68", "B": "#e0af68",
-            "C": "#f7768e", "D": "#f7768e",
-        }.get(grade, "#a9b1d6")
+            "A+": "#278273", "A": "#278273",
+            "B+": "#b87835", "B": "#b87835",
+            "C": "#b24f4a", "D": "#b24f4a",
+        }.get(grade, "#526b6c")
 
         grade_text = (
-            f"<span style='color:#cfd2e3; font-size:16px;'>总体评分：</span>"
+            f"<span style='color:#29434a; font-size:16px;'>总体评分：</span>"
             f"<span style='color:{grade_color}; font-size:28px; font-weight:bold;'>{grade}</span>"
         )
         grade_widget = QLabel(grade_text)
@@ -240,14 +240,14 @@ class ReviewDialog(QDialog):
 
         overall = result.get("overall_summary", "")
         if overall:
-            self._cl.addWidget(self._static_text(overall, "#cfd2e3"))
+            self._cl.addWidget(self._static_text(overall, "#29434a"))
         self._cl.addWidget(self._sep())
 
     def _build_section_analysis(self):
         sa = self._result.get("section_analysis", [])
         if not sa:
             return
-        self._cl.addWidget(self._section_header("各部分分析", "#7aa2f7"))
+        self._cl.addWidget(self._section_header("各部分分析", "#147c7c"))
 
         for s in sa:
             section = s.get("section", "?")
@@ -304,7 +304,7 @@ class ReviewDialog(QDialog):
         if not gaps and not missing_sums:
             return
         self._cl.addWidget(self._sep())
-        self._cl.addWidget(self._section_header("过渡与小结", "#e0af68"))
+        self._cl.addWidget(self._section_header("过渡与小结", "#b87835"))
 
         for g in gaps:
             if g.get("severity") in ("缺失", "偏弱"):
@@ -326,7 +326,7 @@ class ReviewDialog(QDialog):
         if not items:
             return
         self._cl.addWidget(self._sep())
-        self._cl.addWidget(self._section_header("冗余检查", "#f7768e"))
+        self._cl.addWidget(self._section_header("冗余检查", "#b24f4a"))
 
         for r in items:
             locs = "、".join(str(x) for x in r.get("locations", []))
@@ -341,7 +341,7 @@ class ReviewDialog(QDialog):
         if not issues:
             return
         self._cl.addWidget(self._sep())
-        self._cl.addWidget(self._section_header("术语一致性", "#e0af68"))
+        self._cl.addWidget(self._section_header("术语一致性", "#b87835"))
 
         for t in issues:
             variants = " / ".join(str(x) for x in t.get("variants", []))
@@ -360,22 +360,22 @@ class ReviewDialog(QDialog):
         if not (cd_list or over or missing or sug):
             return
         self._cl.addWidget(self._sep())
-        self._cl.addWidget(self._section_header("覆盖分析（参考）", "#bb9af7"))
+        self._cl.addWidget(self._section_header("覆盖分析（参考）", "#3e8e78"))
 
         if cd_list:
             items = []
             for d in cd_list:
                 dom = d.get("domain", "?")
                 cov = d.get("coverage", "?")
-                cov_color = {"充分": "#9ece6a", "一般": "#e0af68", "薄弱": "#f7768e"}.get(cov, "#a9b1d6")
+                cov_color = {"充分": "#278273", "一般": "#b87835", "薄弱": "#b24f4a"}.get(cov, "#526b6c")
                 items.append(f"<span style='color:{cov_color};'>{cov}</span> — {dom}")
             self._cl.addWidget(self._static_text("\n".join(f"· {i}" for i in items)))
         if over:
-            self._cl.addWidget(self._static_text(f"占比过大: {over}", "#f7768e"))
+            self._cl.addWidget(self._static_text(f"占比过大：{over}", "#b24f4a"))
         if missing:
-            self._cl.addWidget(self._static_text(f"薄弱或遗漏: {missing}", "#e0af68"))
+            self._cl.addWidget(self._static_text(f"薄弱或遗漏：{missing}", "#b87835"))
         if sug:
-            self._cl.addWidget(self._static_text(f"建议: {sug}", "#9ece6a"))
+            self._cl.addWidget(self._static_text(f"建议：{sug}", "#278273"))
 
     def _build_timeliness(self):
         tl = self._result.get("timeliness", {}) or {}
@@ -387,12 +387,12 @@ class ReviewDialog(QDialog):
         if not total and not ass:
             return
         self._cl.addWidget(self._sep())
-        self._cl.addWidget(self._section_header("文献时效性（参考）", "#e0af68"))
+        self._cl.addWidget(self._section_header("文献时效性（参考）", "#b87835"))
 
         ass_color = {
-            "优秀": "#9ece6a", "合理": "#9ece6a",
-            "偏旧": "#e0af68", "缺乏近3年文献": "#f7768e",
-        }.get(ass, "#a9b1d6")
+            "优秀": "#278273", "合理": "#278273",
+            "偏旧": "#b87835", "缺乏近3年文献": "#b24f4a",
+        }.get(ass, "#526b6c")
         content = f"共 {total} 篇引用：近 3 年 {r3y} 篇，3 年前 {cla} 篇"
         if ass:
             content += f"\n评价：<span style='color:{ass_color};'>{ass}</span>"
@@ -414,12 +414,12 @@ class ReviewDialog(QDialog):
         for key, label in labels:
             val = cdepth.get(key, False)
             icon = "\u2705" if val else "\u274c"
-            color = "#9ece6a" if val else "#636688"
+            color = "#278273" if val else "#82908d"
             checks.append(f"<span style='color:{color};'>{icon} {label}</span>")
         ass = cdepth.get("assessment", "")
         sug = cdepth.get("suggestion", "")
         self._cl.addWidget(self._sep())
-        self._cl.addWidget(self._section_header("批判性深度（参考）", "#bb9af7"))
+        self._cl.addWidget(self._section_header("批判性深度（参考）", "#3e8e78"))
         text = "  |  ".join(checks)
         if ass:
             text += f"\n\n{ass}"
@@ -432,7 +432,7 @@ class ReviewDialog(QDialog):
         if not items:
             return
         self._cl.addWidget(self._sep())
-        self._cl.addWidget(self._section_header("图表建议", "#e0af68"))
+        self._cl.addWidget(self._section_header("图表建议", "#b87835"))
 
         for f in items:
             self._add_finding_card(
@@ -640,10 +640,10 @@ class LogicCheckDialog(QDialog):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: #1a1b26; }")
+        scroll.setStyleSheet("QScrollArea { border: none; background: #f4f1eb; }")
 
         container = QWidget()
-        container.setStyleSheet("background: #1a1b26;")
+        container.setStyleSheet("background: #f4f1eb;")
         cl = QVBoxLayout(container)
         cl.setContentsMargins(24, 20, 24, 20)
         cl.setSpacing(10)
@@ -653,14 +653,14 @@ class LogicCheckDialog(QDialog):
         summary = self._result.get("summary", "")
 
         if passed:
-            status = QLabel("🟢 检测通过，无实质性问题")
+            status = QLabel("检测通过，没有发现实质性问题")
             status.setStyleSheet(
-                "color: #9ece6a; font-size: 18px; font-weight: bold; padding: 4px 0;"
+                "color: #278273; font-size: 18px; font-weight: bold; padding: 4px 0;"
             )
         else:
-            status = QLabel(f"🟡 发现 {len(issues)} 处需关注的问题")
+            status = QLabel(f"发现 {len(issues)} 处需要关注的问题")
             status.setStyleSheet(
-                "color: #e0af68; font-size: 18px; font-weight: bold; padding: 4px 0;"
+                "color: #b87835; font-size: 18px; font-weight: bold; padding: 4px 0;"
             )
         cl.addWidget(status)
 
@@ -668,13 +668,13 @@ class LogicCheckDialog(QDialog):
             s = QLabel(summary)
             s.setWordWrap(True)
             s.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            s.setStyleSheet("color: #cfd2e3; font-size: 13px; line-height: 1.7;")
+            s.setStyleSheet("color: #29434a; font-size: 13px; line-height: 1.7;")
             cl.addWidget(s)
 
         for i, item in enumerate(issues, start=1):
             card = QFrame()
             card.setStyleSheet(
-                "QFrame { background: #1e2030; border: 1px solid #3b3d54; "
+                "QFrame { background: #fffdfa; border: 1px solid #e5e1d9; "
                 "border-radius: 8px; }"
             )
             ccard = QVBoxLayout(card)
@@ -682,7 +682,7 @@ class LogicCheckDialog(QDialog):
             ccard.setSpacing(4)
 
             head = QLabel(
-                f"<b style='color:#f7768e;'>[{i}] {item.get('type', '问题')}</b>"
+                f"<b style='color:#b24f4a;'>[{i}] {item.get('type', '问题')}</b>"
             )
             head.setWordWrap(True)
             ccard.addWidget(head)
@@ -691,21 +691,21 @@ class LogicCheckDialog(QDialog):
                 q = QLabel(f"原文：{item.get('quote')}")
                 q.setWordWrap(True)
                 q.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                q.setStyleSheet("color: #a9b1d6; font-size: 12px;")
+                q.setStyleSheet("color: #617674; font-size: 12px;")
                 ccard.addWidget(q)
 
             if item.get("explanation"):
                 e = QLabel(f"说明：{item.get('explanation')}")
                 e.setWordWrap(True)
                 e.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                e.setStyleSheet("color: #cfd2e3; font-size: 12px;")
+                e.setStyleSheet("color: #29434a; font-size: 12px;")
                 ccard.addWidget(e)
 
             if item.get("suggestion"):
                 sug = QLabel(f"建议：{item.get('suggestion')}")
                 sug.setWordWrap(True)
                 sug.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                sug.setStyleSheet("color: #7aa2f7; font-size: 12px;")
+                sug.setStyleSheet("color: #147c7c; font-size: 12px;")
                 ccard.addWidget(sug)
 
             cl.addWidget(card)
@@ -715,16 +715,17 @@ class LogicCheckDialog(QDialog):
         layout.addWidget(scroll)
 
         btn_row = QWidget()
-        btn_row.setStyleSheet("background: #1a1b26;")
+        btn_row.setStyleSheet("background: #f4f1eb;")
         btn_lo = QHBoxLayout(btn_row)
         btn_lo.setContentsMargins(24, 10, 24, 16)
 
-        copy_btn = QPushButton("📋 复制结果")
+        copy_btn = QPushButton("复制结果")
+        copy_btn.setObjectName("secondaryBtn")
         copy_btn.clicked.connect(self._copy_result)
         copy_btn.setStyleSheet(
-            "QPushButton { background: #3b3d54; color: #cfd2e3; "
-            "border-radius: 6px; padding: 6px 18px; font-size: 13px; }"
-            "QPushButton:hover { background: #4a4d6a; }"
+            "QPushButton { background: #e9efed; color: #29434a; "
+            "border-radius: 7px; padding: 7px 18px; font-size: 13px; }"
+            "QPushButton:hover { background: #dcebe7; }"
         )
         btn_lo.addWidget(copy_btn)
 
@@ -733,9 +734,9 @@ class LogicCheckDialog(QDialog):
         ok_btn = QPushButton("知道了")
         ok_btn.clicked.connect(self.accept)
         ok_btn.setStyleSheet(
-            "QPushButton { background: #7aa2f7; color: #1a1b26; font-weight: bold; "
-            "border-radius: 6px; padding: 6px 24px; font-size: 13px; }"
-            "QPushButton:hover { background: #89b4fa; }"
+            "QPushButton { background: #147c7c; color: #ffffff; font-weight: bold; "
+            "border-radius: 7px; padding: 7px 24px; font-size: 13px; }"
+            "QPushButton:hover { background: #0e696a; }"
         )
         btn_lo.addWidget(ok_btn)
 

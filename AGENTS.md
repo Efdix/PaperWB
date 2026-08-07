@@ -25,7 +25,7 @@ src/
 ├── core/
 │   ├── pdf_parser.py      # PDF 底层工具（PyMuPDF）: 文本提取/渲染
 │   ├── pdf_processor.py   # 核心！两阶段管线:
-│   │                      #   Stage 1: 引擎可切换 vision(逐页视觉LLM) / docling(本地布局解析) → JSON → 缓存
+│   │                      #   Stage 1: Docling 本地布局解析 → JSON → 缓存
 │   │                      #   Stage 2: 读缓存 → LLM跨页整合 → StructuredDocument → UI
 │   ├── docling_parser.py  # Docling 本地解析器: PDF → 与视觉管线兼容的逐页元素（设置 HF 镜像/禁用编译）
 │   ├── llm_client.py      # OpenAI 兼容 API 客户端 + json_mode(response_format) + 5 个提供商预设
@@ -39,16 +39,16 @@ src/
 │   └── pubmed_searcher.py # PubMed E-utilities 检索客户端（esearch + efetch）
 ├── ui/
 │   ├── pdf_viewer.py      # 结构化阅读面板: ParagraphCard 按 element_type 渲染+中英文翻译(多并发+滚动自动翻译)
-│   ├── pdf_list_panel.py  # 左侧面板: Tab1 论文库 + Tab2 Zotero 只读文献库
+│   ├── pdf_list_panel.py  # 左侧面板: Tab1 Zotero 只读文献库 + Tab2 其它文献
 │   ├── zotero_panel.py    # Zotero 树形视图: 集合树+文献+PDF附件标记，watcher 驱动实时刷新
 │   ├── chat_panel.py      # 聊天面板: Markdown 气泡/流式渲染
 │   ├── writing_panel.py   # 写作面板: 编辑器+知识库管理+Zotero+AI辅助(润色/仅核查/文献补充)+自动保存+字数统计
 │   ├── diff_dialog.py     # 润色对比对话框: 内联 diff(单编辑框)+导航栏(上一处/下一处/接受/拒绝)+AI 对话+引用高亮
 │   ├── lit_search_dialog.py # 文献补充对话框: LLM 双轨推荐(已知文献+搜索词)→PubMed 检索→导出 CSV（非模态）
-│   ├── settings_dialog.py # API 设置对话框: 三标签页+处理设置(引擎/同步异步/并发)+Zotero路径+连接测试(后台线程)
-│   └── styles.py          # Catppuccin 暗色主题 QSS
+│   ├── settings_dialog.py # 设置对话框: API接口设置(识图/翻译/写作)+Zotero路径+缓存文件存储路径+连接测试
+│   └── styles.py          # 暖白研究工作台主题 QSS
 └── utils/
-    ├── config.py          # 持久化层: 配置(含多API/数据根目录/Zotero/stage1_parser)+图书馆+聊天+缓存+草稿+润色历史
+    ├── config.py          # 持久化层: 配置(含多接口/数据根目录/Zotero)+图书馆+聊天+缓存+草稿+润色历史
     └── layout.py          # 递归布局高度计算（heightForWidth）
 ```
 
@@ -60,21 +60,19 @@ src/
 - 数据根目录: 首次启动弹窗选择，存储在 config 的 `data_root` 字段
 - 所有用户数据在 `{data_root}/.pdfasker/` 下，包括 library.json、chats、states、page_cache、writing_kb、drafts、polish_history
 - PDF 文件存储在 `{data_root}/library/` 下
-- 菜单「设置 → 数据目录...」可随时更改 data_root
+- 菜单「设置 → 缓存文件存储路径...」或设置对话框底部可随时更改 data_root（设置对话框中改名「缓存文件存储路径设置」）
 
 ### 两阶段解析管线（阅读）
 
-- **Stage 1**: PDF 导入后逐页解析，每页独立缓存，支持断点续传。引擎可切换：
-  - `vision`（默认）: 整页渲染图片 → 视觉 LLM → 结构化 JSON
-  - `docling`: 本地布局解析（快/省/离线，图表描述仍走视觉 LLM；解析失败自动回退 vision）
+- **Stage 1**: PDF 导入后由 Docling 本地版式解析，每页独立缓存，支持断点续传；不再调用视觉模型，也不再配置并发页数
 - **Stage 2**: 用户点击论文时，LLM 跨页整合为 StructuredDocument
-- 右键菜单支持分开重跑 Stage 1 / Stage 2；引擎切换会自动失效旧缓存（manifest.parser）
+- 右键菜单支持分开重跑 Stage 1 / Stage 2；旧的视觉缓存会因 manifest.parser 不匹配自动失效
 - 长文档问答走 BM25 检索增强（`context_manager` + `retriever`），只发相关段落而非全量截断
 
 ### 三套独立 API
 
-- **阅读-解析** (`parse_api`): 逐页视觉解析 + 跨页整合 + 论文问答（需视觉多模态模型）
-- **阅读-翻译** (`translate_api`): 段落中英对照翻译（可用便宜/免费模型）
+- **识图** (`parse_api`): 跨页整合 + 论文问答；逐页解析由本地 Docling 完成
+- **翻译** (`translate_api`): 段落中英对照翻译（可用便宜/免费模型）
 - **写作** (`write_api`): 引文核查 + 风格分析 + 润色 + 文献推荐（需强推理模型）
 
 ### 写作系统
@@ -97,10 +95,10 @@ src/
 
 ### Zotero 集成（只读 + 实时同步）
 
-- 左侧面板 Tab2「📚 Zotero」: 只读镜像 Zotero 集合树（集合→文献→PDF 附件），点击文献直接用两阶段管线阅读（不导入本地库）
+- 左侧面板 Tab1「Zotero 文献库」: 只读镜像 Zotero 集合树（集合→文献→PDF 附件），点击文献直接用两阶段管线阅读（不导入本地库）
 - 实时同步: `ZoteroWatcher` 用 QFileSystemWatcher 监听 `zotero.sqlite`/`-wal`/`-shm`/`storage/`，防抖 1s + 每 60s 安全网重扫，后台线程 `reload()` 后按 key 做差异并刷新 UI
 - **只读铁律**: 所有访问通过系统临时目录的数据库副本（`tempfile`），绝不写 Zotero 数据目录；PDF 只读打开
-- 写作面板工具栏 + API 设置写作标签页，两处联动设置 Zotero 数据目录
+- Zotero 数据目录在设置对话框「API 接口设置」下方单独一格配置（「Zotero 文献库路径设置」），阅读与写作共用；再往下是「缓存文件存储路径设置」
 - 用户显式指定路径时，仅在该目录下搜索 zotero.sqlite（不全局探测）
 - 年份后缀自动去字母（`2025a` → `2025`）匹配 Zotero
 - 优先选择有 PDF 附件的匹配条目（按标题去重）

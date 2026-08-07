@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
@@ -14,6 +15,18 @@ from PySide6.QtCore import Qt, Signal
 if TYPE_CHECKING:
     from ..core.zotero_parser import ZoteroLibrary
     from ..core.zotero_watcher import ZoteroWatcher
+
+
+_NUM_RE = re.compile(r"(\d+)")
+
+
+def _nat_key(text: str) -> list:
+    """自然排序键：'2' < '10'，'01' 在 '02' 之前。"""
+    return [
+        (0, int(part)) if part.isdigit() else (1, part)
+        for part in _NUM_RE.split(text.lower())
+        if part
+    ]
 
 
 class ZoteroPanel(QWidget):
@@ -28,6 +41,7 @@ class ZoteroPanel(QWidget):
     def __init__(self, library: "ZoteroLibrary | None" = None,
                  watcher: "ZoteroWatcher | None" = None, parent=None):
         super().__init__(parent)
+        self.setObjectName("zoteroPanel")
         self._library = library
         self._watcher = watcher
         self._setup_ui()
@@ -60,12 +74,20 @@ class ZoteroPanel(QWidget):
         layout.setSpacing(0)
 
         header = QHBoxLayout()
-        header.setContentsMargins(12, 8, 12, 8)
-        title = QLabel("📚 Zotero")
+        header.setContentsMargins(16, 14, 14, 10)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(1)
+        title = QLabel("Zotero 文献库")
         title.setObjectName("titleLabel")
-        header.addWidget(title)
+        title_box.addWidget(title)
+        self._subtitle = QLabel("只读镜像 · 自动同步")
+        self._subtitle.setObjectName("subtitleLabel")
+        self._subtitle.setWordWrap(True)
+        title_box.addWidget(self._subtitle)
+        header.addLayout(title_box)
         header.addStretch()
-        self._refresh_btn = QPushButton("🔄 刷新")
+        self._refresh_btn = QPushButton("刷新")
+        self._refresh_btn.setObjectName("secondaryBtn")
         self._refresh_btn.setToolTip("手动刷新（通常会自动同步）")
         self._refresh_btn.clicked.connect(self._on_manual_refresh)
         header.addWidget(self._refresh_btn)
@@ -73,12 +95,13 @@ class ZoteroPanel(QWidget):
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #2a2c3d; max-height: 1px;")
+        sep.setStyleSheet("background-color: #e4e0d8; max-height: 1px;")
         layout.addWidget(sep)
 
         self._status_label = QLabel("未连接 Zotero")
-        self._status_label.setObjectName("subtitleLabel")
-        self._status_label.setContentsMargins(12, 4, 12, 4)
+        self._status_label.setObjectName("statusChip")
+        self._status_label.setProperty("status", "warning")
+        self._status_label.setContentsMargins(12, 5, 12, 5)
         self._status_label.setWordWrap(True)
         layout.addWidget(self._status_label)
 
@@ -89,12 +112,6 @@ class ZoteroPanel(QWidget):
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._on_context_menu)
         self._tree.itemClicked.connect(self._on_item_clicked)
-        self._tree.setStyleSheet(
-            "QTreeWidget { background-color: #1a1b26; border: none; outline: none; }"
-            "QTreeWidget::item { padding: 5px 8px; color: #cfd2e3; border-radius: 4px; }"
-            "QTreeWidget::item:hover { background-color: #2a2c3d; }"
-            "QTreeWidget::item:selected { background-color: #3b3d54; }"
-        )
         layout.addWidget(self._tree, 1)
 
     # ---- 数据渲染 ----
@@ -118,28 +135,47 @@ class ZoteroPanel(QWidget):
             node = QTreeWidgetItem([f"📁 {coll.name}"])
             node.setData(0, Qt.ItemDataRole.UserRole, {"kind": "collection", "key": coll.key})
             node.setToolTip(0, coll.name)
-            for cid in coll.child_ids:
+            for cid in sorted(coll.child_ids, key=self._child_id_sort_key):
                 child = lib.get_collection(cid)
                 if child is not None:
                     node.addChild(build_collection(child))
-            for item in lib.get_items_in_collection(coll.collection_id):
+            for item in sorted(lib.get_items_in_collection(coll.collection_id),
+                               key=self._item_sort_key):
                 classified_ids.add(item.item_id)
                 node.addChild(self._make_item_node(item))
             return node
 
-        for coll in lib.get_collections_tree():
+        for coll in sorted(lib.get_collections_tree(), key=self._collection_sort_key):
             self._tree.addTopLevelItem(build_collection(coll))
 
         # 未分类条目
-        for item in lib.get_all_items():
+        for item in sorted(lib.get_all_items(), key=self._item_sort_key):
             if item.item_id not in classified_ids:
                 unclassified.addChild(self._make_item_node(item))
         if unclassified.childCount() > 0:
             self._tree.addTopLevelItem(unclassified)
 
-        self._tree.expandAll()
+        # 默认全部收起（用户手动展开的集合在刷新后仍保留展开状态）
         self._restore_expanded(expanded)
         self._update_status()
+
+    def _collection_sort_key(self, coll) -> list:
+        """集合文件夹按名称自然排序（01 → 02 → 09 → 10）。"""
+        return _nat_key(coll.name or "")
+
+    def _child_id_sort_key(self, cid: int) -> list:
+        """子集合按 ID 解析出集合对象后按名称自然排序。"""
+        child = self._library.get_collection(cid) if self._library else None
+        return _nat_key(child.name) if child is not None else [""]
+
+    def _item_sort_key(self, item) -> tuple:
+        """文献条目排序：有 PDF 的在前，按附件文件名自然排序，无 PDF 的按标题。"""
+        has_pdf = bool(item.pdf_path) and os.path.isfile(item.pdf_path)
+        fname = os.path.basename(item.pdf_path or "")
+        return (
+            0 if has_pdf else 1,
+            _nat_key(fname) if has_pdf else _nat_key(item.title or ""),
+        )
 
     def _make_item_node(self, item) -> QTreeWidgetItem:
         year = f" ({item.year})" if item.year else ""
@@ -187,11 +223,20 @@ class ZoteroPanel(QWidget):
     def _update_status(self):
         lib = self._library
         if lib is None or not lib.is_available:
-            self._status_label.setText("未连接 Zotero（可点击右侧刷新或稍后同步）")
+            self._subtitle.setText("只读镜像 · 自动同步")
+            self._set_status("未连接 Zotero · 可点击刷新", "warning")
         else:
-            self._status_label.setText(
-                f"✅ 已连接（{lib.item_count} 篇文献 · {lib.collection_count} 个集合）"
+            self._subtitle.setText(lib.data_dir or "Zotero 文献库")
+            self._set_status(
+                f"已连接 · {lib.item_count} 篇文献 · {lib.collection_count} 个集合",
+                "ready",
             )
+
+    def _set_status(self, text: str, status: str = "warning") -> None:
+        self._status_label.setText(text)
+        self._status_label.setProperty("status", status)
+        self._status_label.style().unpolish(self._status_label)
+        self._status_label.style().polish(self._status_label)
 
     # ---- 交互 ----
 
@@ -203,10 +248,6 @@ class ZoteroPanel(QWidget):
     def _on_context_menu(self, pos):
         item = self._tree.itemAt(pos)
         menu = QMenu(self)
-        menu.setStyleSheet(
-            "QMenu { background: #24253a; color: #cfd2e3; border: 1px solid #3b3d54; }"
-            "QMenu::item:selected { background: #3b3d54; }"
-        )
         data = item.data(0, Qt.ItemDataRole.UserRole) if item else None
         if data and data.get("kind") == "item":
             a = menu.addAction("  📖 在阅读器中打开")
@@ -247,11 +288,11 @@ class ZoteroPanel(QWidget):
         if diff.get("modified_items"):
             parts.append(f"~{diff['modified_items']} 文献变更")
         msg = " · ".join(parts) if parts else "Zotero 已同步"
-        self._status_label.setText(f"🔁 {msg}")
+        self._set_status(f"已同步 · {msg}", "ready")
 
     def _on_watcher_status(self, msg: str):
-        self._status_label.setText(msg)
+        self._set_status(msg, "warning")
 
     def _on_watcher_error(self, err: str):
-        self._status_label.setText(f"⚠️ {err}")
+        self._set_status(f"同步异常 · {err}", "warning")
         QMessageBox.warning(self, "Zotero 同步失败", err)

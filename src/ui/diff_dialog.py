@@ -87,13 +87,13 @@ class DiffDialog(QDialog):
 
         # == 顶层: 内联 Diff 区域（单编辑框：红删绿增） ==
         diff_container = QFrame()
-        diff_container.setStyleSheet("background-color: #1a1b26; border: none;")
+        diff_container.setStyleSheet("background-color: #f4f1eb; border: none;")
         diff_layout = QVBoxLayout(diff_container)
         diff_layout.setContentsMargins(8, 8, 8, 4)
         diff_layout.setSpacing(4)
 
         diff_label = QLabel("红色删除线 = 删除 | 绿色 = 新增 | 灰蓝 = 未变")
-        diff_label.setStyleSheet("color: #a9b1d6; font-size: 12px; padding: 2px 8px;")
+        diff_label.setStyleSheet("color: #617674; font-size: 12px; padding: 2px 8px;")
         diff_layout.addWidget(diff_label)
 
         # 导航工具栏
@@ -111,23 +111,23 @@ class DiffDialog(QDialog):
         self._accept_btn = QPushButton("\u2705 \u63a5\u53d7")
         self._accept_btn.setToolTip("\u63a5\u53d7\u5f53\u524d\u4fee\u6539\uff08\u4fdd\u7559\u65b0\u589e\uff0c\u79fb\u9664\u5220\u9664\uff09")
         self._accept_btn.clicked.connect(self._accept_current)
-        self._accept_btn.setStyleSheet("QPushButton { color: #9ece6a; }")
+        self._accept_btn.setObjectName("successBtn")
         nav_row.addWidget(self._accept_btn)
         self._reject_btn = QPushButton("\u274c \u62d2\u7edd")
         self._reject_btn.setToolTip("\u62d2\u7edd\u5f53\u524d\u4fee\u6539\uff08\u4fdd\u7559\u539f\u6587\uff0c\u79fb\u9664\u65b0\u589e\uff09")
         self._reject_btn.clicked.connect(self._reject_current)
-        self._reject_btn.setStyleSheet("QPushButton { color: #f7768e; }")
+        self._reject_btn.setObjectName("dangerBtn")
         nav_row.addWidget(self._reject_btn)
         nav_row.addStretch()
         self._anchor_label = QLabel("修改: 0 处")
-        self._anchor_label.setStyleSheet("color: #636688; font-size: 11px;")
+        self._anchor_label.setStyleSheet("color: #718180; font-size: 11px;")
         nav_row.addWidget(self._anchor_label)
         diff_layout.addLayout(nav_row)
 
         self._diff_edit = QTextEdit()
         self._diff_edit.setStyleSheet(
-            "QTextEdit { background-color: #1e2030; color: #cfd2e3; "
-            "border: 1px solid #3b3d54; border-radius: 6px; "
+            "QTextEdit { background-color: #fffdfa; color: #29434a; "
+            "border: 1px solid #d9e1de; border-radius: 8px; "
             "padding: 12px; font-size: 14px; line-height: 2.0; }"
         )
         self._diff_edit.textChanged.connect(self._on_diff_text_changed)
@@ -136,19 +136,19 @@ class DiffDialog(QDialog):
 
         # == 中层: 引文核查备注 ==
         notes_container = QFrame()
-        notes_container.setStyleSheet("background-color: #1a1b26; border: none;")
+        notes_container.setStyleSheet("background-color: #f4f1eb; border: none;")
         notes_lo = QVBoxLayout(notes_container)
         notes_lo.setContentsMargins(8, 2, 8, 4)
         notes_lo.setSpacing(2)
 
         notes_label = QLabel("引文核查备注")
         notes_label.setStyleSheet(
-            "color: #c4d3ff; font-weight: bold; font-size: 13px; padding: 2px 8px;"
+            "color: #1e3b42; font-weight: bold; font-size: 13px; padding: 2px 8px;"
         )
         notes_lo.addWidget(notes_label)
 
         self._notes_widget = QFrame()
-        self._notes_widget.setStyleSheet("background-color: #1a1b26;")
+        self._notes_widget.setStyleSheet("background-color: #fffdfa;")
         self._notes_layout = QVBoxLayout(self._notes_widget)
         self._notes_layout.setSpacing(4)
         self._notes_layout.setContentsMargins(8, 4, 8, 4)
@@ -157,8 +157,8 @@ class DiffDialog(QDialog):
         self._notes_scroll.setWidgetResizable(True)
         self._notes_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._notes_scroll.setStyleSheet(
-            "QScrollArea { background-color: #1a1b26; border: 1px solid #2a2c3d; border-radius: 6px; }"
-            "QScrollArea > QWidget > QWidget { background-color: #1a1b26; }"
+            "QScrollArea { background-color: #fffdfa; border: 1px solid #e5e1d9; border-radius: 8px; }"
+            "QScrollArea > QWidget > QWidget { background-color: #fffdfa; }"
         )
         self._notes_scroll.setWidget(self._notes_widget)
         notes_lo.addWidget(self._notes_scroll)
@@ -167,14 +167,14 @@ class DiffDialog(QDialog):
 
         # == 底层: AI 对话 ==
         chat_container = QFrame()
-        chat_container.setStyleSheet("background-color: #1a1b26; border: none;")
+        chat_container.setStyleSheet("background-color: #f4f1eb; border: none;")
         chat_lo = QVBoxLayout(chat_container)
         chat_lo.setContentsMargins(8, 2, 8, 4)
         chat_lo.setSpacing(2)
 
         chat_label = QLabel("💬 AI 对话（对修改有疑问可直接提问）")
         chat_label.setStyleSheet(
-            "color: #7aa2f7; font-weight: bold; font-size: 13px; padding: 2px 8px;"
+            "color: #147c7c; font-weight: bold; font-size: 13px; padding: 2px 8px;"
         )
         chat_label.setVisible(False)
         chat_lo.addWidget(chat_label)
@@ -184,17 +184,17 @@ class DiffDialog(QDialog):
         self._chat_scroll.setWidgetResizable(True)
         self._chat_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._chat_scroll.setStyleSheet(
-            "QScrollArea { background-color: #1e2030; border: 1px solid #2a2c3d; border-radius: 6px; }"
+            "QScrollArea { background-color: #fffdfa; border: 1px solid #e5e1d9; border-radius: 8px; }"
         )
         self._chat_widget = QFrame()
-        self._chat_widget.setStyleSheet("background-color: #1e2030;")
+        self._chat_widget.setStyleSheet("background-color: #fffdfa;")
         self._chat_layout = QVBoxLayout(self._chat_widget)
         self._chat_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._chat_layout.setSpacing(6)
         self._chat_layout.setContentsMargins(10, 8, 10, 8)
 
         chat_placeholder = QLabel(
-            "<span style='color: #636688;'>对 AI 的某个修改有疑问？在这里提问，AI 会基于原文和润色结果给出解释。</span>"
+            "<span style='color: #718180;'>对 AI 的某个修改有疑问？在这里提问，AI 会基于原文和润色结果给出解释。</span>"
         )
         chat_placeholder.setWordWrap(True)
         self._chat_layout.addWidget(chat_placeholder)
@@ -210,20 +210,16 @@ class DiffDialog(QDialog):
         self._chat_input = QLineEdit()
         self._chat_input.setPlaceholderText("输入疑问或希望 LLM 修改的部分")
         self._chat_input.setStyleSheet(
-            "QLineEdit { background-color: #24253a; color: #cfd2e3; "
-            "border: 1px solid #3b3d54; border-radius: 6px; "
+            "QLineEdit { background-color: #ffffff; color: #29434a; "
+            "border: 1px solid #d9e1de; border-radius: 8px; "
             "padding: 6px 10px; font-size: 13px; }"
-            "QLineEdit:focus { border-color: #7aa2f7; }"
+            "QLineEdit:focus { border-color: #54aaa0; }"
         )
         self._chat_input.returnPressed.connect(self._send_chat)
         chat_input_row.addWidget(self._chat_input)
         send_btn = QPushButton("发送")
         send_btn.clicked.connect(self._send_chat)
-        send_btn.setStyleSheet(
-            "QPushButton { background-color: #7aa2f7; color: #1a1b26; font-weight: bold; "
-            "border-radius: 6px; padding: 6px 16px; font-size: 13px; }"
-            "QPushButton:hover { background-color: #89b4fa; }"
-        )
+        send_btn.setObjectName("primaryBtn")
         chat_input_row.addWidget(send_btn)
         chat_lo.addLayout(chat_input_row)
 
@@ -271,9 +267,9 @@ class DiffDialog(QDialog):
             self._change_anchors = []
             matcher = difflib.SequenceMatcher(None, self._original, self._polished)
 
-            fmt_equal = self._fmt(QColor("#a9b1d6"))
-            fmt_del = self._fmt(QColor("#f7768e"), bg=QColor("#2d1a22"))
-            fmt_insert = self._fmt(QColor("#9ece6a"), bg=QColor("#1d2a1d"))
+            fmt_equal = self._fmt(QColor("#526b6c"))
+            fmt_del = self._fmt(QColor("#b24f4a"), bg=QColor("#fbe9e6"))
+            fmt_insert = self._fmt(QColor("#278273"), bg=QColor("#e2f3ee"))
 
             cursor = self._diff_edit.textCursor()
             cursor.beginEditBlock()
@@ -378,7 +374,7 @@ class DiffDialog(QDialog):
         plain = doc.toPlainText()
         h_fmt = QTextCharFormat()
         h_fmt.setBackground(QColor("#3d3520"))
-        h_fmt.setForeground(QColor("#e0af68"))
+        h_fmt.setForeground(QColor("#b87835"))
 
         import re
         patterns = [
@@ -457,7 +453,7 @@ class DiffDialog(QDialog):
                 cursor.removeSelectedText()
             elif kind == "insert":
                 plain_fmt = QTextCharFormat()
-                plain_fmt.setForeground(QColor("#a9b1d6"))
+                plain_fmt.setForeground(QColor("#526b6c"))
                 plain_fmt.setBackground(QColor(0, 0, 0, 0))
                 plain_fmt.setFontStrikeOut(False)
                 cursor.mergeCharFormat(plain_fmt)
@@ -466,7 +462,7 @@ class DiffDialog(QDialog):
         else:
             if kind == "delete":
                 plain_fmt = QTextCharFormat()
-                plain_fmt.setForeground(QColor("#a9b1d6"))
+                plain_fmt.setForeground(QColor("#526b6c"))
                 plain_fmt.setBackground(QColor(0, 0, 0, 0))
                 plain_fmt.setFontStrikeOut(False)
                 cursor.mergeCharFormat(plain_fmt)
@@ -516,7 +512,7 @@ class DiffDialog(QDialog):
         cursor.setPosition(sel_start)
         cursor.setPosition(sel_end, QTextCursor.MoveMode.KeepAnchor)
         plain_fmt = QTextCharFormat()
-        plain_fmt.setForeground(QColor("#a9b1d6"))
+        plain_fmt.setForeground(QColor("#526b6c"))
         plain_fmt.setBackground(QColor(0, 0, 0, 0))
         plain_fmt.setFontStrikeOut(False)
         cursor.mergeCharFormat(plain_fmt)
@@ -537,7 +533,7 @@ class DiffDialog(QDialog):
         cursor.setPosition(sel_start)
         cursor.setPosition(sel_end, QTextCursor.MoveMode.KeepAnchor)
         plain_fmt = QTextCharFormat()
-        plain_fmt.setForeground(QColor("#a9b1d6"))
+        plain_fmt.setForeground(QColor("#526b6c"))
         plain_fmt.setBackground(QColor(0, 0, 0, 0))
         plain_fmt.setFontStrikeOut(False)
         cursor.mergeCharFormat(plain_fmt)
@@ -551,7 +547,7 @@ class DiffDialog(QDialog):
             return
         if not self._citation_notes:
             no_note = QLabel(
-                "<span style='color: #636688;'>（无引文核查结果 — 可能未检测到引用标记或 Zotero 未连接）</span>"
+                "<span style='color: #718180;'>（无引文核查结果，可检查是否检测到引用标记或 Zotero 是否连接）</span>"
             )
             no_note.setWordWrap(True)
             self._notes_layout.addWidget(no_note)
@@ -565,19 +561,19 @@ class DiffDialog(QDialog):
             text = note.get("note", "")
 
             status_icons = {
-                "accurate": "OK",
-                "corrected": "FIX",
-                "partial": "??",
-                "unchecked": "--",
+                "accurate": "准",
+                "corrected": "改",
+                "partial": "半",
+                "unchecked": "待",
             }
             status_colors = {
-                "accurate": "#9ece6a",
-                "corrected": "#e0af68",
-                "partial": "#e0af68",
-                "unchecked": "#636688",
+                "accurate": "#278273",
+                "corrected": "#b87835",
+                "partial": "#b87835",
+                "unchecked": "#82908d",
             }
-            icon = status_icons.get(status, "--")
-            color = status_colors.get(status, "#636688")
+            icon = status_icons.get(status, "待")
+            color = status_colors.get(status, "#82908d")
 
             row = QFrame()
             row_layout = QHBoxLayout(row)
@@ -596,7 +592,7 @@ class DiffDialog(QDialog):
             text_label = QLabel(f"<b>{marker}</b>  {text}")
             text_label.setWordWrap(True)
             text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            text_label.setStyleSheet("color: #e2e5f2; font-size: 12px; padding: 2px 0;")
+            text_label.setStyleSheet("color: #29434a; font-size: 12px; padding: 2px 0;")
             row_layout.addWidget(text_label, 1)
 
             self._notes_layout.addWidget(row)
@@ -609,11 +605,11 @@ class DiffDialog(QDialog):
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #2a2c3d; max-height: 1px; margin: 4px 0;")
+        sep.setStyleSheet("background-color: #e4e0d8; max-height: 1px; margin: 4px 0;")
         self._notes_layout.addWidget(sep)
 
         sup_header = QLabel("<b>导师意见处理</b>")
-        sup_header.setStyleSheet("color: #ffc777; font-size: 12px; padding: 2px 0;")
+        sup_header.setStyleSheet("color: #b87835; font-size: 12px; padding: 2px 0;")
         self._notes_layout.addWidget(sup_header)
 
         for note in self._supervisor_notes:
@@ -621,10 +617,10 @@ class DiffDialog(QDialog):
             action = note.get("action", "applied")
             text = note.get("note", "")
 
-            action_icons = {"applied": "OK", "modified": "FIX", "flagged": "!!"}
-            action_colors = {"applied": "#9ece6a", "modified": "#e0af68", "flagged": "#e0af68"}
-            icon = action_icons.get(action, "??")
-            color = action_colors.get(action, "#636688")
+            action_icons = {"applied": "采", "modified": "改", "flagged": "注"}
+            action_colors = {"applied": "#278273", "modified": "#b87835", "flagged": "#b87835"}
+            icon = action_icons.get(action, "注")
+            color = action_colors.get(action, "#82908d")
 
             row = QFrame()
             row_layout = QHBoxLayout(row)
@@ -642,11 +638,11 @@ class DiffDialog(QDialog):
 
             label_text = f"<b>{suggestion[:120]}</b>"
             if text:
-                label_text += f"<br><span style='color: #a9b1d6;'>{text}</span>"
+                label_text += f"<br><span style='color: #617674;'>{text}</span>"
             text_label = QLabel(label_text)
             text_label.setWordWrap(True)
             text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            text_label.setStyleSheet("color: #e2e5f2; font-size: 12px; padding: 2px 0;")
+            text_label.setStyleSheet("color: #29434a; font-size: 12px; padding: 2px 0;")
             row_layout.addWidget(text_label, 1)
 
             self._notes_layout.addWidget(row)
@@ -658,11 +654,11 @@ class DiffDialog(QDialog):
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #2a2c3d; max-height: 1px; margin: 4px 0;")
+        sep.setStyleSheet("background-color: #e4e0d8; max-height: 1px; margin: 4px 0;")
         self._notes_layout.addWidget(sep)
 
         header = QLabel("<b>修改说明</b>")
-        header.setStyleSheet("color: #7aa2f7; font-size: 12px; padding: 2px 0;")
+        header.setStyleSheet("color: #147c7c; font-size: 12px; padding: 2px 0;")
         self._notes_layout.addWidget(header)
 
         for item in self._modification_log:
@@ -672,7 +668,7 @@ class DiffDialog(QDialog):
             label = QLabel(f"· {text}")
             label.setWordWrap(True)
             label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            label.setStyleSheet("color: #a9b1d6; font-size: 12px; padding: 1px 0;")
+            label.setStyleSheet("color: #617674; font-size: 12px; padding: 1px 0;")
             self._notes_layout.addWidget(label)
 
     # ============================================================
@@ -760,21 +756,22 @@ class DiffDialog(QDialog):
 
     def _add_chat_bubble(self, role: str, text: str):
         if role == "user":
-            color = "#7aa2f7"
+            color = "#147c7c"
             prefix = "你"
         elif role == "assistant":
-            color = "#9ece6a"
+            color = "#278273"
             prefix = "AI"
         else:
-            color = "#e0af68"
+            color = "#b87835"
             prefix = "系统"
 
         label = QLabel(f"<b style='color: {color};'>{prefix}:</b> "
-                       f"<span style='color: #cfd2e3;'>{text}</span>")
+                       f"<span style='color: #29434a;'>{text}</span>")
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         label.setStyleSheet(
-            f"background-color: {'#24253a' if role == 'user' else '#1e2030'}; "
+            f"background-color: {'#e7f3ef' if role == 'user' else '#fffdfa'}; "
+            f"border: 1px solid {'#c6e3dc' if role == 'user' else '#e5e1d9'}; "
             f"border-radius: 6px; padding: 6px 10px; font-size: 13px; line-height: 1.6;"
         )
         self._chat_layout.addWidget(label)

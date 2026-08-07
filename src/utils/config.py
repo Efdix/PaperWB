@@ -58,14 +58,14 @@ DEFAULT_CONFIG: dict = {
         "api_key": "",
         "base_url": "https://api.deepseek.com",
         "model": "deepseek-v4-flash",
-        "description": "阅读-解析 API — 用于 PDF 逐页视觉解析、跨页整合、论文问答（需视觉多模态能力）",
+        "description": "识图接口 — 用于跨页整合和论文问答；逐页版式解析由本地模型完成",
     },
     "translate_api": {
         "provider": "DeepSeek",
         "api_key": "",
         "base_url": "https://api.deepseek.com",
         "model": "deepseek-v4-flash",
-        "description": "阅读-翻译 API — 用于段落中英对照翻译（可用便宜快速的模型）",
+        "description": "翻译接口 — 用于段落中英对照翻译（可用便宜快速的模型）",
     },
     "write_api": {
         "provider": "DeepSeek",
@@ -77,9 +77,6 @@ DEFAULT_CONFIG: dict = {
     "max_tokens": 1_000_000,
     "data_root": "",          # 空字符串 = 未设置，需首次启动弹窗
     "zotero_data_dir": "",
-    "stage1_mode": "async",
-    "stage1_concurrency": 3,
-    "stage1_parser": "vision",   # 逐页解析引擎: vision（视觉LLM） | docling（本地，快/省）
     "custom_writing_types": {},  # 自定义写作类型: {key: {"label": str, "system_prompt": str}}
 }
 
@@ -197,7 +194,7 @@ def load_config() -> dict:
     # ---- 迁移旧 reading_api → parse_api ----
     if "reading_api" in saved and "parse_api" not in saved:
         saved["parse_api"] = saved.pop("reading_api")
-        saved["parse_api"]["description"] = "阅读-解析 API — 用于 PDF 逐页视觉解析、跨页整合、论文问答"
+        saved["parse_api"]["description"] = "识图接口 — 用于跨页整合和论文问答；逐页版式解析由本地模型完成"
 
     # ---- 迁移旧 review_api → write_api ----
     if "review_api" in saved and "write_api" not in saved:
@@ -216,6 +213,9 @@ def load_config() -> dict:
         saved["translate_api"] = dict(saved["parse_api"])
 
     config.update(saved)
+    # 旧版本的 Stage 1 引擎/并发选项已移除，统一固定为本地版式解析。
+    for legacy_key in ("stage1_mode", "stage1_concurrency", "stage1_parser"):
+        config.pop(legacy_key, None)
     return config
 
 

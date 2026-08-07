@@ -1,15 +1,15 @@
-"""PDFasker 主窗口 v2 —— 阅读（两阶段视觉 LLM 管线） + 写作（知识库/引文核查/风格分析/文献推荐）。"""
+"""PDFasker 主窗口 —— 本地版式阅读 + 识图问答 + 写作辅助。"""
 
 from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import Qt, QThread, Signal as QtSignal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal as QtSignal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
-    QSplitter, QStatusBar, QTabWidget, QVBoxLayout, QWidget,
+    QSplitter, QStatusBar, QTabWidget, QVBoxLayout, QWidget, QFrame,
 )
 
 from .core.context_manager import ContextManager
@@ -48,34 +48,51 @@ class LLMWorker(QThread):
             self.error.emit(str(e))
 
 
+class DoclingWarmupWorker(QThread):
+    """后台预热 Docling 导入，避免第一次点击论文时阻塞在模块加载。"""
+
+    finished_signal = QtSignal(bool, str)
+
+    def run(self) -> None:
+        try:
+            from .core.docling_parser import warm_up_import
+            warm_up_import()
+            self.finished_signal.emit(True, "")
+        except Exception as e:
+            self.finished_signal.emit(False, str(e))
+
+
 class FirstLaunchDialog(QDialog):
     """首次启动：设置数据根目录。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("PDFasker — 首次设置")
-        self.setMinimumWidth(500)
+        self.setWindowTitle("PDFasker · 首次设置")
+        self.setMinimumSize(520, 430)
         self.setModal(True)
-        self.setStyleSheet(
-            "QDialog { background-color: #1a1b26; }"
-            "QLabel { background-color: transparent; }"
-            "QFormLayout QLabel { color: #e2e5f2; font-size: 14px; }"
-        )
+        self.setStyleSheet(STYLESHEET)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
+        layout.setContentsMargins(30, 28, 30, 24)
+        layout.setSpacing(14)
 
-        title = QLabel("欢迎使用 PDFasker")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #7aa2f7;")
+        eyebrow = QLabel("欢迎来到你的研究工作台")
+        eyebrow.setObjectName("eyebrowLabel")
+        layout.addWidget(eyebrow)
+
+        title = QLabel("让每一篇论文，都变成可读的知识")
+        title.setObjectName("titleLabel")
+        title.setStyleSheet("font-size: 22px;")
         layout.addWidget(title)
 
         desc = QLabel(
             "请选择一个文件夹作为数据根目录。\n"
-            "所有 PDF 论文、阅读缓存、写作知识库和草稿都将存储在这个目录下。\n\n"
-            "后续可在菜单「设置 → 数据目录...」中更改。"
+            "论文、阅读缓存、写作知识库和草稿都会集中保存在这里，"
+            "后续也可以在设置中随时更改。"
         )
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #cfd2e3; font-size: 13px; line-height: 1.6;")
+        desc.setObjectName("subtitleLabel")
+        desc.setStyleSheet("font-size: 13px; line-height: 1.7;")
         layout.addWidget(desc)
 
         form = QFormLayout()
@@ -85,12 +102,8 @@ class FirstLaunchDialog(QDialog):
         default_path = str(Path.home() / "Documents" / "PDFasker_Data")
 
         self._path_edit = QLineEdit(default_path)
-        self._path_edit.setStyleSheet(
-            "QLineEdit { background-color: #1e2030; color: #cfd2e3; "
-            "border: 1px solid #3b3d54; border-radius: 6px; padding: 8px 12px; font-size: 14px; }"
-            "QLineEdit:focus { border-color: #7aa2f7; }"
-        )
         browse_btn = QPushButton("浏览...")
+        browse_btn.setObjectName("secondaryBtn")
         browse_btn.clicked.connect(self._browse)
         row = QWidget()
         row_layout = QHBoxLayout(row)
@@ -100,8 +113,8 @@ class FirstLaunchDialog(QDialog):
         form.addRow("数据根目录：", row)
         layout.addLayout(form)
 
-        note = QLabel("该目录将自动创建所需的子目录结构。")
-        note.setStyleSheet("color: #636688; font-size: 11px;")
+        note = QLabel("目录不存在时会自动创建所需的子目录。")
+        note.setObjectName("subtitleLabel")
         layout.addWidget(note)
 
         layout.addStretch()
@@ -109,11 +122,7 @@ class FirstLaunchDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("开始使用")
         buttons.accepted.connect(self._accept)
-        buttons.setStyleSheet(
-            "QPushButton { background: #7aa2f7; color: #1a1b26; font-weight: bold; "
-            "border-radius: 6px; padding: 8px 32px; font-size: 14px; }"
-            "QPushButton:hover { background: #89b4fa; }"
-        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setObjectName("primaryBtn")
         layout.addWidget(buttons)
 
     def _browse(self):
@@ -164,9 +173,11 @@ class MainWindow(QMainWindow):
             max_tokens=self._config.get("max_tokens", 1_000_000)
         )
         self._llm_worker: LLMWorker | None = None
+        self._docling_warmup: DoclingWarmupWorker | None = None
         self._current_pdf_path: str = ""
 
         self._processors: dict[str, object] = {}
+        self._app_progress_connected: set[int] = set()
         self._zotero: ZoteroLibrary | None = None
         self._zotero_watcher: ZoteroWatcher | None = None
 
@@ -175,36 +186,38 @@ class MainWindow(QMainWindow):
         self._init_all_clients()
         self._init_write()
         self._validate_data_root()
+        QTimer.singleShot(800, self._start_docling_warmup)
 
     def _setup_ui(self):
+        self.setWindowTitle("PDFasker · AI 论文研究工作台")
+        self.setMinimumSize(1180, 760)
+        self.resize(1440, 900)
+
         menubar = self.menuBar()
-        file_menu = menubar.addMenu("文件(&F)")
-        open_action = QAction("打开 PDF...", self)
-        open_action.setShortcut("Ctrl+O")
-        open_action.triggered.connect(self._on_open_pdf)
-        file_menu.addAction(open_action)
-        file_menu.addSeparator()
+        file_menu = menubar.addMenu("文件")
         exit_action = QAction("退出", self)
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-        settings_menu = menubar.addMenu("设置(&S)")
-        api_action = QAction("API 配置...", self)
+        settings_menu = menubar.addMenu("设置")
+        api_action = QAction("API 接口设置...", self)
         api_action.setShortcut("Ctrl+,")
         api_action.triggered.connect(self._on_open_settings)
         settings_menu.addAction(api_action)
         settings_menu.addSeparator()
-        data_dir_action = QAction("数据目录...", self)
+        data_dir_action = QAction("缓存文件存储路径...", self)
         data_dir_action.triggered.connect(self._on_change_data_dir)
         settings_menu.addAction(data_dir_action)
 
-        help_menu = menubar.addMenu("帮助(&H)")
+        help_menu = menubar.addMenu("帮助")
         about_action = QAction("关于", self)
         about_action.triggered.connect(self._on_about)
         help_menu.addAction(about_action)
 
         self._main_tabs = QTabWidget()
+        self._main_tabs.setDocumentMode(True)
+        self._main_tabs.tabBar().setVisible(False)
 
         # Tab 0: 阅读
         outer_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -243,33 +256,107 @@ class MainWindow(QMainWindow):
 
         outer_splitter.addWidget(self.pdf_list)
         outer_splitter.addWidget(inner_splitter)
-        outer_splitter.setSizes([200, 1000])
+        outer_splitter.setSizes([285, 1000])
         outer_splitter.setStretchFactor(0, 0)
         outer_splitter.setStretchFactor(1, 1)
 
-        self._main_tabs.addTab(outer_splitter, "📖 阅读")
+        self._main_tabs.addTab(outer_splitter, "阅读工作台")
 
         # Tab 1: 写作
         self._writing_panel = WritingPanel()
-        self._writing_panel.zotero_path_changed.connect(self._init_write)
-        self._main_tabs.addTab(self._writing_panel, "📝 写作")
+        self._main_tabs.addTab(self._writing_panel, "写作工作台")
 
-        self.setCentralWidget(self._main_tabs)
+        # 顶部应用栏：把工作区切换和高频操作从传统标签页中提出来。
+        shell = QWidget()
+        shell.setObjectName("appShell")
+        shell_layout = QVBoxLayout(shell)
+        shell_layout.setContentsMargins(18, 14, 18, 8)
+        shell_layout.setSpacing(12)
+
+        app_header = QFrame()
+        app_header.setObjectName("appHeader")
+        header_layout = QHBoxLayout(app_header)
+        header_layout.setContentsMargins(16, 12, 16, 12)
+        header_layout.setSpacing(10)
+
+        brand_mark = QLabel("研")
+        brand_mark.setObjectName("brandMark")
+        brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header_layout.addWidget(brand_mark)
+
+        brand_text = QVBoxLayout()
+        brand_text.setSpacing(0)
+        brand_title = QLabel("PDFasker")
+        brand_title.setObjectName("brandTitle")
+        brand_text.addWidget(brand_title)
+        brand_subtitle = QLabel("AI 论文研究工作台")
+        brand_subtitle.setObjectName("brandSubtitle")
+        brand_text.addWidget(brand_subtitle)
+        header_layout.addLayout(brand_text)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.VLine)
+        divider.setStyleSheet("background-color: #3e686d; max-width: 1px;")
+        header_layout.addSpacing(10)
+        header_layout.addWidget(divider)
+        header_layout.addSpacing(4)
+
+        self._read_nav = QPushButton("阅读工作台")
+        self._read_nav.setObjectName("workspaceNav")
+        self._read_nav.setCheckable(True)
+        self._read_nav.setChecked(True)
+        self._read_nav.clicked.connect(lambda _checked=False: self._switch_workspace(0))
+        header_layout.addWidget(self._read_nav)
+
+        self._write_nav = QPushButton("写作工作台")
+        self._write_nav.setObjectName("workspaceNav")
+        self._write_nav.setCheckable(True)
+        self._write_nav.clicked.connect(lambda _checked=False: self._switch_workspace(1))
+        header_layout.addWidget(self._write_nav)
+
+        header_layout.addStretch()
+
+        self._header_status_label = QLabel("接口未配置")
+        self._header_status_label.setObjectName("statusChip")
+        header_layout.addWidget(self._header_status_label)
+
+        settings_header_btn = QPushButton("设置")
+        settings_header_btn.setObjectName("headerAction")
+        settings_header_btn.clicked.connect(self._on_open_settings)
+        header_layout.addWidget(settings_header_btn)
+
+        shell_layout.addWidget(app_header)
+        shell_layout.addWidget(self._main_tabs, 1)
+        self.setCentralWidget(shell)
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self._status_parse_label = QLabel("📖解析: -")
-        self._status_parse_label.setStyleSheet("color: #636688; padding: 2px 6px; font-size: 11px;")
+        self._status_parse_label = QLabel("识图：未配置")
+        self._status_parse_label.setObjectName("statusChip")
         self.status_bar.addPermanentWidget(self._status_parse_label)
-        self._status_translate_label = QLabel("📖翻译: -")
-        self._status_translate_label.setStyleSheet("color: #636688; padding: 2px 6px; font-size: 11px;")
+        self._status_translate_label = QLabel("翻译：未配置")
+        self._status_translate_label.setObjectName("statusChip")
         self.status_bar.addPermanentWidget(self._status_translate_label)
-        self._status_write_label = QLabel("📝写作: -")
-        self._status_write_label.setStyleSheet("color: #636688; padding: 2px 6px; font-size: 11px;")
+        self._status_write_label = QLabel("写作与引用：未配置")
+        self._status_write_label.setObjectName("statusChip")
         self.status_bar.addPermanentWidget(self._status_write_label)
+
+    def _switch_workspace(self, index: int) -> None:
+        """切换阅读/写作工作区，并同步顶部导航状态。"""
+        self._main_tabs.setCurrentIndex(index)
+        self._read_nav.setChecked(index == 0)
+        self._write_nav.setChecked(index == 1)
+        self.status_bar.showMessage("已切换到阅读工作台" if index == 0 else "已切换到写作工作台")
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(STYLESHEET)
+
+    def _start_docling_warmup(self) -> None:
+        """界面显示后再后台预热，避免拖慢窗口创建过程。"""
+        if self._docling_warmup is not None and self._docling_warmup.isRunning():
+            return
+        self._docling_warmup = DoclingWarmupWorker(self)
+        self._docling_warmup.start()
 
     def _on_open_pdf(self) -> None:
         self.pdf_viewer._open_pdf()
@@ -296,79 +383,105 @@ class MainWindow(QMainWindow):
 
         token_est = self._context_manager.estimate_tokens(text)
         self.status_bar.showMessage(
-            f"PDF 已加载 | 约 {token_est:,} tokens | 历史 {len(history)} 条对话"
+            f"文献已加载 | 约 {token_est:,} 个令牌 | 历史 {len(history)} 条对话"
         )
-        self.chat_panel.set_input_enabled(True)
+        self.chat_panel.set_input_enabled(
+            self._llm_parse is not None and self._context_manager.has_pdf
+        )
 
     def _save_current_chat(self):
         if self._current_pdf_path:
             save_chat_history(self._current_pdf_path, self._context_manager.get_history())
 
+    def _begin_pdf_switch(self, path: str) -> None:
+        """切换文献前立即清空当前会话，避免上一篇论文的问答残留。"""
+        if self._current_pdf_path:
+            self._save_current_chat()
+        self._current_pdf_path = ""
+        self._context_manager.load_pdf_text("")
+        self.chat_panel.clear_messages()
+        self.chat_panel.set_token_count(0)
+        self.chat_panel.set_input_enabled(False)
+        self.status_bar.showMessage(f"正在加载文献：{os.path.basename(path)}")
+
     def _on_pdf_path_changed(self, path: str):
         fname = os.path.basename(path) if path else ""
-        self.setWindowTitle(f"PDFasker — {fname}" if fname else "PDFasker — AI 论文解读助手")
+        self.setWindowTitle(f"PDFasker · {fname}" if fname else "PDFasker · AI 论文研究工作台")
 
     def _on_library_pdf_removed(self, path: str):
         self.pdf_viewer._reset_view()
-        self.setWindowTitle("PDFasker — AI 论文解读助手")
+        self.setWindowTitle("PDFasker · AI 论文研究工作台")
         if path in self._processors:
             proc = self._processors.pop(path)
+            self._app_progress_connected.discard(id(proc))
             if hasattr(proc, 'cancel'):
                 proc.cancel()
 
     def _on_pdf_imported(self, path: str):
         if not path:
             return
-        self._save_current_chat()
-        self._current_pdf_path = ""
+        self._begin_pdf_switch(path)
         self._load_pdf_into_viewer(path)
 
     def _on_library_pdf_selected(self, path: str):
         if not path:
             return
         if path != self.pdf_viewer.get_current_path():
-            self._save_current_chat()
+            self._begin_pdf_switch(path)
             self._load_pdf_into_viewer(path)
 
     def _on_library_pdf_reload(self, path: str):
         if path:
-            self._save_current_chat()
-            self._current_pdf_path = ""
+            self._begin_pdf_switch(path)
             self._load_pdf_into_viewer(path)
 
     def _load_pdf_into_viewer(self, path: str) -> None:
-        """统一入口：取消其他论文的后台处理器 → 注入客户端 → 加载 PDF → 登记进度回调。"""
-        self._cleanup_processors(keep_path=path)
+        """统一入口：复用/创建处理器 → 注入客户端 → 加载 PDF → 登记进度回调。
+
+        不再取消其它论文的后台处理器：切换文献后，后台解析/整合继续运行并自动落盘。
+        """
+        existing = self._processors.get(path)
+        old_proc = getattr(self.pdf_viewer, '_processor', None)
         self.pdf_viewer.set_parse_client(self._llm_parse)
         self.pdf_viewer.set_translate_client(self._llm_translate)
-        self.pdf_viewer.load_pdf(path)
+        self.pdf_viewer.load_pdf(path, existing_processor=existing)
         proc = getattr(self.pdf_viewer, '_processor', None)
         if proc is not None:
+            proc.set_llm_client(self._llm_parse)  # 后台处理器也同步最新识图接口
             self._processors[path] = proc
-            proc.stage1_progress.connect(self._on_processor_progress)
+            # viewer.load_pdf 每次都先 detach（断开全部连接）再 attach，
+            # 故旧处理器（含同路径重载）的连接已被清除，这里按 id 幂等重连
+            if old_proc is not None:
+                self._app_progress_connected.discard(id(old_proc))
+            if id(proc) not in self._app_progress_connected:
+                proc.stage1_progress.connect(self._on_processor_progress)
+                self._app_progress_connected.add(id(proc))
 
-    def _cleanup_processors(self, keep_path: str = "") -> None:
-        """取消并移除其他 PDF 的后台解析处理器，避免切换论文时线程泄漏。"""
-        for p in list(self._processors):
-            if p == keep_path:
-                continue
-            proc = self._processors.pop(p)
+    def _cancel_processor(self, path: str) -> None:
+        """取消并移除指定文献的后台处理器（显式重跑/删除时使用）。"""
+        proc = self._processors.pop(path, None)
+        if proc is not None:
+            self._app_progress_connected.discard(id(proc))
             if hasattr(proc, 'cancel'):
                 proc.cancel()
 
     # ---- 右键菜单：分开重跑 ----
     def _on_restage1(self, path: str):
-        """重新逐页解析 —— 清除 page_cache，保留整合结果。"""
+        """重新逐页解析 —— 清除 page_cache 与旧处理器，保留整合结果。"""
         from .utils.config import delete_page_cache
+        self._cancel_processor(path)
         delete_page_cache(path)
-        self._current_pdf_path = ""
+        self._begin_pdf_switch(path)
         self._load_pdf_into_viewer(path)
 
     def _on_restage2(self, path: str):
         """重新跨页整合 —— 只清除整合结果。"""
-        from .utils.config import save_doc_state
-        save_doc_state(path, {})  # 清空
-        self._current_pdf_path = ""
+        from .utils.config import load_doc_state, save_doc_state
+        self._cancel_processor(path)
+        state = load_doc_state(path)
+        state.pop("structured_document", None)
+        save_doc_state(path, state)
+        self._begin_pdf_switch(path)
         self._load_pdf_into_viewer(path)
 
     def _on_processor_progress(self, pdf_path: str, current: int, total: int):
@@ -384,7 +497,7 @@ class MainWindow(QMainWindow):
 
     def _on_follow_up_from_reader(self, context: str):
         if not self._llm_parse:
-            QMessageBox.warning(self, "未配置", "请先配置阅读-解析 API")
+            QMessageBox.warning(self, "未配置识图接口", "请先在设置中配置识图接口。")
             return
         self.chat_panel.set_input_enabled(True)
         self.chat_panel.add_user_message(f"[追问] {context[:100]}...")
@@ -400,12 +513,12 @@ class MainWindow(QMainWindow):
 
     def _on_user_message(self, text: str):
         if not self._llm_parse:
-            QMessageBox.warning(self, "未配置 API", "请先配置阅读-解析 API。\n菜单 → 设置 → API 配置")
-            self.chat_panel.set_input_enabled(True)
+            QMessageBox.warning(self, "未配置识图接口", "请先在设置中配置识图接口。")
+            self.chat_panel.set_input_enabled(False)
             return
         if not self._context_manager.has_pdf:
             QMessageBox.warning(self, "未加载 PDF", "请先打开一个 PDF 文件。")
-            self.chat_panel.set_input_enabled(True)
+            self.chat_panel.set_input_enabled(False)
             return
 
         self.chat_panel.add_user_message(text)
@@ -452,18 +565,24 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("对话已清空")
 
     def _on_open_settings(self):
+        old_root = self._config.get("data_root", "")
         dialog = SettingsDialog(self)
         if dialog.exec():
             self._config = load_config()
             self._init_all_clients()
             self._init_write()
-            self.status_bar.showMessage("API 配置已更新")
+            new_root = self._config.get("data_root", "")
+            if new_root and new_root != old_root:
+                self.pdf_list._refresh()
+                self.status_bar.showMessage("缓存文件存储路径已更新")
+            else:
+                self.status_bar.showMessage("接口设置已更新")
 
     def _on_change_data_dir(self):
-        """更改数据根目录。"""
+        """更改缓存文件存储路径。"""
         from pathlib import Path
         current = self._config.get("data_root", "")
-        path = QFileDialog.getExistingDirectory(self, "选择数据根目录", current)
+        path = QFileDialog.getExistingDirectory(self, "选择缓存文件存储路径", current)
         if path:
             try:
                 Path(path).mkdir(parents=True, exist_ok=True)
@@ -474,7 +593,7 @@ class MainWindow(QMainWindow):
             save_config(self._config)
             QMessageBox.information(
                 self, "已更新",
-                f"数据根目录已更改为：\n{path}\n\n"
+                f"缓存文件存储路径已更改为：\n{path}\n\n"
                 "注意：已有的 PDF 论文和缓存不会自动迁移，\n"
                 "如需迁移请手动复制文件到新目录的 library/ 文件夹下。"
             )
@@ -486,8 +605,8 @@ class MainWindow(QMainWindow):
             "<h3>PDFasker</h3>"
             "<p>AI 论文解读助手 v1.0.0</p>"
             "<p>支持 DeepSeek、Mimo、OpenCode 及所有 OpenAI 兼容接口。</p>"
-            "<p>三套 API：阅读-解析（视觉解析+整合+问答）、阅读-翻译、写作（引文核查+风格分析+文献推荐）</p>"
-            "<p>🆕 视觉 LLM 两阶段管线 · 结构化阅读视图 · 知识库驱动写作辅助 · Zotero 引文核查 · PubMed 文献检索</p>"
+             "<p>三套接口：识图、翻译、写作（引文核查+风格分析+文献推荐）</p>"
+             "<p>本地版式解析 · 结构化阅读视图 · 知识库驱动写作辅助 · Zotero 引文核查 · PubMed 文献检索</p>"
         )
 
     def closeEvent(self, event) -> None:
@@ -512,6 +631,9 @@ class MainWindow(QMainWindow):
             if not self._llm_worker.wait(3000):
                 self._llm_worker.terminate()
                 self._llm_worker.wait()
+        if self._docling_warmup and self._docling_warmup.isRunning():
+            # 导入阶段无法安全中断，等待其自然完成，避免 QThread 被销毁时崩溃。
+            self._docling_warmup.wait()
         super().closeEvent(event)
 
     def _init_all_clients(self) -> None:
@@ -535,20 +657,24 @@ class MainWindow(QMainWindow):
         def _label(client, prefix):
             if client:
                 return f"{prefix}: {client.model}"
-            return f"{prefix}: -"
+            return f"{prefix}: 未配置"
 
-        self._status_parse_label.setText(_label(self._llm_parse, "📖解析"))
-        self._status_parse_label.setStyleSheet(
-            f"color: {'#9ece6a' if self._llm_parse else '#636688'}; padding: 2px 6px; font-size: 11px;"
-        )
-        self._status_translate_label.setText(_label(self._llm_translate, "📖翻译"))
-        self._status_translate_label.setStyleSheet(
-            f"color: {'#9ece6a' if self._llm_translate else '#636688'}; padding: 2px 6px; font-size: 11px;"
-        )
-        self._status_write_label.setText(_label(self._llm_write, "📝写作"))
-        self._status_write_label.setStyleSheet(
-            f"color: {'#9ece6a' if self._llm_write else '#636688'}; padding: 2px 6px; font-size: 11px;"
-        )
+        def _set_chip(label: QLabel, client: LLMClient | None, text: str) -> None:
+            label.setText(text)
+            label.setProperty("status", "ready" if client else "warning")
+            label.style().unpolish(label)
+            label.style().polish(label)
+
+        _set_chip(self._status_parse_label, self._llm_parse, _label(self._llm_parse, "识图"))
+        _set_chip(self._status_translate_label, self._llm_translate, _label(self._llm_translate, "翻译"))
+        _set_chip(self._status_write_label, self._llm_write, _label(self._llm_write, "写作与引用"))
+        ready_count = sum(client is not None for client in (
+            self._llm_parse, self._llm_translate, self._llm_write
+        ))
+        self._header_status_label.setText(f"{ready_count}/3 项接口已就绪")
+        self._header_status_label.setProperty("status", "ready" if ready_count else "warning")
+        self._header_status_label.style().unpolish(self._header_status_label)
+        self._header_status_label.style().polish(self._header_status_label)
 
     def _init_write(self, zotero_path: str = "") -> None:
         # 优先使用信号传来的路径，其次重新从磁盘读 config
@@ -588,8 +714,7 @@ class MainWindow(QMainWindow):
         if not os.path.exists(path):
             QMessageBox.warning(self, "文件缺失", f"找不到 PDF 文件：\n{path}")
             return
-        self._save_current_chat()
-        self._current_pdf_path = ""
+        self._begin_pdf_switch(path)
         self._load_pdf_into_viewer(path)
 
     def _on_zotero_changed(self, diff: dict) -> None:
@@ -597,7 +722,7 @@ class MainWindow(QMainWindow):
         self._writing_panel.refresh_zotero_status()
 
     def _validate_data_root(self) -> None:
-        """启动时校验数据根目录是否可访问。"""
+        """启动时校验缓存文件存储路径是否可访问。"""
         dr = self._config.get("data_root", "")
         if not dr:
             return
@@ -608,12 +733,12 @@ class MainWindow(QMainWindow):
                 p.mkdir(parents=True, exist_ok=True)
             except OSError:
                 QMessageBox.warning(
-                    self, "数据目录不可用",
-                    f"数据根目录无法创建：\n{dr}\n\n请在菜单「设置 → 数据目录...」中重新设置。"
+                    self, "缓存文件存储路径不可用",
+                    f"存储路径无法创建：\n{dr}\n\n请在菜单「设置 → 缓存文件存储路径...」中重新设置。"
                 )
                 return
         if not os.access(str(p), os.W_OK):
             QMessageBox.warning(
-                self, "数据目录无写入权限",
-                f"数据根目录无写入权限：\n{dr}\n\n请检查权限或在菜单「设置 → 数据目录...」中重新设置。"
+                self, "缓存文件存储路径无写入权限",
+                f"存储路径无写入权限：\n{dr}\n\n请检查权限或在菜单「设置 → 缓存文件存储路径...」中重新设置。"
             )

@@ -188,41 +188,41 @@ class LitSearchDialog(QDialog):
         layout.setSpacing(8)
 
         # ---- LLM 理解（可滚动） ----
-        analysis_header = QLabel("LLM 理解（遗漏方向分析）")
-        analysis_header.setStyleSheet("color: #a9b1d6; font-weight: bold; font-size: 13px; padding: 2px 0;")
+        analysis_header = QLabel("AI 对草稿的理解（遗漏方向分析）")
+        analysis_header.setStyleSheet("color: #1e3b42; font-weight: bold; font-size: 13px; padding: 2px 0;")
         layout.addWidget(analysis_header)
 
         self._analysis_scroll = QScrollArea()
         self._analysis_scroll.setWidgetResizable(True)
         self._analysis_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._analysis_scroll.setStyleSheet(
-            "QScrollArea { background-color: #1e2030; border: 1px solid #2a2c3d; border-radius: 6px; }"
+            "QScrollArea { background-color: #fffdfa; border: 1px solid #e5e1d9; border-radius: 8px; }"
         )
 
         self._analysis_label = QLabel("正在分析...")
         self._analysis_label.setWordWrap(True)
         self._analysis_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self._analysis_label.setStyleSheet(
-            "color: #cfd2e3; font-size: 13px; line-height: 1.7; "
-            "background-color: transparent; padding: 12px;"
+            "color: #29434a; font-size: 13px; line-height: 1.7; "
+            "background-color: transparent; padding: 14px;"
         )
         self._analysis_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._analysis_scroll.setWidget(self._analysis_label)
         layout.addWidget(self._analysis_scroll, 2)
 
         # ---- 反馈输入 ----
-        feedback_label = QLabel("反馈（告诉 LLM 哪里理解不对，可多轮对话）")
-        feedback_label.setStyleSheet("color: #a9b1d6; font-weight: bold; font-size: 13px; padding: 2px 0;")
+        feedback_label = QLabel("反馈（指出理解偏差，可多轮调整）")
+        feedback_label.setStyleSheet("color: #1e3b42; font-weight: bold; font-size: 13px; padding: 2px 0;")
         layout.addWidget(feedback_label)
 
         self._feedback_edit = QTextEdit()
         self._feedback_edit.setPlaceholderText("例如：方向3不对，我讨论的是体表图案的细胞机制而非代谢通路，把那几个代谢方向去掉...")
         self._feedback_edit.setMaximumHeight(80)
         self._feedback_edit.setStyleSheet(
-            "QTextEdit { background-color: #24253a; color: #cfd2e3; "
-            "border: 1px solid #3b3d54; border-radius: 6px; "
+            "QTextEdit { background-color: #ffffff; color: #29434a; "
+            "border: 1px solid #d9e1de; border-radius: 8px; "
             "padding: 8px; font-size: 13px; }"
-            "QTextEdit:focus { border-color: #7aa2f7; }"
+            "QTextEdit:focus { border-color: #54aaa0; }"
         )
         layout.addWidget(self._feedback_edit)
 
@@ -231,18 +231,21 @@ class LitSearchDialog(QDialog):
         btn_row.setSpacing(8)
 
         self._refine_btn = QPushButton("反馈并重新分析")
+        self._refine_btn.setObjectName("secondaryBtn")
         self._refine_btn.setToolTip("将你的反馈发送给 LLM，重新分析遗漏方向")
         self._refine_btn.clicked.connect(self._on_refine)
         self._refine_btn.setEnabled(False)
         btn_row.addWidget(self._refine_btn)
 
         self._search_btn = QPushButton("开始 PubMed 检索")
+        self._search_btn.setObjectName("primaryBtn")
         self._search_btn.setToolTip("用当前分析结果中的关键词检索 PubMed")
         self._search_btn.clicked.connect(self._on_search)
         self._search_btn.setEnabled(False)
         btn_row.addWidget(self._search_btn)
 
-        self._export_known_btn = QPushButton("导出LLM推断文献列表")
+        self._export_known_btn = QPushButton("导出 AI 推荐文献")
+        self._export_known_btn.setObjectName("secondaryBtn")
         self._export_known_btn.setToolTip("将 LLM 直接推荐的文献导出为 CSV")
         self._export_known_btn.clicked.connect(self._export_known_csv)
         self._export_known_btn.setVisible(False)
@@ -255,34 +258,36 @@ class LitSearchDialog(QDialog):
         self._progress.setMaximumHeight(14)
         self._progress.setMaximumWidth(200)
         self._progress.setStyleSheet(
-            "QProgressBar { background-color: #24253a; border: 1px solid #3b3d54; border-radius: 7px; }"
-            "QProgressBar::chunk { background-color: #7aa2f7; border-radius: 6px; }"
+            "QProgressBar { background-color: #e7eeeb; border: 1px solid #d9e1de; border-radius: 7px; }"
+            "QProgressBar::chunk { background-color: #147c7c; border-radius: 6px; }"
         )
         btn_row.addWidget(self._progress)
         layout.addLayout(btn_row)
 
         # ---- 检索结果（初始隐藏） ----
         results_header = QLabel("PubMed 检索结果")
-        results_header.setStyleSheet("color: #a9b1d6; font-weight: bold; font-size: 13px; padding: 2px 0;")
+        results_header.setStyleSheet("color: #1e3b42; font-weight: bold; font-size: 13px; padding: 2px 0;")
         layout.addWidget(results_header)
 
         self._results_list = QListWidget()
         self._results_list.setStyleSheet(
-            "QListWidget { background-color: #1e2030; border: 1px solid #2a2c3d; border-radius: 6px; font-size: 13px; color: #cfd2e3; }"
-            "QListWidget::item { padding: 8px; border-bottom: 1px solid #2a2c3d; }"
-            "QListWidget::item:hover { background-color: #24253a; }"
+            "QListWidget { background-color: #fffdfa; border: 1px solid #e5e1d9; border-radius: 8px; font-size: 13px; color: #29434a; }"
+            "QListWidget::item { padding: 8px; border-bottom: 1px solid #e5e1d9; }"
+            "QListWidget::item:hover { background-color: #eef6f3; }"
         )
         layout.addWidget(self._results_list, 1)
 
         # 底部按钮
         bottom_row = QHBoxLayout()
-        self._insert_btn = QPushButton("📥 插入引用")
+        self._insert_btn = QPushButton("插入引用")
+        self._insert_btn.setObjectName("primaryBtn")
         self._insert_btn.setToolTip("将选中的 PubMed 文献以 (Author et al., Year) 格式插入到编辑器光标处")
         self._insert_btn.clicked.connect(self._on_insert_selected)
         self._insert_btn.setEnabled(False)
         bottom_row.addWidget(self._insert_btn)
         bottom_row.addStretch()
         self._export_btn = QPushButton("导出 CSV")
+        self._export_btn.setObjectName("secondaryBtn")
         self._export_btn.clicked.connect(self._export_csv)
         self._export_btn.setVisible(False)
         bottom_row.addWidget(self._export_btn)
@@ -295,10 +300,10 @@ class LitSearchDialog(QDialog):
 
     def _start_analysis(self):
         if not self._draft_text.strip() or not self._client:
-            self._analysis_label.setText("<span style='color: #8a8ea6;'>（无文本或未配置 API）</span>")
+            self._analysis_label.setText("<span style='color: #718180;'>（无文本或未配置写作接口）</span>")
             return
 
-        self._set_busy(True, "LLM 正在分析草稿...")
+        self._set_busy(True, "AI 正在分析草稿...")
         system_prompt = ""
         if self._coach:
             system_prompt = self._coach.build_writing_system_prompt("综述")
@@ -343,22 +348,22 @@ class LitSearchDialog(QDialog):
             # Cancel → 什么都不做
 
         self._analysis_label.setText(
-            f"<span style='color: #f7768e; font-weight: bold;'>分析失败</span><br>"
-            f"<span style='color: #8a8ea6;'>{err}</span><br><br>"
-            '<span style="color: #a9b1d6;">请在下方反馈中补充你的理解，点 \u201c反馈并重新分析\u201d。</span>'
+            f"<span style='color: #b24f4a; font-weight: bold;'>分析失败</span><br>"
+            f"<span style='color: #718180;'>{err}</span><br><br>"
+            '<span style="color: #617674;">请在下方反馈中补充你的理解，点 \u201c反馈并重新分析\u201d。</span>'
         )
 
     def _render_analysis(self, data: dict):
-        lines = ["<b style='color: #7aa2f7;'>已覆盖方向:</b>"]
+        lines = ["<b style='color: #147c7c;'>已覆盖方向：</b>"]
         for d in data.get("covered_domains", []):
             lines.append(
-                f"<span style='color: #a9b1d6;'>  &middot; {d.get('domain', '?')}</span> "
-                f"<span style='color: #8a8ea6;'>({d.get('paper_count', 0)} 篇, 最新 {d.get('latest_year', '?')})</span>"
+                f"<span style='color: #526b6c;'>  · {d.get('domain', '?')}</span> "
+                f"<span style='color: #718180;'>({d.get('paper_count', 0)} 篇，最新 {d.get('latest_year', '?')})</span>"
             )
 
         known = data.get("known_papers", [])
         if known:
-            lines.append("<br><b style='color: #bb9af7;'>📚 LLM 推断推荐的文献（可导出）:</b>")
+            lines.append("<br><b style='color: #3e8e78;'>AI 推荐的已知文献（可导出）：</b>")
             for i, p in enumerate(known):
                 title = p.get("title", "?")
                 authors = p.get("authors", "?")
@@ -367,9 +372,9 @@ class LitSearchDialog(QDialog):
                 relevance = p.get("relevance", "")
                 doi_str = f" DOI: {doi}" if doi else ""
                 lines.append(
-                    f"  <b style='color: #cfd2e3;'>{i+1}. {authors} ({year}) {title}</b>"
-                    f"<span style='color: #636688;'>{doi_str}</span><br>"
-                    f"  <span style='color: #8a8ea6;'>  → {relevance}</span><br>"
+                    f"  <b style='color: #29434a;'>{i+1}. {authors} ({year}) {title}</b>"
+                    f"<span style='color: #82908d;'>{doi_str}</span><br>"
+                    f"  <span style='color: #718180;'>  → {relevance}</span><br>"
                 )
             self._known_papers = known
             self._export_known_btn.setVisible(True)
@@ -379,18 +384,18 @@ class LitSearchDialog(QDialog):
 
         gaps = data.get("gaps", [])
         if gaps:
-            lines.append("<br><b style='color: #e0af68;'>遗漏方向 + 搜索关键词:</b>")
+            lines.append("<br><b style='color: #b87835;'>遗漏方向与搜索关键词：</b>")
             for i, g in enumerate(gaps):
                 queries = g.get("search_queries", [])
-                kw_str = ", ".join(f"<span style='color: #9ece6a;'><i>{q}</i></span>" for q in queries[:5])
+                kw_str = ", ".join(f"<span style='color: #278273;'><i>{q}</i></span>" for q in queries[:5])
                 reason = g.get("reason", "")[:300]
                 lines.append(
-                    f"  <b style='color: #cfd2e3;'>{i+1}. {g.get('domain', '?')}</b><br>"
-                    f"  <span style='color: #8a8ea6;'>原因: {reason}</span><br>"
-                    f"  <span style='color: #636688;'>关键词: {kw_str}</span><br>"
+                    f"  <b style='color: #29434a;'>{i+1}. {g.get('domain', '?')}</b><br>"
+                    f"  <span style='color: #718180;'>原因：{reason}</span><br>"
+                    f"  <span style='color: #82908d;'>关键词：{kw_str}</span><br>"
                 )
         else:
-            lines.append("<br><b style='color: #9ece6a;'>未检测到明显遗漏方向。</b>")
+            lines.append("<br><b style='color: #278273;'>未检测到明显遗漏方向。</b>")
 
         self._analysis_label.setText("<br>".join(lines))
 

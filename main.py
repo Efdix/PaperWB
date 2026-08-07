@@ -258,7 +258,7 @@ if __name__ == "__main__":
     app.setApplicationName("PDFasker")
     app.setApplicationVersion("1.0.0")
     app.setOrganizationName("PDFasker")
-    app.setStyle("Fusion")  # 跨平台一致的暗色主题基础
+    app.setStyle("Fusion")  # 跨平台一致的 QSS 基础
 
     window = MainWindow()
     window.show()

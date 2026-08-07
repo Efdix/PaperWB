@@ -1,7 +1,7 @@
 """PDF 解析器 —— 精简版：文本提取 + 页面渲染。
 
 保留纯工具性功能供上层使用。
-所有智能解析（段落分割、结构识别、图表理解）已迁移至 pdf_processor.py
+所有智能解析（段落分割、结构识别、图表裁剪）已迁移至 docling_parser.py 和 pdf_processor.py
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ class PDFParser:
     """PDF 基础解析器 —— 提供文本提取、页面渲染等底层能力。
 
     不再包含任何智能解析逻辑（列检测、段落合并、标题识别等），
-    这些已全部交给 pdf_processor.py 中的视觉 LLM 管线处理。
+    这些由本地版式解析管线处理。
     """
 
     def __init__(self, file_path: str) -> None:

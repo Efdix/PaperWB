@@ -11,7 +11,7 @@
 import os as _os
 import sys as _sys
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 
 _datas, _binaries, _hiddenimports = [], [], []
 for _pkg in ("docling", "docling_core", "docling_ibm_models", "docling_parse", "rapidocr",
@@ -21,6 +21,11 @@ for _pkg in ("docling", "docling_core", "docling_ibm_models", "docling_parse", "
     _datas += _d
     _binaries += _b
     _hiddenimports += _h
+
+# Docling 的版式/OCR模型依赖 torch 原生 DLL。显式收集动态库并由 main.py
+# 在 Windows 启动时按顺序预加载，避免首次解析时 DLL 延迟加载导致进程崩溃。
+_binaries += collect_dynamic_libs("torch")
+_binaries += collect_dynamic_libs("torchvision")
 
 # conda sqlite3.dll（_sqlite3 扩展的运行时依赖，conda 布局在 Library/bin 下）
 _env_root = _os.path.dirname(_sys.executable)
@@ -33,6 +38,8 @@ for _cand in (_os.path.join(_env_root, "Library", "bin", "sqlite3.dll"),
 _hiddenimports += [
     'fitz',
     'sqlite3',
+    'torch',
+    'torchvision',
     'PySide6.QtCore',
     'PySide6.QtWidgets',
     'PySide6.QtGui',

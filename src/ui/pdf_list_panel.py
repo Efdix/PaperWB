@@ -25,7 +25,7 @@ from .zotero_panel import ZoteroPanel
 
 
 class PDFListPanel(QWidget):
-    """左侧面板 —— Tab1 论文库 + Tab2 Zotero 只读文献库"""
+    """左侧面板 —— Tab1 Zotero 只读文献库 + Tab2 其它文献"""
 
     pdf_selected = Signal(str)
     pdf_removed = Signal(str)
@@ -37,8 +37,9 @@ class PDFListPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumWidth(180)
-        self.setMaximumWidth(360)
+        self.setObjectName("libraryPanel")
+        self.setMinimumWidth(250)
+        self.setMaximumWidth(420)
         self.setAcceptDrops(True)
         self._library: list[dict] = []
         self._setup_ui()
@@ -51,36 +52,44 @@ class PDFListPanel(QWidget):
 
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
+        self._tabs.tabBar().setExpanding(True)
+        self._tabs.tabBar().setUsesScrollButtons(False)
+        self._tabs.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
 
-        # ---- Tab 1: 论文库 ----
+        # ---- Tab 2: 其它文献 ----
         library_view = QWidget()
         lib_layout = QVBoxLayout(library_view)
         lib_layout.setContentsMargins(0, 0, 0, 0)
         lib_layout.setSpacing(0)
 
         header = QHBoxLayout()
-        header.setContentsMargins(12, 8, 12, 8)
-        title = QLabel("论文库")
+        header.setContentsMargins(16, 14, 14, 10)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(1)
+        title = QLabel("其它文献")
         title.setObjectName("titleLabel")
-        header.addWidget(title)
+        title_box.addWidget(title)
+        subtitle = QLabel("集中管理本地论文与阅读缓存")
+        subtitle.setObjectName("subtitleLabel")
+        title_box.addWidget(subtitle)
+        header.addLayout(title_box)
         header.addStretch()
+        self.import_btn = QPushButton("＋ 导入 PDF")
+        self.import_btn.setObjectName("primaryBtn")
+        self.import_btn.setToolTip("导入 PDF 论文到论文库")
+        self.import_btn.clicked.connect(self._import_pdf)
+        header.addWidget(self.import_btn)
         lib_layout.addLayout(header)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #2a2c3d; max-height: 1px;")
+        sep.setStyleSheet("background-color: #e4e0d8; max-height: 1px;")
         lib_layout.addWidget(sep)
 
-        action_bar = QHBoxLayout()
-        action_bar.setContentsMargins(8, 4, 8, 4)
-        action_bar.setSpacing(4)
-
-        self.import_btn = QPushButton("📥 导入")
-        self.import_btn.setToolTip("导入 PDF 论文到图书馆")
-        self.import_btn.clicked.connect(self._import_pdf)
-        action_bar.addWidget(self.import_btn)
-
-        lib_layout.addLayout(action_bar)
+        hint = QLabel("支持拖拽 PDF 到这里，导入后会自动开始解析")
+        hint.setObjectName("subtitleLabel")
+        hint.setContentsMargins(16, 8, 16, 4)
+        lib_layout.addWidget(hint)
 
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
@@ -89,26 +98,20 @@ class PDFListPanel(QWidget):
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._on_context_menu)
         self.tree.itemClicked.connect(self._on_item_clicked)
-        self.tree.setStyleSheet(
-            "QTreeWidget { background-color: #1a1b26; border: none; outline: none; }"
-            "QTreeWidget::item { padding: 6px 10px; color: #cfd2e3; border-radius: 4px; }"
-            "QTreeWidget::item:hover { background-color: #2a2c3d; }"
-            "QTreeWidget::item:selected { background-color: #3b3d54; }"
-        )
         lib_layout.addWidget(self.tree, 1)
 
         footer = QLabel()
         footer.setObjectName("subtitleLabel")
-        footer.setContentsMargins(12, 4, 12, 8)
+        footer.setContentsMargins(16, 6, 16, 12)
         self._footer_label = footer
         lib_layout.addWidget(footer)
 
-        # ---- Tab 2: Zotero ----
+        # ---- Tab 1: Zotero ----
         self.zotero_panel = ZoteroPanel(parent=self)
         self.zotero_panel.pdf_selected.connect(self.zotero_pdf_selected.emit)
 
-        self._tabs.addTab(library_view, "🗂️ 论文库")
-        self._tabs.addTab(self.zotero_panel, "📚 Zotero")
+        self._tabs.addTab(self.zotero_panel, "Zotero 文献库")
+        self._tabs.addTab(library_view, "其它文献")
         layout.addWidget(self._tabs, 1)
 
     def _refresh(self):
@@ -254,11 +257,6 @@ class PDFListPanel(QWidget):
     def _on_context_menu(self, pos):
         item = self.tree.itemAt(pos)
         menu = QMenu(self)
-        menu.setStyleSheet(
-            "QMenu { background: #24253a; color: #cfd2e3; border: 1px solid #3b3d54; }"
-            "QMenu::item:selected { background: #3b3d54; }"
-        )
-
         if not item:
             # 空白处右键：新建文件夹 / 导入
             a = menu.addAction("  + 新建文件夹")
@@ -315,7 +313,7 @@ class PDFListPanel(QWidget):
         r = QMessageBox.question(self, "确认",
             "重新逐页解析？\n\n"
             "此操作将清除页面缓存，保留跨页整合结果。\n"
-            "需要重新调用视觉 LLM（较贵）。")
+            "将重新运行本地版式解析。")
         if r == QMessageBox.StandardButton.Yes:
             delete_page_cache(path)
             self.restage1_requested.emit(path)

@@ -21,6 +21,7 @@ class ChatBubble(QFrame):
     def __init__(self, role: str, content: str, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setProperty("role", role)
         self.role = role
         self._content_label: QLabel | None = None
 
@@ -34,8 +35,8 @@ class ChatBubble(QFrame):
         role_font.setBold(True)
         role_label.setFont(role_font)
         role_label.setStyleSheet(
-            "color: #7aa2f7; padding: 2px 0;" if role == "assistant"
-            else "color: #9ece6a; padding: 2px 0;"
+            "color: #147c7c; padding: 2px 0;" if role == "assistant"
+            else "color: #b45d4a; padding: 2px 0;"
         )
         layout.addWidget(role_label)
 
@@ -51,7 +52,7 @@ class ChatBubble(QFrame):
         content_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.2)
         content_label.setFont(content_font)
         content_label.setStyleSheet(
-            "color: #e2e5f2; line-height: 1.8; padding: 4px 0; font-size: 13px;"
+            "color: #29434a; line-height: 1.8; padding: 4px 0; font-size: 13px;"
         )
         layout.addWidget(content_label)
         self._content_label = content_label  # 保存引用，方便流式更新
@@ -59,7 +60,7 @@ class ChatBubble(QFrame):
         # 分隔线
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #2a2c3d; max-height: 1px; margin-top: 4px;")
+        sep.setStyleSheet("background-color: #e5e1d9; max-height: 1px; margin-top: 4px;")
         layout.addWidget(sep)
 
     def hasHeightForWidth(self) -> bool:
@@ -99,6 +100,7 @@ class ChatPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("chatPanel")
         self._bubbles: list[ChatBubble] = []
         self._current_ai_bubble: ChatBubble | None = None
         self._setup_ui()
@@ -112,22 +114,25 @@ class ChatPanel(QWidget):
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(12, 8, 12, 8)
 
-        title = QLabel("💬 对话")
+        title = QLabel("论文问答")
         title.setObjectName("titleLabel")
         toolbar.addWidget(title)
 
         toolbar.addStretch()
 
         self.token_label = QLabel("")
-        self.token_label.setStyleSheet("color: #8a8ea6; font-size: 11px; padding: 0 8px;")
+        self.token_label.setObjectName("subtitleLabel")
+        self.token_label.setContentsMargins(0, 0, 8, 0)
         toolbar.addWidget(self.token_label)
 
-        export_btn = QPushButton("💾 导出")
+        export_btn = QPushButton("导出记录")
+        export_btn.setObjectName("secondaryBtn")
         export_btn.setToolTip("导出对话为 Markdown 文件")
         export_btn.clicked.connect(self._on_export)
         toolbar.addWidget(export_btn)
 
-        clear_btn = QPushButton("清空对话")
+        clear_btn = QPushButton("清空")
+        clear_btn.setObjectName("softBtn")
         clear_btn.clicked.connect(self._on_clear)
         toolbar.addWidget(clear_btn)
 
@@ -136,32 +141,31 @@ class ChatPanel(QWidget):
         # 分隔线
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #2a2c3d; max-height: 1px;")
+        sep.setStyleSheet("background-color: #e4e0d8; max-height: 1px;")
         layout.addWidget(sep)
 
         # 消息滚动区域
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll_area.setStyleSheet("QScrollArea { background-color: #1a1b26; border: none; }")
-
         self.msg_container = QWidget()
-        self.msg_container.setStyleSheet("background-color: #1a1b26;")
+        self.msg_container.setObjectName("chatMessages")
         self.msg_layout = QVBoxLayout(self.msg_container)
         self.msg_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.msg_layout.addStretch()
 
         # 欢迎消息
         welcome = QLabel(
-            "👋 欢迎使用 PDFasker！\n\n"
-            "使用方法：\n"
-            "1. 从左侧论文库选择或导入 PDF\n"
-            "2. 在下方输入框输入你的问题\n"
-            "3. AI 将基于论文内容为你解答\n\n"
-            "📌 请先在设置中配置 API Key"
+            "欢迎来到论文问答\n\n"
+            "先从左侧 Zotero 文献库或其它文献中选择一篇 PDF，再在下方提出问题。\n"
+            "AI 会基于当前论文内容回答，并保留你的对话记录。\n\n"
+            "提示：首次使用请先在设置中配置阅读接口。"
         )
         welcome.setWordWrap(True)
-        welcome.setStyleSheet("color: #8a8ea6; padding: 24px; font-size: 13px; line-height: 1.8;")
+        welcome.setStyleSheet(
+            "color: #718180; background-color: #f5f8f6; border: 1px solid #e1ebe7; "
+            "border-radius: 12px; padding: 18px; font-size: 13px; line-height: 1.8;"
+        )
         self.msg_layout.insertWidget(0, welcome)
 
         self.scroll_area.setWidget(self.msg_container)
@@ -169,7 +173,7 @@ class ChatPanel(QWidget):
 
         # 输入区
         input_frame = QFrame()
-        input_frame.setStyleSheet("background-color: #161720; border-top: 1px solid #2a2c3d;")
+        input_frame.setObjectName("chatInput")
         input_layout = QVBoxLayout(input_frame)
         input_layout.setContentsMargins(12, 10, 12, 12)
 
@@ -295,10 +299,10 @@ class ChatPanel(QWidget):
         """更新 Token 估算显示"""
         if count > 0:
             if count >= 1_000_000:
-                self.token_label.setText(f"🔢 {count/1_000_000:.1f}M tokens")
+                self.token_label.setText(f"上下文约 {count/1_000_000:.1f} 百万令牌")
             elif count >= 1_000:
-                self.token_label.setText(f"🔢 {count/1_000:.0f}K tokens")
+                self.token_label.setText(f"上下文约 {count/1_000:.0f} 千令牌")
             else:
-                self.token_label.setText(f"🔢 {count} tokens")
+                self.token_label.setText(f"上下文约 {count} 令牌")
         else:
             self.token_label.setText("")

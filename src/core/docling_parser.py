@@ -1,4 +1,4 @@
-"""Docling 本地解析器 —— Stage 1 布局层（替代整页视觉 LLM 推理）。
+"""Docling 本地解析器 —— Stage 1 布局层。
 
 在 import docling 之前设置环境变量（本模块顶部自动完成）：
 - DOCLING_INFERENCE_COMPILE_TORCH_MODELS=0  禁用 torch.compile（避免要求 MSVC cl.exe）
@@ -12,13 +12,16 @@ is_meaningful/description/section_name/font_size/is_bold）。
 from __future__ import annotations
 
 import os
+import threading
+from typing import TYPE_CHECKING
 
 os.environ.setdefault("DOCLING_INFERENCE_COMPILE_TORCH_MODELS", "0")
 if os.environ.get("PDFASKER_HF_MIRROR", "1") == "1":
     os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
-from docling.document_converter import DocumentConverter  # noqa: E402
+if TYPE_CHECKING:
+    from docling.document_converter import DocumentConverter
 
 # Docling label → 应用 element_type
 _DOCLING_LABEL_MAP: dict[str, str] = {
@@ -41,6 +44,13 @@ _DOCLING_LABEL_MAP: dict[str, str] = {
 }
 
 _converter: DocumentConverter | None = None
+_converter_lock = threading.Lock()
+_parse_lock = threading.Lock()  # 全局转换器非线程安全：多篇 PDF 解析自动串行排队
+
+
+def warm_up_import() -> None:
+    """后台预热 Docling Python 模块，不创建转换器或触发 PDF 解析。"""
+    from docling.document_converter import DocumentConverter  # noqa: F401
 
 
 def is_available() -> bool:
@@ -53,10 +63,13 @@ def is_available() -> bool:
 
 
 def get_converter() -> DocumentConverter:
-    """惰性创建全局转换器（模型只加载一次）。"""
+    """惰性创建全局转换器（模型只加载一次，且避免并发重复初始化）。"""
     global _converter
     if _converter is None:
-        _converter = DocumentConverter()
+        with _converter_lock:
+            if _converter is None:
+                from docling.document_converter import DocumentConverter
+                _converter = DocumentConverter()
     return _converter
 
 
@@ -98,10 +111,11 @@ def parse_pdf(pdf_path: str, dpi: int = 150) -> list[dict]:
     """用 Docling 解析 PDF，返回与单页解析缓存兼容的结构。
 
     Raises:
-        Exception: 解析失败（调用方可回退到视觉 LLM 管线）。
+        Exception: 解析失败（调用方显示错误并允许用户重试）。
     """
     converter = get_converter()
-    result = converter.convert(pdf_path)
+    with _parse_lock:
+        result = converter.convert(pdf_path)
     doc = result.document
 
     # 收集所有元素（阅读顺序），附上 running section
