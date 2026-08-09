@@ -129,6 +129,31 @@ def _preload_docling() -> None:
         pass
 
 
+def _install_excepthook() -> None:
+    """全局未捕获异常处理器：写入 %APPDATA%/PDFasker/error.log 并打印到终端。
+
+    避免线程/槽回调中的异常只出现在 stdout 而难以定位；日志含时间戳与完整
+    traceback，路径与配置文件同目录，便于打包版用户反馈。
+    """
+    import datetime
+    import traceback as _traceback
+
+    def _hook(exc_type, exc_value, exc_tb) -> None:
+        lines = _traceback.format_exception(exc_type, exc_value, exc_tb)
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        text = f"\n===== {ts} =====\n" + "".join(lines)
+        try:
+            log_dir = os.path.join(os.environ.get("APPDATA", ""), "PDFasker")
+            os.makedirs(log_dir, exist_ok=True)
+            with open(os.path.join(log_dir, "error.log"), "a", encoding="utf-8") as f:
+                f.write(text)
+        except OSError:
+            pass
+        print(text, file=sys.stderr)
+
+    sys.excepthook = _hook
+
+
 def _run_selftest() -> int:
     """无头自检：导入全部模块 + 配置 + Zotero 只读加载 +（可选）Docling 解析样例。
 
@@ -246,6 +271,7 @@ if __name__ == "__main__":
     _preload_heavy_libs()
     _preload_torch()
     _preload_docling()
+    _install_excepthook()
 
     if "--selftest" in sys.argv:
         sys.exit(_run_selftest())

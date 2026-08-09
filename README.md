@@ -4,7 +4,7 @@
 [![PySide6](https://img.shields.io/badge/PySide6-6.11-green.svg)](https://pypi.org/project/PySide6/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-基于视觉大语言模型的 **Windows 桌面应用**，将科研论文 PDF 通过两阶段视觉 LLM 管线智能解析为结构化阅读视图，并提供综述/论文/专利/软著的全流程写作辅助。
+基于大语言模型的 **Windows 桌面应用**，通过本地 Docling 版式解析 + LLM 跨页整合，将科研论文 PDF 智能解析为结构化阅读视图，并提供综述/论文/专利/软著的全流程写作辅助。
 
 ---
 
@@ -14,14 +14,13 @@
 
 | 功能 | 说明 |
 |------|------|
-| 两阶段视觉解析 | **Stage 1** 逐页(图片+文本)发给多模态 LLM 识别结构 → **Stage 2** LLM 跨页整合为完整结构化文档 |
-| 解析引擎可切换 | 设置中可切换 **Docling 本地解析**（快/省/离线，首次下载模型）或 **视觉 LLM**；引擎切换自动失效旧缓存 |
+| 两阶段解析 | **Stage 1** Docling 本地版式解析（标题/正文/表格/公式/参考文献分区，快/省/离线） → **Stage 2** LLM 跨页整合为完整结构化文档 |
+| 缓存自动失效 | 解析管线版本变更后旧缓存自动失效；右键菜单可单独重跑 Stage 1 / Stage 2 |
 | 结构化阅读视图 | 标题/章节/正文/图表/参考文献按 `element_type` 分类渲染，关键章节暖金色高亮 |
-| 图表智能提取 | LLM 标注图表 bbox → 自动裁剪保存，附带 AI 生成的图表描述 |
+| 图表智能提取 | Docling 提供图表 bbox → 自动裁剪保存，LLM 生成图表描述 |
 | 中英对照翻译 | 英文段落一键翻译为中文，逐段对照阅读（独立翻译 API） |
 | 论文问答 | 基于结构化全文上下文（正文+元信息+图表描述+参考文献）的流式 AI 对话；长文档自动启用 **BM25 检索增强**（只发相关段落） |
 | 断点续传 | Stage 1 每页独立缓存，重新打开无需重新解析；支持右键分开重跑 |
-| 并发控制 | Stage 1 支持同步/异步两种模式，可配置并发页数避免 API 限流 |
 
 ### 综述写作
 
@@ -51,7 +50,7 @@
 | Zotero 集成 | 左侧「Zotero」标签页只读镜像集合树，**实时同步**增删改（QFileSystemWatcher + 防抖 + 后台重载）；引文核查提取 PDF 相关段落 |
 | 流式对话 | AI 回复实时逐字显示，Markdown 渲染，上下文自动管理（1M token 窗口） |
 | 论文库 | 拖拽导入 PDF，文件夹分类管理，对话和解析状态按文档持久化 |
-| Catppuccin 暗色主题 | 护眼舒适的暗色配色方案，全组件自定义 QSS 样式 |
+| 暖白主题 | 暖白研究工作台配色（暖米色纸张底色 + 墨字），全组件自定义 QSS 样式 |
 | 任务栏多窗口 | 润色/文献补充对话框各自独立显示在任务栏分组中 |
 
 ---
@@ -74,12 +73,19 @@ conda activate PDFasker
 pip install -r requirements.txt
 ```
 
-依赖：`PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3` `docling` `rank_bm25`
+> 国内网络可加镜像源加速安装（本仓库用 Miniforge + 清华 PyPI 镜像验证通过）：
+> ```bash
+> pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+> ```
+
+依赖：`PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3` `docling==2.118.0` `rank_bm25==0.2.2` `hf_transfer==0.1.9`
+
+> **安装体积提示**：docling 会自动带入 torch / transformers / docling-ibm-models / rapidocr 等重型依赖，首次 `pip install` 需下载约 2.5–3 GB，请耐心等待。
 
 > **Docling 说明**：用于 Stage 1 的 PDF 版式本地解析（标题/正文/表格/公式/参考文献分区）。
-> - 首次使用时自动从 Hugging Face 下载模型（约数百 MB，一次性，缓存在 `~/.cache/huggingface`），之后离线运行
-> - 国内网络可在设置 → API 配置 → 处理设置中勾选「Hugging Face 镜像 (hf-mirror.com)」加速下载（默认开启）
-> - 无需 Java / Docker / GPU，纯 CPU 即可运行；若机器未安装 Visual Studio C++ 编译器，Docling 会自动禁用 torch JIT 编译
+> - 首次使用时自动下载模型（一次性，之后离线运行）：版式识别模型来自 Hugging Face（缓存在 `~/.cache/huggingface`），文字识别模型（RapidOCR）自动从 ModelScope 下载
+> - Hugging Face 镜像 (hf-mirror.com) **默认开启、无需设置**；如需回退官方源，设置环境变量 `PDFASKER_HF_MIRROR=0`
+> - 无需 Java / Docker / GPU，纯 CPU 即可运行；程序已默认禁用 torch JIT 编译（`DOCLING_INFERENCE_COMPILE_TORCH_MODELS=0`），不要求安装 Visual Studio C++ 编译器或开启开发者模式
 > - 启动入口 `main.py` 会自动以 UTF-8 模式运行（避免中文 Windows 编码问题）
 
 ### 获取 API Key
@@ -94,7 +100,7 @@ pip install -r requirements.txt
 | OpenCode Zen | `https://opencode.ai/zen/v1` | ✅ deepseek-v4-flash-free 等 |
 | 自定义 | 任意 OpenAI 兼容 URL | — |
 
-- **阅读-解析**：需要视觉多模态能力，建议 `deepseek-v4-pro` 或 `glm-5.2`
+- **阅读-解析**：负责跨页整合与论文问答（逐页版式解析已由本地 Docling 完成），无需多模态能力，普通强文本模型即可
 - **阅读-翻译**：可用便宜/免费模型
 - **写作**：需要强推理能力，建议 `deepseek-v4-pro`
 
@@ -105,7 +111,7 @@ conda activate PDFasker
 python main.py
 ```
 
-首次启动弹出数据根目录选择窗口。之后在 **菜单 → 设置 → API 配置** 中填入 API Key 即可使用。Zotero 路径在 **菜单 → 设置 → API 配置 → 写作标签页** 或 **写作面板工具栏** 中设置（两处联动）。
+首次启动弹出数据根目录选择窗口。之后在 **菜单 → 设置 → API 接口设置...** 中填入 API Key 即可使用。该对话框底部还有两个独立设置项：**Zotero 文献库路径设置**（阅读与写作共用）和 **缓存文件存储路径设置**（可随时更改数据根目录）；Zotero 路径也可在**写作面板工具栏**中设置（两处联动）。
 
 ---
 
@@ -124,7 +130,7 @@ pyinstaller --noconfirm --clean PDFasker.spec
 > **为什么用 onedir 而非单文件 onefile**：程序体积约 500MB（含 torch/PySide6/Docling），onefile 每次启动需解压 30 秒以上且易踩 PyInstaller 大包解压竞态；onedir 秒开、更新只需替换 `PDFasker.exe`、DLL 就近加载更稳。
 
 **打包要点**：
-- **Docling 模型不打进包**：首次使用 Docling 引擎时自动从 Hugging Face 下载到用户缓存（`~/.cache/huggingface`），之后离线；国内网络可在设置中勾选镜像
+- **Docling 模型不打进包**：首次使用 Docling 引擎时自动下载到用户缓存（版式模型在 `~/.cache/huggingface`，RapidOCR 模型在 rapidocr 目录），之后离线；Hugging Face 镜像默认开启，无需设置
 - **运行验证**：`dist\PDFasker\PDFasker.exe --selftest <样例.pdf>` 会无头自检（模块导入、Zotero 只读加载、Docling 解析），结果写入 `%TEMP%\pdfasker_selftest.log`
 - 打包前请确保已安装 `requirements.txt` 中的依赖；目标机器如缺 Visual C++ 运行时请安装对应版本
 
@@ -205,29 +211,37 @@ Compress-Archive -Path dist\PDFasker\* -DestinationPath build\PDFasker.zip
 
 ```
 PDFasker/
-├── main.py                      # 入口: QApplication + MainWindow
-├── requirements.txt             # 3 个核心依赖
+├── main.py                      # 入口: QApplication + MainWindow（自动 UTF-8 重启 + --selftest 无头自检）
+├── requirements.txt             # 依赖清单（PySide6/openai/PyMuPDF/docling 等）
 ├── src/
-│   ├── app.py                   # MainWindow — 首次启动弹窗 + 信号总枢纽 + 三套 LLMClient
+│   ├── app.py                   # MainWindow — 首次启动弹窗 + 信号枢纽 + 三套 LLMClient + Zotero watcher
 │   ├── core/
 │   │   ├── pdf_parser.py        # PDF 底层工具: 文本提取/渲染 (PyMuPDF)
-│   │   ├── pdf_processor.py     # 两阶段管线: PageAnalysisWorker / IntegrationWorker / PDFProcessor
+│   │   ├── pdf_processor.py     # 两阶段管线: Docling 本地布局 (Stage 1) + LLM 跨页整合 (Stage 2)
+│   │   ├── docling_parser.py    # Docling 本地解析器: PDF → 逐页元素（HF 镜像/禁用 torch 编译）
 │   │   ├── llm_client.py        # OpenAI 兼容 API 客户端 + 5 个提供商预设
-│   │   ├── context_manager.py   # Token 预算管理: 1M窗口截断策略
-│   │   ├── zotero_parser.py     # Zotero SQLite 解析器: 自动检测/搜索/主题排序
-│   │   ├── unified_writer.py    # 统一润色+引文核查: prompt 模板 + JSON 多层容错解析
-│   │   ├── writing_coach.py     # 写作教练: 知识库/风格分析/基准构建
-│   │   ├── writing_prompts.py   # 四种写作类型提示词
-│   │   └── pubmed_searcher.py   # PubMed E-utilities 检索客户端
+│   │   ├── context_manager.py   # Token 预算管理: 长文档 BM25 检索增强（只发相关段落）
+│   │   ├── retriever.py         # 轻量本地检索器: Retriever 接口 + Bm25Retriever
+│   │   ├── zotero_parser.py     # Zotero SQLite 解析器: 集合层级/文献/附件 + reload()
+│   │   ├── zotero_watcher.py    # Zotero 实时同步: QFileSystemWatcher + 防抖 + 后台重载
+│   │   ├── unified_writer.py    # 统一润色+引文核查: 证据检索化 + JSON 多层容错
+│   │   ├── draft_reviewer.py    # 草稿评审
+│   │   ├── writing_coach.py     # 写作教练: 知识库/风格分析/引用密度
+│   │   ├── writing_prompts.py   # 四种写作类型系统提示词
+│   │   ├── pubmed_searcher.py   # PubMed E-utilities 检索客户端
+│   │   └── ai_words.py / json_utils.py  # AI 词汇库 / JSON 容错工具
 │   ├── ui/
-│   │   ├── pdf_viewer.py        # 结构化阅读面板: ParagraphCard 按 element_type 渲染
-│   │   ├── pdf_list_panel.py    # 论文库侧边栏: 拖拽导入/文件夹分类/右键菜单
+│   │   ├── pdf_viewer.py        # 结构化阅读面板: ParagraphCard 按 element_type 渲染 + 翻译
+│   │   ├── pdf_list_panel.py    # 左侧面板: Tab1 Zotero 文献库 + Tab2 其它文献
+│   │   ├── zotero_panel.py      # Zotero 树形视图: 集合树+文献+PDF 附件，watcher 实时刷新
 │   │   ├── chat_panel.py        # 聊天面板: Markdown 气泡/流式渲染
-│   │   ├── writing_panel.py     # 写作面板: 编辑器+Zotero+AI辅助+风格指南弹窗
-│   │   ├── diff_dialog.py       # 润色对比对话框: 内联 diff + 导航栏 + 逐项接受/拒绝 + AI 对话
+│   │   ├── writing_panel.py     # 写作面板: 编辑器+知识库+Zotero+AI辅助+自动保存+字数统计
+│   │   ├── diff_dialog.py       # 润色对比对话框: 内联 diff + 导航 + 逐项接受/拒绝 + AI 对话
+│   │   ├── review_dialog.py     # 评审对话框
+│   │   ├── polish_history_dialog.py  # 润色历史对话框
 │   │   ├── lit_search_dialog.py # 文献补充对话框: LLM 推荐 + PubMed 检索（非模态）
-│   │   ├── settings_dialog.py   # API 设置: 三标签页+处理设置+Zotero路径
-│   │   └── styles.py            # Catppuccin 暗色主题 QSS
+│   │   ├── settings_dialog.py   # API 接口设置: 识图/翻译/写作标签页 + Zotero 路径 + 缓存路径
+│   │   └── styles.py            # 暖白研究工作台主题 QSS
 │   └── utils/
 │       ├── config.py            # 持久化层: 配置/图书馆/聊天/缓存/草稿/润色历史 读写
 │       └── layout.py            # 递归布局高度计算
@@ -239,13 +253,13 @@ PDFasker/
 
 ## 常见问题
 
-**支持哪些模型？** 所有 OpenAI 兼容接口。内置 DeepSeek、Mimo、OpenCode Go、OpenCode Zen 四种预设。阅读-解析需视觉多模态能力。
+**支持哪些模型？** 所有 OpenAI 兼容接口。内置 DeepSeek、Mimo、OpenCode Go、OpenCode Zen 四种预设 + 自定义，共 5 个预设。阅读-解析无需多模态，普通强文本模型即可。
 
 **支持多长的论文？** DeepSeek V4 支持 1M token 上下文，几百页论文可以一次性处理。
 
-**Stage 1 解析太慢？** 设置 → API 配置 → 阅读-解析标签页底部可切换为 **Docling 本地引擎**（快、免费、离线），或选择"异步（并发处理）"并调整并发页数（推荐 2-4）。注意并发过高可能触发 API 限流。
+**Stage 1 解析太慢？** Stage 1 固定为 **Docling 本地解析**（快、免费、离线，无 API 限流），速度取决于 CPU；首次使用前需先自动下载模型（一次性）。可在右键菜单对单篇「重新逐页解析」。
 
-**Docling 首次使用要下载模型？** 是，约数百 MB，一次性缓存在用户目录；国内网络可在设置中勾选「Hugging Face 镜像」加速。下载失败时自动回退到视觉 LLM 管线。
+**Docling 首次使用要下载模型？** 是，约数百 MB，一次性缓存在用户目录（版式模型走 Hugging Face，RapidOCR 模型走 ModelScope）。镜像默认开启无需设置；下载失败时解析会提示错误，可设置环境变量 `PDFASKER_HF_MIRROR=0` 回退官方源重试。
 
 **Zotero 文献怎么实时同步到软件？** 左侧面板切换到「📚 Zotero」标签页，软件会自动监听 Zotero 数据库与附件目录，增删改在约 1 秒内刷新；点击带 📄 的文献直接用两阶段管线阅读（只读，不会改动你的 Zotero 库）。
 

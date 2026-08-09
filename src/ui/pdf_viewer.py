@@ -634,10 +634,13 @@ class PDFViewerPanel(QWidget):
                 from ..core.pdf_processor import StructuredDocument
                 doc = StructuredDocument.from_dict(cached_doc)
                 self._structured_doc = doc
-                self._render_document(doc)
+                failed = self._render_document(doc)
                 self._restore_translation_state(cached_state)
-                self._restore_document_preferences(cached_state)
-                self.info_label.setText(f"📖 {doc.title or '论文'} — 从缓存加载")
+                self._restore_document_preferences()
+                title_msg = f"📖 {doc.title or '论文'} — 从缓存加载"
+                if failed:
+                    title_msg += f"（{failed} 个元素渲染失败已跳过）"
+                self.info_label.setText(title_msg)
                 self.info_label.setStyleSheet("color: #278273;")
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(100)
@@ -795,12 +798,15 @@ class PDFViewerPanel(QWidget):
         self._structured_doc = doc
         self.integrate_btn.setVisible(False)
         self.progress_bar.setVisible(False)
-        self._render_document(doc)
+        failed = self._render_document(doc)
 
         self._restore_translation_state()
         self._restore_document_preferences()
 
-        self.info_label.setText(f"📖 {doc.title or '论文'} — {len(doc.display_elements)} 个元素")
+        title_msg = f"📖 {doc.title or '论文'} — {len(doc.display_elements)} 个元素"
+        if failed:
+            title_msg += f"（{failed} 个元素渲染失败已跳过）"
+        self.info_label.setText(title_msg)
         self.info_label.setStyleSheet("color: #278273;")
         self.auto_trans_btn.setEnabled(True)
 
@@ -840,8 +846,8 @@ class PDFViewerPanel(QWidget):
         self._auto_translate = False
         self.auto_trans_btn.setText("自动翻译：关")
 
-    def _render_document(self, doc: "StructuredDocument"):
-        import os as _os
+    def _render_document(self, doc: "StructuredDocument") -> int:
+        """渲染结构化文档为卡片流。返回渲染失败（跳过）的元素个数。"""
         for card in self._cards:
             card.setParent(None)
             card.deleteLater()
@@ -851,18 +857,30 @@ class PDFViewerPanel(QWidget):
         from ..utils.config import get_page_cache_dir
         image_base_dir = str(get_page_cache_dir(self._current_path))
 
+        total = len(doc.display_elements)
+        failed = 0
         for i, elem in enumerate(doc.display_elements):
-            if elem.element_type in ("figure", "table"):
-                elem.image_path = self._resolve_image_path(elem, image_base_dir)
-                card = ImageCard(elem, parent=self.container)
-            elif elem.element_type in ("header_footer", "publisher_logo"):
-                continue
-            else:
-                card = ParagraphCard(elem, i, parent=self.container)
-                card.translate_requested.connect(self._on_translate_request)
-            self._cards.append(card)
-            self.card_layout.addWidget(card)
+            try:
+                if elem.element_type in ("figure", "table"):
+                    elem.image_path = self._resolve_image_path(elem, image_base_dir)
+                    card = ImageCard(elem, parent=self.container)
+                elif elem.element_type in ("header_footer", "publisher_logo"):
+                    continue
+                else:
+                    card = ParagraphCard(elem, i, parent=self.container)
+                    card.translate_requested.connect(self._on_translate_request)
+                self._cards.append(card)
+                self.card_layout.addWidget(card)
+            except Exception:
+                failed += 1
+                import traceback
+                traceback.print_exc()
+            # 分批刷新界面，大文档渲染时首屏即时可见，避免长时间无响应
+            if (i + 1) % 10 == 0 and i + 1 < total:
+                self.info_label.setText(f"正在渲染内容：{i + 1}/{total} ...")
+                QApplication.processEvents()
         self.card_layout.addStretch()
+        return failed
 
     @staticmethod
     def _translation_key(card: ParagraphCard) -> str:
@@ -900,15 +918,15 @@ class PDFViewerPanel(QWidget):
         """
         if elem.image_path:
             p = elem.image_path
-            if not _os.path.isabs(p) and image_base_dir:
-                p = _os.path.join(image_base_dir, p)
-            if _os.path.exists(p):
+            if not os.path.isabs(p) and image_base_dir:
+                p = os.path.join(image_base_dir, p)
+            if os.path.exists(p):
                 return p
         if elem.element_id and image_base_dir:
-            p = _os.path.join(
+            p = os.path.join(
                 image_base_dir, f"page_{elem.page:03d}_{elem.element_id}.png"
             )
-            if _os.path.exists(p):
+            if os.path.exists(p):
                 return p
         return ""
 
