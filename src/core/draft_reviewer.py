@@ -141,33 +141,6 @@ DRAFT_REVIEW_PROMPT = """你是学术写作审稿专家。请对以下草稿进�
 }}"""
 
 
-LOGIC_CHECK_PROMPT = """你是负责论文终稿校对的学术助手。请对以下草稿进行「红线审查」，只检查致命错误。
-
-## 审查阈值（高容忍度）
-1. 默认假设：草稿已经过多轮修改，质量较高。
-2. 仅报错原则：只有在遇到阻碍读者理解的逻辑断层、引起歧义的术语混乱、或严重的语法错误时才提出意见。
-3. 严禁优化：对于「可改可不改」的风格问题，或仅仅是「换个词听起来更高级」的建议，请直接忽略，不要通过挑刺来体现存在感。
-
-## 审查维度
-1. 致命逻辑：是否存在前后完全矛盾的陈述？
-2. 术语一致性：核心概念是否在没有说明的情况下换了名字？
-3. 严重语病：是否存在导致句意不清的中式英语或语法结构错误。
-
-【草稿】
-{draft_text}
-
-## 输出格式（严格 JSON，不要加 Markdown 标记）
-
-{
-  "passed": true,
-  "issues": [
-    {"type": "逻辑矛盾/术语不一致/语法错误", "quote": "原文引用", "explanation": "问题说明", "suggestion": "修改建议"}
-  ],
-  "summary": "总体结论一句话"
-}
-"""
-
-
 class DraftReviewer:
     """草稿整体评价器 —— 发送全文 + 知识库基准给 LLM，获取结构性诊断报告。"""
 
@@ -293,35 +266,6 @@ class DraftReviewer:
                 "citation_count": cites,
             }
         return stats
-
-    def logic_check(self, write_client: "LLMClient", draft_text: str) -> dict:
-        """红线逻辑检查 —— 高容忍度终检，只报致命问题。
-
-        Returns:
-            {"passed": bool, "issues": [...], "summary": str} 或 {"error": ...}
-        """
-        if not draft_text.strip():
-            return {"error": "草稿为空"}
-
-        prompt = LOGIC_CHECK_PROMPT.replace("{draft_text}", draft_text)
-        messages = [
-            {"role": "system",
-             "content": "你是负责论文终稿校对的学术助手。只返回 JSON，不要加解释。"},
-            {"role": "user", "content": prompt},
-        ]
-        try:
-            response = write_client.chat_sync(messages, timeout=600.0, json_mode=True)
-            if not response or not response.strip():
-                return {"error": "LLM 返回了空响应"}
-            result = self._parse_response(response)
-            if "error" in result:
-                return result
-            if not isinstance(result, dict):
-                return {"error": "解析结果格式异常"}
-            result.setdefault("passed", not bool(result.get("issues")))
-            return result
-        except Exception as e:
-            return {"error": str(e)}
 
     @staticmethod
     def format_review_for_polish(review: dict) -> str:

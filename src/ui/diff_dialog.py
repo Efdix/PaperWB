@@ -29,6 +29,7 @@ class DiffDialog(QDialog):
                  citation_notes: list[dict] | None = None,
                  supervisor_notes: list[dict] | None = None,
                  modification_log: list[str] | None = None,
+                 logic_issues: list[dict] | None = None,
                  citation_sources_text: str = "",
                  write_client: "LLMClient | None" = None,
                  coach: "WritingCoach | None" = None,
@@ -46,6 +47,7 @@ class DiffDialog(QDialog):
         self._citation_notes = citation_notes or []
         self._supervisor_notes = supervisor_notes or []
         self._modification_log = modification_log or []
+        self._logic_issues = logic_issues or []
         self._citation_sources_text = citation_sources_text
         self._write_client = write_client
         self._coach = coach
@@ -62,6 +64,7 @@ class DiffDialog(QDialog):
         self._render_diff()
         self._render_notes()
         self._render_supervisor_notes()
+        self._render_logic_issues()
         self._render_modification_log()
 
     @property
@@ -647,8 +650,64 @@ class DiffDialog(QDialog):
 
             self._notes_layout.addWidget(row)
 
+    def _render_logic_issues(self):
+        """渲染红线检查发现的致命问题（只报致命逻辑/术语/语法错误）。"""
+        if not self._logic_issues:
+            return
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("background-color: #e4e0d8; max-height: 1px; margin: 4px 0;")
+        self._notes_layout.addWidget(sep)
+
+        header = QLabel("<b>红线检查</b>")
+        header.setStyleSheet("color: #b24f4a; font-size: 12px; padding: 2px 0;")
+        self._notes_layout.addWidget(header)
+
+        for issue in self._logic_issues:
+            if not isinstance(issue, dict):
+                continue
+            itype = issue.get("type", "问题")
+            quote = issue.get("quote", "")
+            explanation = issue.get("explanation", "")
+            suggestion = issue.get("suggestion", "")
+
+            card = QFrame()
+            card.setStyleSheet(
+                "QFrame { background: #fff5f2; border: 1px solid #efd5cf; "
+                "border-radius: 6px; margin: 2px 0; }"
+            )
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(8, 6, 8, 6)
+            cl.setSpacing(2)
+
+            head = QLabel(f"<span style='color:#b24f4a; font-weight:bold;'>[{itype}]</span>")
+            head.setWordWrap(True)
+            cl.addWidget(head)
+
+            if quote:
+                q = QLabel(f"原文：{quote}")
+                q.setWordWrap(True)
+                q.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                q.setStyleSheet("color: #617674; font-size: 12px;")
+                cl.addWidget(q)
+            if explanation:
+                e = QLabel(f"说明：{explanation}")
+                e.setWordWrap(True)
+                e.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                e.setStyleSheet("color: #29434a; font-size: 12px;")
+                cl.addWidget(e)
+            if suggestion:
+                s = QLabel(f"建议：{suggestion}")
+                s.setWordWrap(True)
+                s.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                s.setStyleSheet("color: #147c7c; font-size: 12px;")
+                cl.addWidget(s)
+
+            self._notes_layout.addWidget(card)
+
     def _render_modification_log(self):
-        """渲染任务修改说明（去 AI 味 / 中译英 等任务的 modification_log）。"""
+        """渲染任务修改说明（中译英 等任务的 modification_log）。"""
         if not self._modification_log:
             return
 
@@ -697,6 +756,7 @@ class DiffDialog(QDialog):
             f"【原始文本】\n{self._original}\n\n"
             f"【润色后文本】\n{self._polished}\n\n"
             f"【引文核查结果】\n{_json.dumps(self._citation_notes, ensure_ascii=False)}\n\n"
+            f"【红线检查结果】\n{_json.dumps(self._logic_issues, ensure_ascii=False)}\n\n"
             f"【引文涉及的文献全文】（你可据此回答用户关于具体论文细节的疑问）\n{self._citation_sources_text}\n\n"
         )
         system_prompt = "你是学术写作助手的对话伙伴。用户对 AI 的润色修改有疑问，你需要基于原始文本和润色结果，解释修改的理由、引文的依据，或接受用户的指正。回答要简洁、有根据、不使用表情符号。回答长度控制在 200 字以内。"

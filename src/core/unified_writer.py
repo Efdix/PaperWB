@@ -49,9 +49,15 @@ c) 如果批注意见与引文原文明显矛盾，标注 flagged 但仍按批�
 - 有些文字可能既是正文又包含修改意见（例如标红、加粗的修改），合并不进去就保留原样
 - polished_text 中不要保留批注原文本身
 
-### 2. 润色
+### 2. 润色（含去 AI 化）
 提升学术表达的清晰度和流畅度，修正语法错误和不当用词。
 保持引用标记不变。
+
+同时执行「去 AI 化」处理（默认启用）：
+- 词汇规范化：优先使用朴实、精准的学术词汇，避免被过度滥用的复杂词汇（如 leverage、delve into、tapestry、彰显、赋能、范式转移 等），改用直白的日常学术表达（use、investigate、context 等）
+- 结构自然化：删除生硬的机械连接词（如 First and foremost、It is worth noting that、综上所述、由此可见 等），通过句子间的逻辑递进自然衔接；尽量减少破折号（—）
+- 排版规范：正文中不使用加粗、斜体或强调标记
+- 宁缺毋滥：如果文本已经非常自然地道，保留原文，不要为了修改而修改
 
 ### 3. 引文核查
 对每处引文标记，比对上方提供的对应原文，验证表述是否准确反映原文发现。如有偏差请在润色中直接修正。
@@ -67,6 +73,18 @@ c) 如果批注意见与引文原文明显矛盾，标注 flagged 但仍按批�
 - 根据上下文的逻辑关系，在需要时主动添加过渡句和小结段落，使文章结构更清晰、衔接更自然
 - 参考风格指南中的段落组织习惯和过渡方式来编写新增段落
 - 如果段落间的逻辑跨度较大，用过渡句连接；如果章节末尾缺少总结，添加小结段
+
+## 红线检查（高容忍度终检，只报致命问题）
+对润色后的文本做终检，只检查三类问题：
+1. 致命逻辑：是否存在前后完全矛盾的陈述
+2. 术语一致性：核心概念是否在没有说明的情况下换了名字
+3. 严重语病：是否存在导致句意不清的中式英语或语法结构错误
+
+审查阈值：
+- 默认假设：文本质量较高，已过多轮修改
+- 仅报错原则：只有在阻碍读者理解的逻辑断层、引起歧义的术语混乱、或严重语法错误时才提出意见
+- 严禁优化：可改可不改的风格问题直接忽略，不要挑刺
+- 未发现问题时 logic_issues 返回空数组 []
 
 ## 禁止事项
 1. 不要改变学术术语（除非原始术语本身是错误的）
@@ -89,6 +107,14 @@ c) 如果批注意见与引文原文明显矛盾，标注 flagged 但仍按批�
       "action": "applied/modified/flagged",
       "note": "1句话说明如何处理"
     }
+  ],
+  "logic_issues": [
+    {
+      "type": "逻辑矛盾/术语不一致/语法错误",
+      "quote": "原文引用",
+      "explanation": "问题说明",
+      "suggestion": "修改建议"
+    }
   ]
 }
 
@@ -99,7 +125,12 @@ c) 如果批注意见与引文原文明显矛盾，标注 flagged 但仍按批�
 - supervisor_notes: 每条批注一条记录（无批注时为空数组 []）
   - suggestion: 用你自己的话概括批注的关键内容
   - action: applied(已采纳) | modified(调整后采纳) | flagged(有疑虑但已按意思修改)
-   - note: 1句话说明如何处理"""
+  - note: 1句话说明如何处理
+- logic_issues: 红线检查发现的致命问题（无问题时空数组 []）
+  - type: 逻辑矛盾 | 术语不一致 | 语法错误
+  - quote: 出问题的原文片段
+  - explanation: 问题说明
+  - suggestion: 修改建议"""
 
 
 VERIFY_ONLY_PROMPT = """你是学术写作核查专家。只核查引文，不修改原文。
@@ -131,34 +162,6 @@ VERIFY_ONLY_PROMPT = """你是学术写作核查专家。只核查引文，不�
   "citation_notes": [...],
   "supervisor_notes": []
 }"""
-
-
-DEAI_PROMPT = """你是学术写作编辑，专注于提升论文的自然度与可读性。请将以下文本进行「去 AI 化」重写，使其语言风格接近人类母语研究者的自然学术表达。
-
-{style_context}
-
-【待处理文本】
-{selected_text}
-
-## 任务
-1. 词汇规范化：优先使用朴实、精准的学术词汇，避免被过度滥用的复杂词汇（如 leverage、delve into、tapestry、彰显、赋能、范式转移 等），改用直白的日常学术表达（use、investigate、context 等）。
-2. 结构自然化：删除生硬的机械连接词（如 First and foremost、It is worth noting that、综上所述、由此可见 等），通过句子间的逻辑递进自然衔接；尽量减少破折号（—）。
-3. 排版规范：正文中不使用加粗、斜体或强调标记。
-4. 修改阈值（关键）：宁缺毋滥。如果输入文本已经非常自然、地道且无明显 AI 特征，请保留原文，不要为了修改而修改。对高质量输入在 modification_log 中给出肯定。
-
-## 禁止事项
-1. 不要改变学术术语（除非原始术语本身错误）
-2. 不要改变引用标记与数字
-3. 不要增加或删减实质信息
-4. 输出语言必须与输入文本的语言一致（中文保持中文，英文保持英文）
-
-## 输出格式（严格 JSON，不要加 Markdown 标记）
-
-{
-  "polished_text": "重写后的完整文本（如原文已足够好则原样输出）",
-  "modification_log": ["改动说明1", "改动说明2"]
-}
-"""
 
 
 CN2EN_PROMPT = """你是兼具顶尖科研写作专家与资深会议审稿人双重身份的学术翻译助手。请将以下【中文草稿】翻译并润色为符合顶级会议/期刊标准的【英文学术论文片段】。
@@ -273,13 +276,14 @@ class UnifiedWriter:
             verify_only: 仅核查引文，不修改原文。
             pre_citation_sources: 预构建的引文原文上下文。
             review_findings: 草稿整体评价的诊断结论（可选，作为润色指导）。
-            mode: "polish"（润色+核查）| "deai"（去 AI 味）| "cn2en"（中译英）。
+            mode: "polish"（润色+去AI化+红线检查+引文核查）| "cn2en"（中译英）。
 
         Returns:
             {
                 "polished_text": str,
                 "citation_notes": [...],
                 "supervisor_notes": [...],
+                "logic_issues": [...],
                 "modification_log": [...],
                 "error": str | None
             }
@@ -291,9 +295,9 @@ class UnifiedWriter:
         system_prompt = coach.build_polish_system_prompt(writing_type) if coach else ""
         style_context = f"【风格约束】\n{system_prompt}" if system_prompt else ""
 
-        # 去 AI 味 / 中译英：不核查引文，直接按任务 prompt 处理
-        if mode in ("deai", "cn2en"):
-            template = DEAI_PROMPT if mode == "deai" else CN2EN_PROMPT
+        # 中译英：不核查引文，直接按任务 prompt 处理
+        if mode == "cn2en":
+            template = CN2EN_PROMPT
             prompt = (template
                       .replace("{style_context}", style_context)
                       .replace("{selected_text}", selected_text))
@@ -306,7 +310,8 @@ class UnifiedWriter:
                 response = write_client.chat_sync(messages, timeout=180.0, json_mode=True)
                 if not response or not response.strip():
                     return {"polished_text": selected_text, "citation_notes": [],
-                            "supervisor_notes": [], "modification_log": [],
+                            "supervisor_notes": [], "logic_issues": [],
+                            "modification_log": [],
                             "error": "LLM 返回了空响应。"}
                 result = self._parse_response(response)
                 polished = result.get("polished_text", "")
@@ -315,12 +320,14 @@ class UnifiedWriter:
                 return {"polished_text": polished,
                         "citation_notes": [],
                         "supervisor_notes": [],
+                        "logic_issues": [],
                         "modification_log": result.get("modification_log", []),
                         "citation_sources_text": "",
                         "error": None}
             except Exception as e:
                 return {"polished_text": selected_text, "citation_notes": [],
-                        "supervisor_notes": [], "modification_log": [],
+                        "supervisor_notes": [], "logic_issues": [],
+                        "modification_log": [],
                         "citation_sources_text": "", "error": str(e)}
 
         # 构建引文原文上下文（优先使用预构建的，否则本地匹配）
@@ -349,7 +356,8 @@ class UnifiedWriter:
             response = write_client.chat_sync(messages, timeout=180.0, json_mode=True)
             if not response or not response.strip():
                 return {"polished_text": selected_text, "citation_notes": [],
-                        "supervisor_notes": [], "citation_sources_text": citation_sources,
+                        "supervisor_notes": [], "logic_issues": [],
+                        "citation_sources_text": citation_sources,
                         "error": "LLM 返回了空响应。可能原因：消息过长超出模型限制、API 配额用尽、或模型不支持该请求。"}
             result = self._parse_response(response)
             polished = result.get("polished_text", "")
@@ -358,12 +366,14 @@ class UnifiedWriter:
             return {"polished_text": polished,
                     "citation_notes": result.get("citation_notes", []),
                     "supervisor_notes": result.get("supervisor_notes", []),
+                    "logic_issues": result.get("logic_issues", []),
                     "modification_log": result.get("modification_log", []),
                     "citation_sources_text": citation_sources,
                     "error": None}
         except Exception as e:
             return {"polished_text": selected_text, "citation_notes": [],
-                    "supervisor_notes": [], "citation_sources_text": "",
+                    "supervisor_notes": [], "logic_issues": [],
+                    "citation_sources_text": "",
                     "error": str(e)}
 
     def _build_citation_sources(
@@ -578,14 +588,16 @@ class UnifiedWriter:
         """解析 LLM 返回的 JSON（多层容错 + 兜底降级）。"""
         from .json_utils import parse_json_response
         if not raw or not raw.strip():
-            return {"polished_text": "", "citation_notes": [], "supervisor_notes": []}
+            return {"polished_text": "", "citation_notes": [], "supervisor_notes": [],
+                    "logic_issues": []}
 
         obj = parse_json_response(raw)
         if obj is not None:
             return obj
 
         # 兜底降级: 所有 JSON 解析都失败，将整个原始返回作为 polished_text
-        return {"polished_text": raw.strip(), "citation_notes": [], "supervisor_notes": []}
+        return {"polished_text": raw.strip(), "citation_notes": [], "supervisor_notes": [],
+                "logic_issues": []}
 
 
 CITATION_EXTRACT_PROMPT = """你是一位学术文献识别专家。请分析以下草稿，找出文中所有的引文标记并推断出对应的文献信息。

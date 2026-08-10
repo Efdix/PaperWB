@@ -161,6 +161,10 @@ class PolishHistoryDialog(QDialog):
         for s in sup:
             if isinstance(s, dict):
                 lines.append(f"[批注-{s.get('action', '?')}] {s.get('suggestion', '')}: {s.get('note', '')}")
+        issues = entry.get("logic_issues", []) or []
+        for it in issues:
+            if isinstance(it, dict):
+                lines.append(f"[红线-{it.get('type', '问题')}] {it.get('quote', '')}：{it.get('explanation', '')}（建议：{it.get('suggestion', '')}）")
         self._notes_view.setPlainText("\n".join(lines) if lines else "（无备注）")
 
     def _copy_polished(self):
