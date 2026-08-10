@@ -80,7 +80,7 @@ class ZoteroPanel(QWidget):
         title = QLabel("Zotero 文献库")
         title.setObjectName("titleLabel")
         title_box.addWidget(title)
-        self._subtitle = QLabel("只读镜像 · 自动同步")
+        self._subtitle = QLabel("只读镜像 · 每 30 分钟自动同步")
         self._subtitle.setObjectName("subtitleLabel")
         self._subtitle.setWordWrap(True)
         title_box.addWidget(self._subtitle)
@@ -88,7 +88,7 @@ class ZoteroPanel(QWidget):
         header.addStretch()
         self._refresh_btn = QPushButton("刷新")
         self._refresh_btn.setObjectName("secondaryBtn")
-        self._refresh_btn.setToolTip("手动刷新（通常会自动同步）")
+        self._refresh_btn.setToolTip("立即手动同步 Zotero 文献库")
         self._refresh_btn.clicked.connect(self._on_manual_refresh)
         header.addWidget(self._refresh_btn)
         layout.addLayout(header)
@@ -223,7 +223,7 @@ class ZoteroPanel(QWidget):
     def _update_status(self):
         lib = self._library
         if lib is None or not lib.is_available:
-            self._subtitle.setText("只读镜像 · 自动同步")
+            self._subtitle.setText("只读镜像 · 每 30 分钟自动同步")
             self._set_status("未连接 Zotero · 可点击刷新", "warning")
         else:
             self._subtitle.setText(lib.data_dir or "Zotero 文献库")
@@ -291,7 +291,8 @@ class ZoteroPanel(QWidget):
         self._set_status(f"已同步 · {msg}", "ready")
 
     def _on_watcher_status(self, msg: str):
-        self._set_status(msg, "warning")
+        # 「正在同步」→ warning；常态「已连接/已同步」→ ready
+        self._set_status(msg, "ready" if msg.startswith("已连接") else "warning")
 
     def _on_watcher_error(self, err: str):
         self._set_status(f"同步异常 · {err}", "warning")

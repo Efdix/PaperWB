@@ -525,13 +525,15 @@ class PDFViewerPanel(QWidget):
         self._auto_translate: bool = False
         self._stage1_complete: bool = False
         self._stage1_errors: int = 0
+        self._pending_integrate: bool = False
         self._setup_ui()
 
     def set_parse_client(self, client: "LLMClient | None"):
         self._parse_client = client
-        if self._stage1_complete and self._structured_doc is None:
-            self.integrate_btn.setVisible(True)
-            self.integrate_btn.setEnabled(client is not None)
+        # 之前因未配置识图接口而挂起的自动整合，配置就绪后补触发
+        if (self._pending_integrate and self._stage1_complete
+                and self._structured_doc is None and client is not None):
+            self._auto_start_stage2()
 
     def set_translate_client(self, client: "LLMClient | None"):
         self._translate_client = client
@@ -554,14 +556,6 @@ class PDFViewerPanel(QWidget):
         self.auto_trans_btn.clicked.connect(self._on_toggle_auto_translate)
         self.auto_trans_btn.setEnabled(False)
         toolbar.addWidget(self.auto_trans_btn)
-
-        self.integrate_btn = QPushButton("AI 整合")
-        self.integrate_btn.setObjectName("primaryBtn")
-        self.integrate_btn.setToolTip("分析完成后点击此处将各页结果整合为结构化文档")
-        self.integrate_btn.clicked.connect(self._on_request_integrate)
-        self.integrate_btn.setEnabled(False)
-        self.integrate_btn.setVisible(False)
-        toolbar.addWidget(self.integrate_btn)
 
         layout.addLayout(toolbar)
 
@@ -670,24 +664,22 @@ class PDFViewerPanel(QWidget):
             if manifest and manifest.is_complete:
                 done = manifest.done_count
                 total = manifest.total_pages
-                self.info_label.setText(f"已有 {done}/{total} 页本地解析缓存，点击「AI 整合」开始阅读")
+                self.info_label.setText(f"已有 {done}/{total} 页本地解析缓存，正在自动整合...")
                 self.info_label.setStyleSheet("color: #278273;")
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(100)
                 self._stage1_complete = True
-                self.integrate_btn.setVisible(True)
-                self.integrate_btn.setEnabled(self._parse_client is not None)
-                if self._parse_client is None:
-                    self.info_label.setText(
-                        f"已有 {done}/{total} 页本地解析缓存，请先配置识图接口进行整合"
-                    )
                 self.pdf_path_changed.emit(file_path)
+                if existing_processor is not None and existing_processor.is_stage2_running:
+                    # 后台整合仍在进行，完成时自动渲染
+                    self.info_label.setText("该文献正在后台整合，完成时自动显示结果...")
+                    return
+                self._auto_start_stage2()
                 return
 
             self._stage1_complete = False
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
-            self.integrate_btn.setVisible(False)
             if not self._processor.is_stage1_running:
                 self._processor.start_stage1()
         except Exception as e:
@@ -733,14 +725,11 @@ class PDFViewerPanel(QWidget):
         msg = f"本地解析完成：{manifest.done_count if manifest else 0}/{total} 页"
         if errors > 0:
             msg += f"（{errors} 页失败）"
-        msg += " — 点击「AI 整合」开始阅读"
+        msg += "，正在自动跨页整合..."
         self.info_label.setText(msg)
         self.info_label.setStyleSheet("color: #278273;")
-        self.integrate_btn.setVisible(True)
-        self.integrate_btn.setEnabled(self._parse_client is not None)
-        if self._parse_client is None:
-            self.info_label.setText(msg + "（请先配置识图接口）")
         self.pdf_path_changed.emit(pdf_path)
+        self._auto_start_stage2()
 
     def _on_stage1_error(self, pdf_path: str, page_num: int, error_msg: str):
         self._stage1_errors += 1
@@ -755,15 +744,20 @@ class PDFViewerPanel(QWidget):
             f"已有 {self._stage1_errors} 页解析失败，可在论文库右键菜单选择「重新逐页解析」重试"
         )
 
-    def _on_request_integrate(self):
+    def _auto_start_stage2(self):
+        """Stage 1 完成后自动启动跨页整合（无需手动点按）。"""
         if not self._processor:
             return
+        if self._structured_doc is not None:
+            return
+        if self._processor.is_stage2_running:
+            return
         if not self._parse_client:
-            self.info_label.setText("本地解析已完成，请先在设置中配置识图接口")
+            self._pending_integrate = True
+            self.info_label.setText("本地解析已完成，请先在设置中配置识图接口（配置后自动整合）")
             self.info_label.setStyleSheet("color: #a76d2b;")
             return
-        self.integrate_btn.setEnabled(False)
-        self.integrate_btn.setText("正在整合...")
+        self._pending_integrate = False
         self.info_label.setText("正在跨页整合，构建结构化文档...")
         self.info_label.setStyleSheet("color: #a76d2b;")
         self._stage2_start_time = time.monotonic()
@@ -796,7 +790,6 @@ class PDFViewerPanel(QWidget):
             return  # 后台文献整合完成，结果已由处理器落盘
         self._stop_stage2_timer()
         self._structured_doc = doc
-        self.integrate_btn.setVisible(False)
         self.progress_bar.setVisible(False)
         failed = self._render_document(doc)
 
@@ -817,15 +810,17 @@ class PDFViewerPanel(QWidget):
         if pdf_path != self._current_path:
             return
         self._stop_stage2_timer()
-        self.integrate_btn.setEnabled(True)
-        self.integrate_btn.setText("重试整合")
-        self.info_label.setText(f"⚠️ 整合失败：{error_msg}，可重试")
+        self._pending_integrate = False
+        self.info_label.setText(
+            f"⚠️ 整合失败：{error_msg}（可在左侧文献列表右键 →「重新解析整合」重试）"
+        )
         self.info_label.setStyleSheet("color: #b24f4a;")
 
     def _reset_view(self):
         self._structured_doc = None
         self._stage1_complete = False
         self._stage1_errors = 0
+        self._pending_integrate = False
         self._stop_stage2_timer()
         for worker in self._trans_workers.values():
             if worker.isRunning():
@@ -841,7 +836,6 @@ class PDFViewerPanel(QWidget):
         self.placeholder.setVisible(True)
         self.progress_bar.setVisible(False)
         self.progress_bar.setValue(0)
-        self.integrate_btn.setVisible(False)
         self.auto_trans_btn.setEnabled(False)
         self._auto_translate = False
         self.auto_trans_btn.setText("自动翻译：关")

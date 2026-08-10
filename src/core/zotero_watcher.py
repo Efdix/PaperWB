@@ -1,7 +1,7 @@
-"""Zotero 实时同步引擎 —— 监听 Zotero 数据库与附件目录，变更后后台重载并发出差异信号。
+"""Zotero 周期同步引擎 —— 启动时加载一次，此后每 30 分钟自动重载并发出差异信号。
 
 只读保障：
-- 仅监听文件属性（QFileSystemWatcher），不写入 Zotero 目录
+- 不做文件事件监听（避免 Windows 高 I/O 自激循环），仅由 QTimer 周期触发
 - 实际数据读取由 ZoteroLibrary 通过临时副本完成（见 zotero_parser.py）
 - 本模块不产生任何对 Zotero 数据目录的写操作
 """
@@ -33,7 +33,7 @@ class ZoteroReloadWorker(QThread):
 
 
 class ZoteroWatcher(QObject):
-    """监听 Zotero 变更并驱动重载。
+    """周期同步 Zotero 库（每 30 分钟自动重载一次，不做文件事件监听）并驱动重载。
 
     信号:
         changed(dict): 差异摘要 {"added_items","removed_items","modified_items",
@@ -47,8 +47,8 @@ class ZoteroWatcher(QObject):
     error = Signal(str)
     status = Signal(str)
 
-    DEBOUNCE_MS = 1000     # 文件变化防抖
-    RESCAN_MS = 60_000     # 安全网：定期全量重扫（覆盖手动放置附件等漏检场景）
+    DEBOUNCE_MS = 1000     # 文件变化防抖（保留给旧的事件监听路径，默认不激活）
+    SYNC_INTERVAL_MS = 30 * 60 * 1000  # 周期自动同步间隔：30 分钟
 
     def __init__(self, library, parent=None):
         super().__init__(parent)
@@ -61,8 +61,10 @@ class ZoteroWatcher(QObject):
         self._debounce.setSingleShot(True)
         self._debounce.timeout.connect(self._trigger_reload)
 
-        self._rescan = QTimer(self)
-        self._rescan.timeout.connect(self._on_fs_change)
+        self._sync_timer = QTimer(self)
+        self._sync_timer.timeout.connect(
+            lambda: self.request_reload(show_status=False)
+        )
 
         self._worker: ZoteroReloadWorker | None = None
         self._last_snapshot: dict | None = None
@@ -72,18 +74,20 @@ class ZoteroWatcher(QObject):
     # ---- 公共 API ----
 
     def start(self) -> None:
-        """开始监听（库应已 load() 过）。"""
+        """开始周期同步（不做文件事件监听，仅每 SYNC_INTERVAL_MS 重载一次）。"""
         self._running = True
-        self._watch_paths()
         self._last_snapshot = self._library.snapshot()
-        self._rescan.start(self.RESCAN_MS)
-        self.status.emit(f"已连接 Zotero（{self._library.item_count} 篇文献，实时同步中）")
+        self._sync_timer.start(self.SYNC_INTERVAL_MS)
+        self.status.emit(
+            f"已连接 Zotero（{self._library.item_count} 篇文献，"
+            f"每 {self.SYNC_INTERVAL_MS // 60_000} 分钟自动同步）"
+        )
 
     def stop(self) -> None:
-        """停止监听并清理。"""
+        """停止周期同步并清理。"""
         self._running = False
         self._debounce.stop()
-        self._rescan.stop()
+        self._sync_timer.stop()
         try:
             self._fs.removePaths(self._fs.directories() + self._fs.files())
         except Exception:
@@ -92,9 +96,18 @@ class ZoteroWatcher(QObject):
             self._worker.quit()
             self._worker.wait(1000)
 
-    def request_reload(self) -> None:
-        """手动触发一次后台重载（配合面板的刷新按钮）。"""
-        self._trigger_reload()
+    def request_reload(self, show_status: bool = True) -> None:
+        """立即触发一次后台重载（周期定时与面板刷新按钮共用）。
+
+        Args:
+            show_status: True 时先显示「正在同步」状态（手动刷新），
+                         False 时静默执行（周期定时，仅发现实质变化后提示）。
+        """
+        if self._last_snapshot is None:
+            self._last_snapshot = self._library.snapshot()
+        if self._worker is not None and self._worker.isRunning():
+            return
+        self._start_reload(show_status)
 
     # ---- 内部 ----
 
@@ -138,8 +151,9 @@ class ZoteroWatcher(QObject):
             return
         self._start_reload()
 
-    def _start_reload(self) -> None:
-        self.status.emit("Zotero 发生变化，正在同步...")
+    def _start_reload(self, show_status: bool = True) -> None:
+        if show_status:
+            self.status.emit("正在重新同步 Zotero 文献库...")
         self._worker = ZoteroReloadWorker(self._library, self)
         self._worker.finished_signal.connect(self._on_reload_done)
         self._worker.error_signal.connect(self._on_reload_error)
@@ -152,8 +166,9 @@ class ZoteroWatcher(QObject):
         self._last_snapshot = new_snapshot
         if any(v for k, v in diff.items() if k.startswith(("added", "removed", "modified"))):
             self.changed.emit(diff)
-        # 重新监听（可能新增了附件目录）
-        self._watch_paths()
+        else:
+            # 无实质变化也发一次状态，收掉「正在同步」提示
+            self.status.emit(f"已连接 · {self._library.item_count} 篇文献 · 无变化")
         if self._dirty:
             self._dirty = False
             self._start_reload()

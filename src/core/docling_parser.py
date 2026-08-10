@@ -35,11 +35,18 @@ _DOCLING_LABEL_MAP: dict[str, str] = {
     "table": "table",
     "picture": "figure",
     "chart": "figure",
+    "diagram": "figure",
+    "detailed_picture": "figure",
+    "vector_illustration": "figure",
+    "screenshot": "figure",
+    "sticker": "figure",
     "formula": "equation",
     "reference": "reference",
     "page_header": "header_footer",
     "page_footer": "header_footer",
     "document_index": "unknown",
+    "table_of_contents": "unknown",
+    "page_index": "unknown",
     "code": "body",
 }
 
@@ -107,6 +114,73 @@ def _element_text(item) -> str:
     return ""
 
 
+_MIN_IMAGE_AREA_PT2 = 900.0  # 30x30 pt 以下的装饰性小图忽略
+
+
+def _rect_intersect_area(a: list[float], b: list[float]) -> float:
+    """两个矩形（[x0,y0,x1,y1]）的交集面积。"""
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    return max(0.0, w) * max(0.0, h)
+
+
+def _append_missing_bitmaps(pdf_path: str, doc, rows: list[dict],
+                            page_counter: dict[int, int]) -> None:
+    """Docling 布局模型漏检图片时，用 PyMuPDF 位图区域兜底补成 figure 元素。
+
+    只作用于本页没有任何 figure/table 元素的页面；被更大图覆盖的嵌套区域去重。
+    """
+    try:
+        import fitz
+    except Exception:
+        return
+    pages_with_fig = {r["page"] for r in rows if r["type"] in ("figure", "table")}
+    try:
+        pdf = fitz.open(pdf_path)
+    except Exception:
+        return
+    try:
+        for page_no in range(1, len(pdf) + 1):
+            if page_no in pages_with_fig:
+                continue
+            try:
+                infos = pdf[page_no - 1].get_image_info()
+            except Exception:
+                continue
+            added = 0
+            taken: list[list[float]] = []
+            for info in infos:
+                bbox = info.get("bbox", [0, 0, 0, 0])
+                if len(bbox) != 4 or bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+                    continue
+                area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                if area < _MIN_IMAGE_AREA_PT2:
+                    continue
+                if any(_rect_intersect_area(bbox, t) >= area * 0.7 for t in taken):
+                    continue  # 已被更大的图覆盖
+                taken.append(bbox)
+                idx = page_counter.get(page_no, 0) + 1
+                page_counter[page_no] = idx
+                rows.append({
+                    "page": page_no,
+                    "id": f"p{page_no}_e{idx}",
+                    "type": "figure",
+                    "text": "",
+                    "bbox": _to_pixel_bbox(doc, page_no, *bbox),
+                    "caption": "",
+                    "is_meaningful": True,
+                    "description": "",
+                    "section_name": "",
+                    "font_size": 0.0,
+                    "is_bold": False,
+                })
+                added += 1
+            if added:
+                print(f"[Docling] 第 {page_no} 页 Docling 未检出图片，按位图区域补 {added} 个")
+    finally:
+        pdf.close()
+
+
 def parse_pdf(pdf_path: str, dpi: int = 150) -> list[dict]:
     """用 Docling 解析 PDF，返回与单页解析缓存兼容的结构。
 
@@ -160,6 +234,8 @@ def parse_pdf(pdf_path: str, dpi: int = 150) -> list[dict]:
         })
 
     # 按页聚合
+    # 兜底：Docling 漏检的位图区域补成 figure 元素
+    _append_missing_bitmaps(pdf_path, doc, rows, page_counter)
     pages: dict[int, list[dict]] = {}
     for r in rows:
         pages.setdefault(r["page"], []).append(r)

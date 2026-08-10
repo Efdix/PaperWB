@@ -231,6 +231,7 @@ class MainWindow(QMainWindow):
         self.pdf_list.pdf_imported.connect(self._on_pdf_imported)
         self.pdf_list.restage1_requested.connect(self._on_restage1)
         self.pdf_list.restage2_requested.connect(self._on_restage2)
+        self.pdf_list.reparse_requested.connect(self._on_reparse)
         self.pdf_list.zotero_pdf_selected.connect(self._on_zotero_pdf_selected)
 
         inner_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -316,10 +317,6 @@ class MainWindow(QMainWindow):
 
         header_layout.addStretch()
 
-        self._header_status_label = QLabel("接口未配置")
-        self._header_status_label.setObjectName("statusChip")
-        header_layout.addWidget(self._header_status_label)
-
         settings_header_btn = QPushButton("设置")
         settings_header_btn.setObjectName("headerAction")
         settings_header_btn.clicked.connect(self._on_open_settings)
@@ -366,6 +363,7 @@ class MainWindow(QMainWindow):
             self._save_current_chat()
         self._current_pdf_path = self.pdf_viewer.get_current_path()
         self._context_manager.load_pdf_text(text)
+        self.pdf_list.refresh_state_badge(self._current_pdf_path)
 
         # 加载结构化文档到上下文
         doc = self.pdf_viewer.structured_document
@@ -481,6 +479,12 @@ class MainWindow(QMainWindow):
         state = load_doc_state(path)
         state.pop("structured_document", None)
         save_doc_state(path, state)
+        self._begin_pdf_switch(path)
+        self._load_pdf_into_viewer(path)
+
+    def _on_reparse(self, path: str):
+        """重新解析+整合 —— 清除页缓存与整合结果，全流程自动重跑。"""
+        self._cancel_processor(path)
         self._begin_pdf_switch(path)
         self._load_pdf_into_viewer(path)
 
@@ -668,13 +672,6 @@ class MainWindow(QMainWindow):
         _set_chip(self._status_parse_label, self._llm_parse, _label(self._llm_parse, "识图"))
         _set_chip(self._status_translate_label, self._llm_translate, _label(self._llm_translate, "翻译"))
         _set_chip(self._status_write_label, self._llm_write, _label(self._llm_write, "写作与引用"))
-        ready_count = sum(client is not None for client in (
-            self._llm_parse, self._llm_translate, self._llm_write
-        ))
-        self._header_status_label.setText(f"{ready_count}/3 项接口已就绪")
-        self._header_status_label.setProperty("status", "ready" if ready_count else "warning")
-        self._header_status_label.style().unpolish(self._header_status_label)
-        self._header_status_label.style().polish(self._header_status_label)
 
     def _init_write(self, zotero_path: str = "") -> None:
         # 优先使用信号传来的路径，其次重新从磁盘读 config

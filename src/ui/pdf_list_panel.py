@@ -13,13 +13,13 @@ from PySide6.QtWidgets import (
     QFrame, QTabWidget,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QBrush, QColor, QDragEnterEvent, QDropEvent
 
 from ..utils.config import (
     load_config, save_config, load_library, save_library,
     add_pdf_to_library, remove_pdf_from_library, get_library_folders,
     delete_chat_history, delete_doc_state, delete_page_cache,
-    get_library_dir,
+    load_doc_state, get_library_dir,
 )
 from .zotero_panel import ZoteroPanel
 
@@ -33,6 +33,7 @@ class PDFListPanel(QWidget):
     pdf_imported = Signal(str)          # PDF 导入后立即触发分析
     restage1_requested = Signal(str)    # 仅重跑逐页解析
     restage2_requested = Signal(str)    # 仅重跑跨页整合
+    reparse_requested = Signal(str)     # 清除全部缓存后全流程重跑（解析+整合）
     zotero_pdf_selected = Signal(str)   # Zotero 文献 PDF 选中
 
     def __init__(self, parent=None):
@@ -154,6 +155,8 @@ class PDFListPanel(QWidget):
             else:
                 file_item.setForeground(0, Qt.GlobalColor.darkGray)
                 file_item.setText(0, fname + " (缺失)")
+            # 已整合文献用浅绿底标记（一眼看出谁可阅读）
+            self._apply_integrated_badge(file_item, pdf.get("path", ""))
 
             if folder and folder in folder_items:
                 folder_items[folder].addChild(file_item)
@@ -163,6 +166,40 @@ class PDFListPanel(QWidget):
         self.tree.expandAll()
         total = len(self._library)
         self._footer_label.setText(f"共 {total} 篇论文")
+
+    _INTEGRATED_BG = QBrush(QColor("#e2f2ec"))  # 浅绿：已整合
+
+    @staticmethod
+    def _is_integrated(path: str) -> bool:
+        """是否有跨页整合结果（structured_document 缓存）。"""
+        try:
+            state = load_doc_state(path)
+        except Exception:
+            return False
+        return isinstance(state, dict) and bool(state.get("structured_document"))
+
+    def _apply_integrated_badge(self, item: QTreeWidgetItem, path: str) -> None:
+        if path and self._is_integrated(path):
+            item.setBackground(0, self._INTEGRATED_BG)
+
+    def refresh_state_badge(self, path: str) -> None:
+        """整合完成后即时更新单条背景色（不整体重建列表）。"""
+        if not path:
+            return
+
+        def walk(item: QTreeWidgetItem) -> bool:
+            data = item.data(0, Qt.ItemDataRole.UserRole) or {}
+            if (data.get("type") == "pdf" and data.get("path") == path):
+                self._apply_integrated_badge(item, path)
+                return True
+            for i in range(item.childCount()):
+                if walk(item.child(i)):
+                    return True
+            return False
+
+        for i in range(self.tree.topLevelItemCount()):
+            if walk(self.tree.topLevelItem(i)):
+                break
 
     def _import_pdf(self):
         lib_dir = str(get_library_dir())
@@ -280,10 +317,14 @@ class PDFListPanel(QWidget):
                 a = move_menu.addAction(f)
                 a.triggered.connect(lambda checked, folder=f: self._move_pdf(path, folder))
             menu.addSeparator()
+            a = menu.addAction("  🔄 重新解析整合")
+            a.triggered.connect(lambda: self._on_reparse(path))
             a = menu.addAction("  🔁 重新逐页解析")
             a.triggered.connect(lambda: self._on_restage1(path))
             a = menu.addAction("  🔄 重新跨页整合")
             a.triggered.connect(lambda: self._on_restage2(path))
+            a = menu.addAction("  📂 打开文件位置")
+            a.triggered.connect(lambda: self._open_file_location(path))
             a = menu.addAction("  🗑️ 从库中移除")
             a.triggered.connect(lambda: self._remove_pdf(path))
             menu.addSeparator()
@@ -308,6 +349,17 @@ class PDFListPanel(QWidget):
         save_library(lib)
         self._refresh()
 
+    def _on_reparse(self, path: str):
+        """清除页缓存与整合结果，全流程重跑（自动解析+整合）。"""
+        r = QMessageBox.question(self, "确认",
+            "重新解析并整合？\n\n"
+            "此操作将清除逐页解析缓存与跨页整合结果，\n"
+            "然后自动重新解析并整合该文献。")
+        if r == QMessageBox.StandardButton.Yes:
+            delete_page_cache(path)
+            delete_doc_state(path)
+            self.reparse_requested.emit(path)
+
     def _on_restage1(self, path: str):
         """仅重跑逐页解析。"""
         r = QMessageBox.question(self, "确认",
@@ -327,6 +379,28 @@ class PDFListPanel(QWidget):
         if r == QMessageBox.StandardButton.Yes:
             delete_doc_state(path)
             self.restage2_requested.emit(path)
+
+    def _open_file_location(self, path: str):
+        """在资源管理器中打开文件所在位置并选中该文件。"""
+        import subprocess
+        import sys
+        try:
+            if os.name == "nt":
+                subprocess.Popen(["explorer", "/select,", path])
+                return
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", path])
+                return
+            subprocess.Popen(["xdg-open", os.path.dirname(path) or "."])
+        except OSError:
+            dirname = os.path.dirname(path) or "."
+            try:
+                if os.name == "nt":
+                    os.startfile(dirname)  # noqa: S606
+                else:
+                    subprocess.Popen([sys.platform == "darwin" and "open" or "xdg-open", dirname])
+            except OSError as e:
+                QMessageBox.warning(self, "打开失败", f"无法打开文件位置：{e}")
 
     def _remove_pdf(self, path: str):
         r = QMessageBox.question(self, "确认",

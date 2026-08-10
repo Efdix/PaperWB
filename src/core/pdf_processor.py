@@ -664,6 +664,11 @@ def crop_meaningful_images(pdf_path: str, cache_dir: str,
             clip = fitz.Rect(px0 - 2, py0 - 2, px1 + 2, py1 + 2)
             mat = fitz.Matrix(200 / 72, 200 / 72)
             pix = page.get_pixmap(matrix=mat, clip=clip)
+            if pix.width < 8 or pix.height < 8:
+                # 裁剪区域过小（越界/坐标异常）→ 跳过并留痕，避免显示空白图
+                print(f"[Docling] 第 {page_num} 页元素 {elem_id} 裁剪区域过小 "
+                      f"({pix.width}x{pix.height})，跳过截图")
+                continue
             pix.save(output_path)
 
             elem["image_path"] = filename
@@ -730,6 +735,15 @@ class DoclingParseWorker(QThread):
             self.page_done.emit(page_num)
             self.progress.emit(i + 1, len(pages))
 
+        try:
+            png_count = len([
+                f for f in os.listdir(self._cache_dir)
+                if f.lower().endswith(".png")
+            ])
+            print(f"[Docling] Stage 1 完成：{len(pages)} 页，"
+                  f"共生成 {png_count} 张图表截图（含位图兜底）")
+        except OSError:
+            pass
         self.finished.emit()
 
     def _save_page_cache(self, page_num: int, data: dict) -> None:
