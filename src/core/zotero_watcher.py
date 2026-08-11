@@ -88,10 +88,7 @@ class ZoteroWatcher(QObject):
         self._running = False
         self._debounce.stop()
         self._sync_timer.stop()
-        try:
-            self._fs.removePaths(self._fs.directories() + self._fs.files())
-        except Exception:
-            pass
+        self._remove_all_watched()
         if self._worker and self._worker.isRunning():
             self._worker.quit()
             self._worker.wait(1000)
@@ -111,12 +108,18 @@ class ZoteroWatcher(QObject):
 
     # ---- 内部 ----
 
-    def _watch_paths(self) -> None:
-        """注册需要监听的文件/目录（数据库 + storage + 附件父目录）。"""
+    def _remove_all_watched(self) -> None:
+        """移除所有已注册的监听路径（列表为空时跳过，避免 Qt 空列表警告）。"""
         try:
-            self._fs.removePaths(self._fs.directories() + self._fs.files())
+            watched = self._fs.directories() + self._fs.files()
+            if watched:
+                self._fs.removePaths(watched)
         except Exception:
             pass
+
+    def _watch_paths(self) -> None:
+        """注册需要监听的文件/目录（数据库 + storage + 附件父目录）。"""
+        self._remove_all_watched()
         paths: set[str] = set()
         db = self._library.sqlite_path
         if db:

@@ -1,4 +1,4 @@
-"""API 接口设置对话框 —— 识图、翻译、写作三套接口 + Zotero 路径 + 缓存文件存储路径。"""
+"""API 接口设置对话框 —— 解析、翻译、写作三套接口 + Zotero 路径 + 缓存文件存储路径。"""
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -196,7 +196,7 @@ class DataDirGroup(QGroupBox):
 
 
 class SettingsDialog(QDialog):
-    """API 接口设置对话框（识图、翻译、写作 + Zotero 路径 + 缓存存储路径）。"""
+    """API 接口设置对话框（解析、翻译、写作 + Zotero 路径 + 缓存存储路径）。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -223,7 +223,7 @@ class SettingsDialog(QDialog):
 
         self._parse_tab = APIConfigTab(
             "parse",
-            "识图接口：负责跨页整合和论文问答。逐页版式解析由本地模型完成。",
+            "解析接口：负责跨页段落整合和论文问答（含图片解读）。逐页版式解析由本地模型完成。",
         )
         self._translate_tab = APIConfigTab(
             "translate",
@@ -233,7 +233,7 @@ class SettingsDialog(QDialog):
             "write",
             "写作接口：负责引文核查、风格分析、润色和文献补充，建议使用推理能力较强的模型。",
         )
-        self.tabs.addTab(self._parse_tab, "识图")
+        self.tabs.addTab(self._parse_tab, "解析")
         self.tabs.addTab(self._translate_tab, "翻译")
         self.tabs.addTab(self._write_tab, "写作与引用")
         layout.addWidget(self.tabs)

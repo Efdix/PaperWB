@@ -35,6 +35,7 @@ class PDFListPanel(QWidget):
     restage2_requested = Signal(str)    # 仅重跑跨页整合
     reparse_requested = Signal(str)     # 清除全部缓存后全流程重跑（解析+整合）
     zotero_pdf_selected = Signal(str)   # Zotero 文献 PDF 选中
+    zotero_reparse_requested = Signal(str)    # Zotero 文献重跑（解析+整合）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -110,6 +111,7 @@ class PDFListPanel(QWidget):
         # ---- Tab 1: Zotero ----
         self.zotero_panel = ZoteroPanel(parent=self)
         self.zotero_panel.pdf_selected.connect(self.zotero_pdf_selected.emit)
+        self.zotero_panel.reparse_requested.connect(self.zotero_reparse_requested.emit)
 
         self._tabs.addTab(self.zotero_panel, "Zotero 文献库")
         self._tabs.addTab(library_view, "其它文献")
@@ -350,34 +352,30 @@ class PDFListPanel(QWidget):
         self._refresh()
 
     def _on_reparse(self, path: str):
-        """清除页缓存与整合结果，全流程重跑（自动解析+整合）。"""
+        """请求重新解析并整合（缓存清除由 app 层在停止后台线程后执行）。"""
         r = QMessageBox.question(self, "确认",
             "重新解析并整合？\n\n"
             "此操作将清除逐页解析缓存与跨页整合结果，\n"
             "然后自动重新解析并整合该文献。")
         if r == QMessageBox.StandardButton.Yes:
-            delete_page_cache(path)
-            delete_doc_state(path)
             self.reparse_requested.emit(path)
 
     def _on_restage1(self, path: str):
-        """仅重跑逐页解析。"""
+        """请求仅重跑逐页解析（缓存清除由 app 层在停止后台线程后执行）。"""
         r = QMessageBox.question(self, "确认",
             "重新逐页解析？\n\n"
             "此操作将清除页面缓存，保留跨页整合结果。\n"
             "将重新运行本地版式解析。")
         if r == QMessageBox.StandardButton.Yes:
-            delete_page_cache(path)
             self.restage1_requested.emit(path)
 
     def _on_restage2(self, path: str):
-        """仅重跑跨页整合。"""
+        """请求仅重跑跨页整合（结果清除由 app 层执行）。"""
         r = QMessageBox.question(self, "确认",
             "重新跨页整合？\n\n"
             "此操作仅清除整合结果，保留逐页解析缓存。\n"
             "仅调用纯文本 LLM（便宜）。")
         if r == QMessageBox.StandardButton.Yes:
-            delete_doc_state(path)
             self.restage2_requested.emit(path)
 
     def _open_file_location(self, path: str):

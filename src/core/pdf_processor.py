@@ -6,6 +6,7 @@ Stage 2（用户点击）: 读缓存 → LLM跨页整合 → StructuredDocument 
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import time
@@ -13,6 +14,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThread, Signal
+
+from ..utils.threads import track
 
 if TYPE_CHECKING:
     from .llm_client import LLMClient
@@ -263,41 +266,6 @@ class PageManifest:
         )
 
 
-INTEGRATION_SYSTEM_PROMPT = """你是一位学术论文编辑专家。你会收到一篇论文所有页面的结构化解析结果（每个元素有唯一 id，正文为版面解析出的文本块）。
-
-你的任务：输出一份"结构方案"——只描述如何把这些元素组织成一份可读的论文。**不要重复输出论文正文**，只输出结构和引用。
-
-## 任务
-
-1. **组织 blocks**: 按阅读顺序把所有有效元素组织成 blocks。一个 block 可以是单个元素；也可以是同一段落被拆开的多个连续元素，或跨页断裂的同一段落。
-2. **标注元素类型**: 为每个 block 指定 element_type：title / subtitle / abstract_body / body / keywords / figure / table / figure_caption / table_caption / reference / metadata / equation / acknowledgment / appendix 等。
-3. **标题层级**: subtitle 类 block 填 heading_level（1=一级章节如 Introduction/Results/Discussion，2=二级小节，3=三级小节，0=非标题）。
-4. **展示优先级**: high=标题/摘要/图表（用户最关心）；normal=正文段落；low=作者/关键词；collapsed=出版信息/DOI/版权/致谢/附录/参考文献。
-5. **章节归属**: 给正文/小节/摘要 block 填 section_name（如 Abstract、Introduction、Methods、Results、Discussion、Conclusion）。
-6. **噪声剔除**: 图表内的坐标轴刻度、图例碎片、孤立数字、星号等噪声元素不要放入任何 block。
-7. **图表**: figure/table 元素即使文本为空也要放入对应 block（保留 element_ids，应用据此定位截图）。
-
-## 输出 JSON 格式
-
-{
-  "title": "论文标题",
-  "authors": "作者列表（逗号分隔）",
-  "blocks": [
-    {"element_ids": ["p1_e3"], "element_type": "title", "heading_level": 0, "display_priority": "high", "section_name": ""},
-    {"element_ids": ["p1_e5", "p1_e6", "p2_e1"], "element_type": "body", "display_priority": "normal", "section_name": "Introduction", "merged_text": "仅当同一段落被拆碎/跨页断裂时给出合并后的完整段落；否则省略该字段"}
-  ],
-  "metadata_element_ids": ["p1_e2"],
-  "references_element_ids": ["p20_e5", "p20_e6"]
-}
-
-## 重要原则
-
-1. blocks 严格按阅读顺序排列
-2. merged_text 只在元素被过度拆碎时使用，不要重写完整段落
-3. 不引用任何噪声元素；被引用的元素会自动进入正文，未引用的不会展示
-4. 只返回 JSON，不要加任何解释或 Markdown 标记"""
-
-
 # ============================================================
 # 页面解析结果校验
 # ============================================================
@@ -444,174 +412,573 @@ def _validate_integration_result(raw: str) -> dict:
     return {"error": f"无法解析整合结果 JSON（前100字符: {raw[:100]}）"}
 
 
-def _build_document_from_plan(plan: dict, page_data: list[dict]) -> StructuredDocument:
-    """根据 LLM 输出的结构方案 + 逐页缓存，拼装 StructuredDocument。
+# ============================================================
+# 快速规则组装（Stage 2 主路径，不调用全量 LLM 整合）
+# ============================================================
 
-    LLM 只输出 blocks（元素引用/顺序/层级/优先级/章节），正文文本从解析缓存
-    按 element_id 拼接，避免模型重打全文导致的超时与截断。
+_FAST_SKIP_TYPES = frozenset({"header_footer", "publisher_logo", "unknown"})
+
+_FAST_PRIORITY: dict[str, str] = {
+    "title": "high",
+    "subtitle": "high",
+    "abstract_heading": "high",
+    "abstract_body": "high",
+    "body": "normal",
+    "keywords": "low",
+    "authors": "low",
+    "affiliations": "low",
+    "metadata": "low",
+    "figure": "high",
+    "table": "high",
+    "figure_caption": "normal",
+    "table_caption": "normal",
+    "equation": "normal",
+    "reference": "collapsed",
+    "acknowledgment": "collapsed",
+    "appendix": "collapsed",
+}
+
+# 参与跨页接缝检测的文本元素类型
+_SEAM_TEXT_TYPES = frozenset({"body", "abstract_body"})
+
+# 期刊页眉/版头黑名单（按前缀/精确匹配剔除，避免当标题或小节显示）
+_RUNNING_HEAD_BLACKLIST = (
+    "article in press", "article in press1", "article in press ",
+    "received:", "accepted:", "published online:", "cite this article",
+    "doi:", "open access", "copyright", "© ", "issn", "volume ",
+    "www.", "http://",
+    "we are providing", "unedited version", "if this paper is publishing",
+    "transparent peer", "the author(s)",
+)
+
+
+def _is_running_head(text: str) -> bool:
+    """判断文本是否为期刊运行页眉/版头噪声（如 ARTICLE IN PRESS）。"""
+    t = (text or "").strip()
+    low = t.lower()
+    return any(low.startswith(p) for p in _RUNNING_HEAD_BLACKLIST)
+
+
+def _guess_title_fallback(page_data: list[dict]) -> str:
+    """Docling 未标出 title 元素时，从第 1 页上半区挑最可能的标题候选。
+
+    排序依据：元素类型优先级（title > subtitle > body）+ 文本长度；
+    期刊版头/未编辑声明等模板噪声由黑名单排除。
     """
-    if not isinstance(plan, dict):
-        plan = {}
+    first_page = None
+    for page in page_data:
+        if int(page.get("page", 0)) == 1:
+            first_page = page
+            break
+    if first_page is None:
+        return ""
+    try:
+        page_bottom = max(
+            float(e.get("bbox", [0, 0, 0, 0])[3])
+            for e in first_page.get("elements", [])
+            if isinstance(e, dict) and e.get("bbox")
+        )
+        top_limit = page_bottom * 0.55
+    except (TypeError, KeyError, IndexError, ValueError):
+        top_limit = 400.0
+    type_rank = {"title": 0, "subtitle": 1, "body": 2}
+    candidates: list[tuple[int, float, str]] = []
+    for e in (first_page.get("elements") or []):
+        if not isinstance(e, dict):
+            continue
+        etype = e.get("type")
+        if etype not in type_rank:
+            continue
+        text = (e.get("text") or "").strip()
+        if not (12 <= len(text) <= 300):
+            continue
+        if _is_running_head(text):
+            continue
+        try:
+            b = e.get("bbox") or ()
+            y_center = (float(b[1]) + float(b[3])) / 2.0
+        except (TypeError, KeyError, IndexError, ValueError):
+            continue
+        if y_center > top_limit:
+            continue
+        candidates.append((type_rank[etype], len(text), text))
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda c: (c[0], -c[1]), reverse=False)
+    return candidates[0][2]
+
+
+def _figure_internal_text(e: dict, figure_bboxes: list[list[float]]) -> bool:
+    """元素大部分落在同页某 figure/table 区域内 → 视为图内文字，不单独展示。"""
+    try:
+        eb = e.get("bbox") or ()
+        ex0, ey0 = float(eb[0]), float(eb[1])
+        ew = float(eb[2]) - ex0
+        eh = float(eb[3]) - ey0
+        if ew * eh <= 0:
+            return False
+        for fb in figure_bboxes:
+            w = min(float(eb[2]), float(fb[2])) - max(ex0, float(fb[0]))
+            h = min(float(eb[3]), float(fb[3])) - max(ey0, float(fb[1]))
+            if w > 0 and h > 0 and w * h >= 0.8 * ew * eh:
+                return True
+    except (TypeError, KeyError, IndexError, ValueError):
+        pass
+    return False
+
+
+def _sorted_elements(elements: list[dict]) -> list[dict]:
+    """按 Docling 版面阅读顺序返回元素（保持缓存原生顺序）。
+
+    Docling 的 iterate_items 已按版面阅读顺序输出（含双栏：先左栏再右栏，
+    栏内自上而下）。早期曾用 bbox 的 (y, x) 重排，但那会把双栏版式打乱
+    （如参考文献列表右栏整体插入左栏之间、正文段落混入文献区），
+    因此这里不再重排，直接信任 Docling 顺序。
+    """
+    return list(elements)
+
+
+def _looks_like_continuation(text_a: str, text_b: str) -> bool:
+    """规则判断 text_b 是否可能是 text_a 的段落跨页延续。
+
+    - 上一页末段以连字符结尾 → 强信号（断词）
+    - 英文：a 不以句子终止标点结尾，且 b 以小写字母/引号/括号开头
+    - 中文：a 不以句号/问号/感叹号/分号结尾（中文无大小写）
+    """
+    a = text_a.rstrip()
+    b = text_b.lstrip()
+    if not a or not b:
+        return False
+    if len(a) < 40 or len(b) < 20:
+        return False
+    if a.endswith("-"):
+        return True
+    cjk_a = any("\u4e00" <= ch <= "\u9fff" for ch in a[:20])
+    cjk_b = any("\u4e00" <= ch <= "\u9fff" for ch in b[:20])
+    if cjk_a or cjk_b:
+        enders = ("。", "！", "？", "；", "：", "…", "——")
+        return not a.endswith(enders) and not a.endswith(".")
+    import re
+    if re.search(r"[.!?:;]%?$", a):
+        return False
+    if not b[0].islower() and b[0] not in "([\"'“‘":
+        return False
+    return True
+
+
+def find_cross_page_seams(page_data: list[dict]) -> list[dict]:
+    """检测相邻页之间疑似被分页断裂的正文段落（接缝候选）。
+
+    只取上一页最后一个正文元素与下一页第一个正文元素做配对；
+    判定采用规则启发式（_looks_like_continuation），少量候选
+    交给跨页 LLM 合并线程最终确认。
+    """
+    seams: list[dict] = []
+    by_page: dict[int, list[dict]] = {}
+    for page in page_data:
+        try:
+            pn = int(page.get("page", 0))
+        except (TypeError, ValueError):
+            continue
+        elems = []
+        for e in page.get("elements", []):
+            if isinstance(e, dict) and e.get("id") \
+                    and e.get("type") in _SEAM_TEXT_TYPES:
+                if (e.get("text") or "").strip():
+                    elems.append(e)
+        by_page[pn] = _sorted_elements(elems)
+    pages = sorted(by_page)
+    for i, pn in enumerate(pages[:-1]):
+        qn = pages[i + 1]
+        if qn - pn > 2:
+            continue  # 中间隔了整页缺失，不做判断
+        prev_elems = by_page[pn]
+        next_elems = by_page[qn]
+        if not prev_elems or not next_elems:
+            continue
+        a, b = prev_elems[-1], next_elems[0]
+        text_a = (a.get("text") or "").strip()
+        text_b = (b.get("text") or "").strip()
+        if not _looks_like_continuation(text_a, text_b):
+            continue
+        seams.append({
+            "key": f"{a.get('id')}|{b.get('id')}",
+            "page_a": pn,
+            "page_b": qn,
+            "element_id_a": a.get("id"),
+            "element_id_b": b.get("id"),
+            "text_a": text_a,
+            "text_b": text_b,
+        })
+    return seams
+
+
+def _nearest_figure_id(caption: dict, page_no: int,
+                       figure_map: dict[int, list[dict]],
+                       taken: set[str]) -> str | None:
+    """图注 → 最近未被占用的 figure/table 元素（含上一页兜底）。"""
+    try:
+        ab = caption.get("bbox") or ()
+        ax = (float(ab[0]) + float(ab[2])) / 2.0
+        ay = (float(ab[1]) + float(ab[3])) / 2.0
+    except (TypeError, KeyError, IndexError, ValueError):
+        return None
+    best_id: str | None = None
+    best_d: float | None = None
+    for pp in (page_no, page_no - 1):
+        for e in figure_map.get(pp, []):
+            fid = str(e.get("id") or "")
+            if not fid or fid in taken:
+                continue
+            try:
+                b = e["bbox"]
+                cx = (float(b[0]) + float(b[2])) / 2.0
+                cy = (float(b[1]) + float(b[3])) / 2.0
+            except (TypeError, KeyError, IndexError, ValueError):
+                continue
+            d = (cx - ax) ** 2 + (cy - ay) ** 2
+            if best_d is None or d < best_d:
+                best_d, best_id = d, fid
+    return best_id
+
+
+def _bind_captions(page_data: list[dict]) -> tuple[dict[str, str], set[str]]:
+    """figure_caption/table_caption → figure/table 的 bbox 就近配对。
+
+    Returns:
+        (binding, used_caption_ids)
+        binding: {figure_id: caption_text}
+        used_caption_ids: 已被并入图表块的图注元素 id（不再单独展示）
+    """
+    figure_map: dict[int, list[dict]] = {}
+    captions: list[dict] = []
+    page_of: dict[str, int] = {}
+    for page in page_data:
+        pn = int(page.get("page", 0))
+        for e in page.get("elements", []):
+            if not isinstance(e, dict) or not e.get("id"):
+                continue
+            etype = e.get("type")
+            if etype in ("figure", "table"):
+                figure_map.setdefault(pn, []).append(e)
+            elif etype in ("figure_caption", "table_caption"):
+                if (e.get("text") or "").strip():
+                    captions.append(e)
+                    page_of[str(e["id"])] = pn
+    binding: dict[str, str] = {}
+    used: set[str] = set()
+    taken: set[str] = set()
+    for cap in captions:
+        cid = str(cap["id"])
+        fid = _nearest_figure_id(cap, page_of.get(cid, 0), figure_map, taken)
+        if not fid:
+            continue
+        taken.add(fid)
+        used.add(cid)
+        cap_txt = (cap.get("text") or "").strip()
+        old = binding.get(fid)
+        if old:
+            cap_txt = old + " " + cap_txt
+        binding[fid] = cap_txt
+    return binding, used
+
+
+def build_document_fast(page_data: list[dict],
+                        merged_seams: dict | None = None) -> StructuredDocument:
+    """规则组装 —— 不用 LLM，直接按版面规则构建 StructuredDocument。
+
+    规则要点：
+    - 页内按 bbox 阅读顺序，页间按页码顺序
+    - subtitle 的 heading_level 来自 Docling 的 level 字段
+    - 图注按 bbox 就近绑定到 figure/table 块，绑定的图注不再单独展示
+    - 跨页断裂段落用 merged_seams 缓存合并（由 SeamMergeWorker 填充）
+    - collapsed 元素（参考文献/致谢/附录等）保留展示，由 UI 折叠
+    """
+    if not isinstance(merged_seams, dict):
+        merged_seams = {}
+    binding, used_captions = _bind_captions(page_data)
 
     by_id: dict[str, dict] = {}
     page_by_id: dict[str, int] = {}
+    # 每页 figure/table bbox，用于剔除图内文字
+    figure_bboxes_by_page: dict[int, list[list[float]]] = {}
     for page in page_data:
-        page_no = int(page.get("page", 0))
+        pn = int(page.get("page", 0))
         for e in page.get("elements", []):
             if isinstance(e, dict) and e.get("id"):
                 by_id[str(e["id"])] = e
-                page_by_id[str(e["id"])] = page_no
+                page_by_id[str(e["id"])] = pn
+                if e.get("type") in ("figure", "table") and e.get("bbox"):
+                    figure_bboxes_by_page.setdefault(pn, []).append(
+                        [float(v) for v in e["bbox"]]
+                    )
 
-    def _join_text(ids: list[str]) -> str:
-        parts = []
-        for eid in ids:
-            e = by_id.get(eid)
-            if not e:
-                continue
-            t = (e.get("text", "") or "").strip()
-            if t:
-                parts.append(t)
-        return "\n\n".join(parts)
-
-    def _from_cache(eid: str, display_priority: str) -> StructuredElement | None:
-        e = by_id.get(eid)
-        if not e:
-            return None
-        return StructuredElement(
-            element_type=e.get("type", "unknown"),
-            text=e.get("text", "") or "",
-            page=page_by_id.get(eid, 0),
-            image_caption=e.get("caption", "") or "",
-            section_name=e.get("section_name", "") or "",
-            display_priority=display_priority,
-            element_id=eid,
-        )
+    # 展平阅读顺序
+    ordered: list[dict] = []
+    for page in sorted(page_data, key=lambda p: int(p.get("page", 0))):
+        for e in _sorted_elements(page.get("elements", [])):
+            ordered.append(e)
 
     doc = StructuredDocument()
-    doc.title = str(plan.get("title", "") or "")
-    doc.authors = str(plan.get("authors", "") or "")
-
     display: list[StructuredElement] = []
     toc: list[dict] = []
-    for block in plan.get("blocks", []) or []:
-        if not isinstance(block, dict):
-            continue
-        ids = block.get("element_ids") or []
-        if not isinstance(ids, list):
-            continue
-        ids = [str(x) for x in ids if isinstance(x, str)]
-        if not ids:
-            continue
+    current_section = ""
+    current_level = 0
+    i = 0
+    n = len(ordered)
+    while i < n:
+        e = ordered[i]
+        eid = str(e.get("id", ""))
+        etype = e.get("type", "unknown")
+        text = (e.get("text", "") or "").strip()
 
-        etype = str(block.get("element_type", "body") or "body")
-        merged = block.get("merged_text")
-        if isinstance(merged, str) and merged.strip():
-            text = merged.strip()
-        else:
-            text = _join_text(ids)
-
-        first_id = ids[0]
-        cached = by_id.get(first_id)
-        caption = ""
-        if cached:
-            caption = str(cached.get("caption", "") or "").strip()
-        if not text.strip():
-            if etype in ("figure", "table") and caption:
-                pass  # 图/表允许仅有标题
-            else:
+        # 跨页接缝：命中缓存 → 合并为一个正文元素
+        seam = merged_seams.get(eid) if isinstance(merged_seams, dict) else None
+        if seam and etype in _SEAM_TEXT_TYPES:
+            next_id = str(seam.get("with_id", ""))
+            merged_text = str(seam.get("merged_text", "") or "").strip()
+            if next_id and merged_text:
+                elem = StructuredElement(
+                    element_type="body",
+                    text=merged_text,
+                    page=page_by_id.get(eid, 0),
+                    heading_level=0,
+                    section_name=current_section,
+                    display_priority="normal",
+                    element_id=eid,
+                )
+                display.append(elem)
+                # 跳过被合并的下一页首元素
+                j = i + 1
+                while j < n and ordered[j].get("id") != next_id:
+                    j += 1
+                if j < n:
+                    i = j
+                i += 1
                 continue
 
-        first_page = min((page_by_id.get(i, 0) for i in ids), default=0)
+        i += 1
+        if etype in _FAST_SKIP_TYPES:
+            continue
+        if eid in used_captions:
+            continue  # 已并入图表块
+
+        # 运行页眉噪声（ARTICLE IN PRESS 等）与图内标签文字不进入正文流
+        if _is_running_head(text):
+            continue
+        if etype not in ("figure", "table"):
+            fb = figure_bboxes_by_page.get(page_by_id.get(eid, 0), [])
+            if fb and _figure_internal_text(e, fb):
+                if len(text) <= 60 or not text:
+                    continue
+
+        priority = _FAST_PRIORITY.get(etype, "normal")
+        if etype == "subtitle":
+            current_section = text
+            try:
+                current_level = int(e.get("level", 1) or 1)
+            except (TypeError, ValueError):
+                current_level = 1
+            elem = StructuredElement(
+                element_type="subtitle",
+                text=text,
+                page=page_by_id.get(eid, 0),
+                heading_level=current_level,
+                section_name="",
+                display_priority=priority,
+                element_id=eid,
+            )
+            display.append(elem)
+            toc.append({
+                "level": current_level,
+                "title": text,
+                "element_index": len(display) - 1,
+            })
+            continue
+
+        if etype == "title":
+            if not doc.title:
+                doc.title = text
+        elif etype == "authors":
+            if not doc.authors:
+                doc.authors = text
+        elif etype == "abstract_heading":
+            current_section = text
+        elif etype == "body":
+            # 无章节名的正文沿用当前小节
+            pass
+
+        image_caption = ""
+        if etype in ("figure", "table"):
+            image_caption = binding.get(eid, "")
+            if not image_caption:
+                image_caption = str(e.get("caption", "") or "").strip()
+        if etype in ("figure", "table") and not text and not image_caption:
+            # 空图 + 无图注：仍保留（截图由 image_path 回填后展示）
+            pass
+
         elem = StructuredElement(
             element_type=etype,
             text=text,
-            page=first_page,
-            heading_level=int(block.get("heading_level", 0) or 0),
-            section_name=str(block.get("section_name", "") or ""),
-            display_priority=str(block.get("display_priority", "normal") or "normal"),
-            element_id=ids[0],
+            page=page_by_id.get(eid, 0),
+            heading_level=0,
+            section_name=current_section if etype in ("body", "abstract_body") else "",
+            display_priority=priority,
+            element_id=eid,
+            image_caption=image_caption,
         )
-        if etype in ("figure", "table") and caption:
-            elem.image_caption = caption
         display.append(elem)
 
-        if etype in ("subtitle", "title") and elem.heading_level >= 1:
-            toc.append({
-                "level": elem.heading_level,
-                "title": elem.text,
-                "element_index": len(display) - 1,
-            })
+    if not doc.title:
+        doc.title = _guess_title_fallback(page_data)
 
     doc.display_elements = display
     doc.toc = toc
-
-    for eid in plan.get("metadata_element_ids", []) or []:
-        if isinstance(eid, str):
-            e = _from_cache(eid, "collapsed")
-            if e:
-                doc.metadata_pool.append(e)
-    for eid in plan.get("references_element_ids", []) or []:
-        if isinstance(eid, str):
-            e = _from_cache(eid, "collapsed")
-            if e:
-                doc.references.append(e)
-
     for elem in display:
         if elem.element_type == "figure":
             doc.figures.append(elem)
         elif elem.element_type == "table":
             doc.tables.append(elem)
-
+        elif elem.element_type == "reference":
+            doc.references.append(elem)
+    doc.metadata_pool = [e for e in display
+                         if e.element_type in ("metadata", "affiliations", "keywords")]
     doc.raw_page_count = len(page_data)
     return doc
 
 
-# ============================================================
-# 后台工作线程
-# ============================================================
+def rebuild_document_fast(pdf_path: str) -> "StructuredDocument | None":
+    """从磁盘页缓存重建结构化文档（旧版整合结果迁移入口）。
 
-class IntegrationWorker(QThread):
-    """后台跨页整合线程 —— 读缓存、发 LLM、返回 StructuredDocument。"""
+    旧版 state 的 structured_document 由全量 LLM 生成，打开时改用
+    规则组装重建（引用 merged_seams 缓存），保证图片与结构完整。
+    """
+    from ..utils.config import get_page_cache_dir, load_doc_state
 
-    finished = Signal(object)    # StructuredDocument
+    cache_dir = get_page_cache_dir(pdf_path)
+    page_data: list[dict] = []
+    for f in sorted(glob.glob(os.path.join(str(cache_dir), "page_*.json"))):
+        try:
+            with open(f, "r", encoding="utf-8") as fh:
+                page_data.append(json.load(fh))
+        except (json.JSONDecodeError, OSError):
+            continue
+    if not page_data:
+        return None
+    state = load_doc_state(pdf_path)
+    merged = state.get("merged_seams") or {}
+    if not isinstance(merged, dict):
+        merged = {}
+    doc = build_document_fast(page_data, merged)
+    if not doc.display_elements:
+        return None
+    backfill_image_paths(doc, str(cache_dir))
+    return doc
+
+
+def backfill_image_paths(doc: StructuredDocument, cache_dir: str) -> None:
+    """按 element_id 从页面缓存回填图表截图路径（确定性，不依赖 LLM 透传）。
+
+    裁剪产生的 PNG 文件名格式为 page_{page:03d}_{element_id}.png。
+    """
+    if not cache_dir or not doc:
+        return
+    targets: list[StructuredElement] = []
+    for e in doc.display_elements:
+        if e.element_type in ("figure", "table"):
+            targets.append(e)
+    for e in (doc.figures or []) + (doc.tables or []):
+        if e.element_type in ("figure", "table"):
+            targets.append(e)
+    seen: set[str] = set()
+    for elem in targets:
+        if not elem.element_id or elem.element_id in seen:
+            continue
+        seen.add(elem.element_id)
+        filepath = os.path.join(cache_dir, f"page_{elem.page:03d}.json")
+        if not os.path.exists(filepath):
+            continue
+        try:
+            with open(filepath, "r", encoding="utf-8") as fh:
+                cache = json.load(fh)
+        except (json.JSONDecodeError, OSError):
+            continue
+        for e in cache.get("elements", []):
+            if not isinstance(e, dict):
+                continue
+            if e.get("id") == elem.element_id:
+                img = e.get("image_path", "")
+                if img:
+                    elem.image_path = img
+                if not elem.image_caption:
+                    elem.image_caption = e.get("caption", "")
+                break
+
+
+SEAM_MERGE_PROMPT = """你是一位学术论文编辑。以下是同一篇论文相邻两页之间疑似被分页断裂的段落对（上一页末尾 + 下一页开头）。
+
+请判断每一对是否属于**同一个自然段落**被分页截断：
+- 属于同一段：输出合并后的完整段落文本 merged_text（去掉两段之间因换页产生的多余空格/连字符）。
+- 不属于同一段（是独立的两个段落/小节标题/图注等）：输出 "merge": false。
+
+## 输入 JSON
+{"seams": [{"key": "p3_e5|p4_e1", "text_a": "...", "text_b": "..."}]}
+
+## 输出 JSON（只输出 JSON，不加解释）
+{"results": [{"key": "p3_e5|p4_e1", "merge": true, "merged_text": "..."}]}
+"""
+
+
+class SeamMergeWorker(QThread):
+    """跨页接缝合并线程 —— 只处理少量候选接缝，小任务、快返回。"""
+
+    finished_signal = Signal(object)  # {seam_key: {"with_id": str, "merged_text": str}}
     error = Signal(str)
+    done = Signal()  # 线程必然退出信号（run 的 finally 触发）
 
-    def __init__(self, client: LLMClient, all_page_data: list[dict],
-                 pdf_title: str = ""):
-        super().__init__()
+    def __init__(self, client: "LLMClient", seams: list[dict], parent=None):
+        super().__init__(parent)
         self._client = client
-        self._all_page_data = all_page_data
-        self._pdf_title = pdf_title
+        self._seams = seams
 
     def run(self) -> None:
         try:
-            pages_json = json.dumps(
-                self._all_page_data, ensure_ascii=False,
-                indent=None, separators=(",", ":"),
-            )
-            user_prompt = (
-                f"请根据以下 {len(self._all_page_data)} 页论文的结构化解析结果，"
-                f"输出结构方案（不要重打正文）。\n\n"
-                f"【逐页数据】\n{pages_json}"
-            )
-            messages = [
-                {"role": "system", "content": INTEGRATION_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
+            payload = [
+                {"key": s["key"], "text_a": s["text_a"], "text_b": s["text_b"]}
+                for s in self._seams
             ]
-            response = self._client.chat_sync(messages, timeout=300.0, json_mode=True)
+            messages = [
+                {"role": "system", "content": SEAM_MERGE_PROMPT},
+                {"role": "user", "content": json.dumps(
+                    {"seams": payload}, ensure_ascii=False,
+                )},
+            ]
+            response = self._client.chat_sync(messages, timeout=120.0, json_mode=True)
+            if self.isInterruptionRequested():
+                return
             plan = _validate_integration_result(response)
-
             if "error" in plan:
                 self.error.emit(plan["error"])
                 return
-
-            doc = _build_document_from_plan(plan, self._all_page_data)
-            if not doc.display_elements:
-                self.error.emit("整合结果中没有可用元素，请重试")
-                return
-            self.finished.emit(doc)
-        except Exception as e:
+            results: dict[str, dict] = {}
+            by_key = {s["key"]: s for s in self._seams}
+            for item in (plan.get("results") or []):
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("key", ""))
+                if key not in by_key:
+                    continue
+                merged = str(item.get("merged_text", "") or "").strip()
+                if item.get("merge") and merged:
+                    results[key] = {
+                        "with_id": by_key[key]["element_id_b"],
+                        "merged_text": merged,
+                    }
+            self.finished_signal.emit(results)
+        except Exception as e:  # noqa: BLE001
             self.error.emit(str(e))
+        finally:
+            self.done.emit()
 
 
 # ============================================================
@@ -687,6 +1054,7 @@ class DoclingParseWorker(QThread):
     status = Signal(str)               # 初始化/解析阶段提示
     finished = Signal()
     error = Signal(str)
+    done = Signal()                    # 线程必然退出信号（run 的 finally 触发）
 
     def __init__(self, pdf_path: str, cache_dir: str, manifest: "PageManifest",
                  parent=None):
@@ -696,6 +1064,12 @@ class DoclingParseWorker(QThread):
         self._manifest = manifest
 
     def run(self) -> None:
+        try:
+            self._run()
+        finally:
+            self.done.emit()  # 无论成功/失败/中断，线程退出时必然触发
+
+    def _run(self) -> None:
         try:
             self.status.emit("正在加载本地版式模型，首次使用可能需要较长时间...")
             from .docling_parser import parse_pdf
@@ -760,117 +1134,22 @@ class DoclingParseWorker(QThread):
 
 
 # ============================================================
-# DocumentIntegrator —— Stage 2: 跨页整合
-# ============================================================
-
-class DocumentIntegrator:
-    """跨页整合器 —— 读取所有页缓存，发送给 LLM 整合为 StructuredDocument。
-
-    特性：
-    - 只读已完成页（status=done），跳过 error 页
-    - 可重试（用户不满意整合效果可重新触发）
-    - 整合结果缓存到 states/{pdf_md5}.json 中
-    """
-
-    def __init__(self, pdf_path: str, llm_client: LLMClient,
-                 cache_dir: str, manifest: PageManifest) -> None:
-        self._pdf_path = pdf_path
-        self._client = llm_client
-        self._cache_dir = cache_dir
-        self._manifest = manifest
-        self._worker: IntegrationWorker | None = None
-
-    def integrate_async(self, on_finished: callable, on_error: callable) -> None:
-        """异步执行跨页整合。
-
-        Args:
-            on_finished: (StructuredDocument) -> None
-            on_error: (str) -> None
-        """
-        all_page_data = self._load_all_page_caches()
-        if not all_page_data:
-            on_error("没有可用的页面缓存数据，请等待 Stage 1 完成")
-            return
-
-        self._worker = IntegrationWorker(
-            self._client, all_page_data, os.path.basename(self._pdf_path)
-        )
-        self._worker.finished.connect(on_finished)
-        self._worker.error.connect(on_error)
-        self._worker.start()
-
-    def cancel(self) -> None:
-        """取消整合。"""
-        if self._worker and self._worker.isRunning():
-            self._worker.quit()
-            self._worker.wait(1000)
-
-    @property
-    def is_running(self) -> bool:
-        return self._worker is not None and self._worker.isRunning()
-
-    def _load_all_page_caches(self) -> list[dict]:
-        """加载所有已完成页的缓存数据（精简后发给 LLM）。
-
-        只保留 id/type/text/caption/section_name，去掉 bbox 等冗余字段；
-        图表/公式元素即使文本为空也保留（供 LLM 引用与后续截图回填）。
-        """
-        results = []
-        for page_num in range(1, self._manifest.total_pages + 1):
-            status = self._manifest.pages.get(page_num, "pending")
-            if status == "done":
-                cache = self._load_page_cache(page_num)
-                if cache:
-                    elements = []
-                    for e in cache.get("elements", []):
-                        if not isinstance(e, dict):
-                            continue
-                        etype = e.get("type", "unknown")
-                        text = e.get("text", "") or ""
-                        keep_empty = etype in ("figure", "table", "equation") \
-                            or bool(e.get("caption"))
-                        if not text.strip() and not keep_empty:
-                            continue
-                        elements.append({
-                            "id": e.get("id", ""),
-                            "type": etype,
-                            "text": text,
-                            "caption": e.get("caption", "") or "",
-                            "section_name": e.get("section_name", "") or "",
-                        })
-                    if elements:
-                        results.append({
-                            "page": page_num,
-                            "page_role": cache.get("page_role", "content_page"),
-                            "elements": elements,
-                        })
-        return results
-
-    def _load_page_cache(self, page_num: int) -> dict | None:
-        """加载单页缓存。"""
-        filepath = os.path.join(self._cache_dir, f"page_{page_num:03d}.json")
-        if not os.path.exists(filepath):
-            return None
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return None
-
-
-# ============================================================
 # PDFProcessor —— 协调者：管理两阶段流程
 # ============================================================
 
 class PDFProcessor(QObject):
-    """PDF 处理协调器 —— 管理 Stage 1 逐页解析 + Stage 2 跨页整合。
+    """PDF 处理协调器 —— 管理 Stage 1 逐页解析 + Stage 2 规则组装。
+
+    Stage 2 不再是"整篇发给 LLM 精整"：先用本地规则秒级组装
+    （build_document_fast），随后在后台对少量跨页接缝候选做 LLM
+    合并确认（SeamMergeWorker），结果缓存到 state（merged_seams）。
 
     使用方式：
         processor = PDFProcessor(pdf_path, llm_client)
         processor.stage1_progress.connect(on_progress)
         processor.start_stage1()    # 自动后台开始
         # ... 用户点击论文时 ...
-        processor.start_stage2()    # 读缓存 → 整合 → 渲染
+        processor.start_stage2()    # 读缓存 → 规则组装 → 渲染
     """
 
     # 信号
@@ -881,16 +1160,18 @@ class PDFProcessor(QObject):
     stage1_error = Signal(str, int, str)      # pdf_path, page_num, error
     stage2_finished = Signal(str, object)     # pdf_path, StructuredDocument
     stage2_error = Signal(str, str)           # pdf_path, error
+    stage2_merged = Signal(str, object)       # pdf_path, StructuredDocument（接缝合并后刷新）
 
     def __init__(self, pdf_path: str, llm_client: "LLMClient | None") -> None:
         super().__init__()  # QObject init
         self._pdf_path = pdf_path
         self._client = llm_client
-        self._integrator: DocumentIntegrator | None = None
         self._docling_worker: DoclingParseWorker | None = None
+        self._seam_worker: SeamMergeWorker | None = None
         self._manifest: PageManifest | None = None
         self._cache_dir: str = ""
         self._integrated_doc: StructuredDocument | None = None
+        self._seams_done = False  # 本次会话是否已跑过接缝合并
 
         self._init_cache()
 
@@ -972,7 +1253,7 @@ class PDFProcessor(QObject):
 
     @property
     def is_stage2_running(self) -> bool:
-        return self._integrator is not None and self._integrator.is_running
+        return self._seam_worker is not None and self._seam_worker.isRunning()
 
     @property
     def is_busy(self) -> bool:
@@ -1018,6 +1299,7 @@ class PDFProcessor(QObject):
         self._docling_worker = DoclingParseWorker(
             self._pdf_path, self._cache_dir, self._manifest
         )
+        track(self._docling_worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._docling_worker.page_done.connect(
             lambda pn: self._on_stage1_page_done(pn, {})
         )
@@ -1036,32 +1318,114 @@ class PDFProcessor(QObject):
         self.stage1_error.emit(self._pdf_path, 0, error_msg)
 
     def start_stage2(self) -> None:
-        """启动 Stage 2 跨页整合（异步）。"""
-        if self._client is None:
-            self.stage2_error.emit(self._pdf_path, "未配置 API 客户端")
-            return
+        """启动 Stage 2：规则组装（同步、秒级）+ 跨页接缝合并（后台异步）。
 
+        规则组装不依赖 LLM，立即产出结构化文档；随后若存在疑似跨页
+        断裂接缝且没有缓存，才用解析接口做小规模合并确认。
+        """
         if self._manifest is None:
             self.stage2_error.emit(self._pdf_path, "没有页面缓存数据")
             return
 
         done_count = self._manifest.done_count
         if done_count == 0:
+            if not self._manifest.is_complete and not self.is_stage1_running:
+                # 尚未有任何页面解析完成：回退到 Stage 1 自我修复，
+                # 而不是直接报"没有已完成的页面"（可能由缓存被清/竞态引起）。
+                self.start_stage1()
+                return
             self.stage2_error.emit(self._pdf_path, "没有已完成的页面，请等待 Stage 1 完成")
             return
 
-        self._integrator = DocumentIntegrator(
-            self._pdf_path, self._client, self._cache_dir, self._manifest
-        )
-        self._integrator.integrate_async(
-            on_finished=self._on_stage2_finished,
-            on_error=self._on_stage2_error,
-        )
+        page_data = self._load_all_page_data()
+        if not page_data:
+            self.stage2_error.emit(self._pdf_path, "没有可用的页面缓存数据，请等待 Stage 1 完成")
+            return
+
+        merged = self._load_merged_seams()
+        doc = build_document_fast(page_data, merged)
+        if not doc.display_elements:
+            self.stage2_error.emit(self._pdf_path, "规则组装结果为空（页面缓存可能异常），请重新解析")
+            return
+        self._on_stage2_finished(doc)
+
+        # 检查跨页接缝：已有缓存或本次已跑过，则不再调用 LLM
+        if merged or self._seams_done:
+            return
+        self._seams_done = True
+        seams = find_cross_page_seams(page_data)
+        if seams:
+            self._start_seam_merge(seams)
+
+    def _load_all_page_data(self) -> list[dict]:
+        """加载所有已完成页的完整缓存（含 bbox），供规则组装使用。"""
+        results = []
+        for page_num in range(1, self._manifest.total_pages + 1):
+            status = self._manifest.pages.get(page_num, "pending")
+            if status == "done":
+                cache = self.get_page_cache(page_num)
+                if cache:
+                    results.append(cache)
+        return results
+
+    def _load_merged_seams(self) -> dict:
+        from ..utils.config import load_doc_state
+        try:
+            merged = load_doc_state(self._pdf_path).get("merged_seams") or {}
+        except Exception:
+            merged = {}
+        return merged if isinstance(merged, dict) else {}
+
+    def _start_seam_merge(self, seams: list[dict]) -> None:
+        """启动跨页接缝合并（后台线程），完成后回填并刷新文档。"""
+        if self._client is None:
+            return
+        self._seam_worker = SeamMergeWorker(self._client, seams)
+        track(self._seam_worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
+        self._seam_worker.finished_signal.connect(self._on_seam_merge_done)
+        self._seam_worker.error.connect(self._on_seam_merge_error)
+        self._seam_worker.start()
+
+    def _on_seam_merge_done(self, merged: dict) -> None:
+        """接缝合并完成 → 缓存 + 重建文档 + 通知 UI 刷新。"""
+        if not merged:
+            return
+        self._save_merged_seams(merged)
+        if not self._integrated_doc:
+            return
+        try:
+            page_data = self._load_all_page_data()
+            doc = build_document_fast(page_data, self._load_merged_seams())
+            if not doc.display_elements:
+                return
+            backfill_image_paths(doc, self._cache_dir)
+            self._integrated_doc = doc
+            self._save_integrated_doc(doc)
+            self.stage2_merged.emit(self._pdf_path, doc)
+        except Exception:  # noqa: BLE001
+            pass  # 合并刷新失败不影响已渲染的文档
+
+    def _on_seam_merge_error(self, error_msg: str) -> None:
+        print(f"[Docling] 跨页接缝合并失败（忽略，不影响阅读）：{error_msg}")
+
+    def _save_merged_seams(self, merged: dict) -> None:
+        try:
+            from ..utils.config import load_doc_state, save_doc_state
+            state = load_doc_state(self._pdf_path)
+            cache = state.get("merged_seams") or {}
+            if not isinstance(cache, dict):
+                cache = {}
+            cache.update(merged)
+            state["merged_seams"] = cache
+            save_doc_state(self._pdf_path, state)
+        except Exception:
+            pass  # 缓存失败可下次重跑接缝合并
 
     def cancel(self) -> None:
         """取消所有进行中的操作。"""
-        if self._integrator:
-            self._integrator.cancel()
+        if self._seam_worker and self._seam_worker.isRunning():
+            self._seam_worker.requestInterruption()
+            self._seam_worker.quit()
         if self._docling_worker and self._docling_worker.isRunning():
             self._docling_worker.requestInterruption()
             self._docling_worker.quit()
@@ -1088,8 +1452,8 @@ class PDFProcessor(QObject):
         self.stage1_error.emit(self._pdf_path, page_num, error_msg)
 
     def _on_stage2_finished(self, doc: StructuredDocument) -> None:
-        """Stage 2 整合完成 → 回填截图 → 落盘 → 通知 UI。"""
-        self._backfill_image_paths(doc)
+        """Stage 2 组装完成 → 回填截图 → 落盘 → 通知 UI。"""
+        backfill_image_paths(doc, self._cache_dir)
         self._integrated_doc = doc
         self._save_integrated_doc(doc)
         self.stage2_finished.emit(self._pdf_path, doc)
@@ -1100,49 +1464,11 @@ class PDFProcessor(QObject):
             from ..utils.config import load_doc_state, save_doc_state
             state = load_doc_state(self._pdf_path)
             state["structured_document"] = doc.to_dict()
+            state["doc_format"] = "fast"  # 标记规则组装格式，旧版整合结果据此重建
             save_doc_state(self._pdf_path, state)
         except Exception:
             pass  # 保存失败不阻塞流程，可随时重新整合
 
-    def _backfill_image_paths(self, doc: StructuredDocument) -> None:
-        """整合后按 element_id 从页面缓存回填图表截图路径，不依赖 LLM 透传。
-
-        裁剪产生的 PNG 文件名格式为 page_{page:03d}_{element_id}.png，
-        与页面缓存中元素一一对应，可直接确定性回填。
-        """
-        if not self._cache_dir or not doc:
-            return
-        targets: list[StructuredElement] = []
-        for e in doc.display_elements:
-            if e.element_type in ("figure", "table"):
-                targets.append(e)
-        for e in (doc.figures or []) + (doc.tables or []):
-            if e.element_type in ("figure", "table"):
-                targets.append(e)
-        seen: set[str] = set()
-        for elem in targets:
-            if not elem.element_id or elem.element_id in seen:
-                continue
-            seen.add(elem.element_id)
-            filepath = os.path.join(self._cache_dir, f"page_{elem.page:03d}.json")
-            if not os.path.exists(filepath):
-                continue
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    cache = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                continue
-            for e in cache.get("elements", []):
-                if not isinstance(e, dict):
-                    continue
-                if e.get("id") == elem.element_id:
-                    img = e.get("image_path", "")
-                    if img:
-                        elem.image_path = img
-                    if not elem.image_caption:
-                        elem.image_caption = e.get("caption", "")
-                    break
-
     def _on_stage2_error(self, error_msg: str) -> None:
-        """Stage 2 整合失败。"""
+        """Stage 2 组装失败。"""
         self.stage2_error.emit(self._pdf_path, error_msg)

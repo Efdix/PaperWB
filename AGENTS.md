@@ -45,11 +45,12 @@ src/
 │   ├── writing_panel.py   # 写作面板: 编辑器+知识库管理+Zotero+AI辅助(润色/仅核查/文献补充)+自动保存+字数统计
 │   ├── diff_dialog.py     # 润色对比对话框: 内联 diff(单编辑框)+导航栏(上一处/下一处/接受/拒绝)+AI 对话+引用高亮
 │   ├── lit_search_dialog.py # 文献补充对话框: LLM 双轨推荐(已知文献+搜索词)→PubMed 检索→导出 CSV（非模态）
-│   ├── settings_dialog.py # 设置对话框: API接口设置(识图/翻译/写作)+Zotero路径+缓存文件存储路径+连接测试
+│   ├── settings_dialog.py # 设置对话框: API接口设置(解析/翻译/写作)+Zotero路径+缓存文件存储路径+连接测试
 │   └── styles.py          # 暖白研究工作台主题 QSS
 └── utils/
     ├── config.py          # 持久化层: 配置(含多接口/数据根目录/Zotero)+图书馆+聊天+缓存+草稿+润色历史
-    └── layout.py          # 递归布局高度计算（heightForWidth）
+    ├── layout.py          # 递归布局高度计算（heightForWidth）
+    └── threads.py         # 运行中 QThread 全局保活注册表（track/sweep），杜绝运行中销毁崩溃
 ```
 
 ## 架构说明
@@ -65,14 +66,15 @@ src/
 ### 两阶段解析管线（阅读）
 
 - **Stage 1**: PDF 导入后由 Docling 本地版式解析，每页独立缓存，支持断点续传；不再调用视觉模型，也不再配置并发页数；Docling 漏检的位图区域自动用 PyMuPDF 兜底补成 figure 元素
-- **Stage 2**: 点击论文后自动触发（无手动「AI 整合」按钮），LLM 跨页整合为 StructuredDocument
-- 右键菜单支持「重新解析整合」（清页缓存+整合结果全流程重跑）与分开重跑 Stage 1 / Stage 2；旧的视觉缓存会因 manifest.parser 不匹配自动失效
+- **Stage 2**: 点击论文后自动触发（无手动「AI 整合」按钮），**本地规则组装**（不调 LLM）：读页缓存 → 章节/正文/引文/图/表归类绑定（图挂载对应页渲染图+回填图注，引文优先折叠显示）→ StructuredDocument → UI；跨页被截断的段落（章节间切页、表格断页）由后台线程按文本特征合并，合并结果缓存（merged_seams）
+- 旧版 LLM 跨页整合缓存不再使用：状态文件标记 `doc_format: fast`，旧 `structured_document` 首次打开时自动重建（图注/图序从页面文本重新绑定，见 `rebuild_document_fast`）
+- 右键菜单: 本地库「重新解析整合」（清页缓存全流程重跑）与分开重跑「重新逐页解析」「重新跨页整合」；Zotero 文献只保留「重新解析整合」+「打开文件位置」
 - 长文档问答走 BM25 检索增强（`context_manager` + `retriever`），只发相关段落而非全量截断
 - 列表已整合文献以浅绿背景标记
 
 ### 三套独立 API
 
-- **识图** (`parse_api`): 跨页整合 + 论文问答；逐页解析由本地 Docling 完成；无手动整合按钮（自动触发）
+- **解析** (`parse_api`): 论文问答（长文档 BM25 检索增强）+ 图表内容问答（图问答把渲染图 base64 附加为多模态消息，见 `MainWindow._attach_vision_message`）；逐页解析与跨页段落整合由本地完成，不耗 LLM
 - **翻译** (`translate_api`): 段落中英对照翻译（可用便宜/免费模型）
 - **写作** (`write_api`): 引文核查 + 风格分析 + 润色 + 文献推荐（需强推理模型）
 

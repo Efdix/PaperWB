@@ -129,6 +129,26 @@ def _preload_docling() -> None:
         pass
 
 
+def _install_faulthandler() -> None:
+    """启用 faulthandler：原生层崩溃（qFatal/abort）时把全线程 Python 栈写入日志。
+
+    Python 未捕获异常已由 excepthook 记录；qFatal 是 C++ abort，excepthook 无感知，
+    必须靠 faulthandler 在崩溃瞬间转储各线程栈，才能拿到决定性证据。
+    """
+    try:
+        import faulthandler
+    except ImportError:
+        return
+    try:
+        log_dir = os.path.join(os.environ.get("APPDATA", ""), "PDFasker")
+        os.makedirs(log_dir, exist_ok=True)
+        faulthandler.enable(
+            open(os.path.join(log_dir, "faulthandler.log"), "a", encoding="utf-8")
+        )
+    except OSError:
+        faulthandler.enable()
+
+
 def _install_excepthook() -> None:
     """全局未捕获异常处理器：写入 %APPDATA%/PDFasker/error.log 并打印到终端。
 
@@ -272,6 +292,7 @@ if __name__ == "__main__":
     _preload_torch()
     _preload_docling()
     _install_excepthook()
+    _install_faulthandler()
 
     if "--selftest" in sys.argv:
         sys.exit(_run_selftest())

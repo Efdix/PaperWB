@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import os
+import time
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal as QtSignal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
+    QApplication, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
     QSplitter, QStatusBar, QTabWidget, QVBoxLayout, QWidget, QFrame,
 )
@@ -27,12 +28,14 @@ from .utils.config import (
     has_data_root, load_chat_history, load_config, save_chat_history,
     save_config, save_draft,
 )
+from .utils.threads import track
 
 
 class LLMWorker(QThread):
     chunk_received = QtSignal(str)
     finished = QtSignal()
     error = QtSignal(str)
+    done = QtSignal()  # 线程必然退出信号（run 的 finally 触发）
 
     def __init__(self, client: LLMClient, messages: list[dict]) -> None:
         super().__init__()
@@ -42,10 +45,14 @@ class LLMWorker(QThread):
     def run(self) -> None:
         try:
             for chunk in self._client.chat_stream(self._messages):
+                if self.isInterruptionRequested():
+                    return  # 已取消：不再投递旧问答的后续内容
                 self.chunk_received.emit(chunk)
             self.finished.emit()
         except Exception as e:
             self.error.emit(str(e))
+        finally:
+            self.done.emit()
 
 
 class DoclingWarmupWorker(QThread):
@@ -233,6 +240,7 @@ class MainWindow(QMainWindow):
         self.pdf_list.restage2_requested.connect(self._on_restage2)
         self.pdf_list.reparse_requested.connect(self._on_reparse)
         self.pdf_list.zotero_pdf_selected.connect(self._on_zotero_pdf_selected)
+        self.pdf_list.zotero_reparse_requested.connect(self._on_reparse)
 
         inner_splitter = QSplitter(Qt.Orientation.Horizontal)
         inner_splitter.setHandleWidth(3)
@@ -328,7 +336,7 @@ class MainWindow(QMainWindow):
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self._status_parse_label = QLabel("识图：未配置")
+        self._status_parse_label = QLabel("解析：未配置")
         self._status_parse_label.setObjectName("statusChip")
         self.status_bar.addPermanentWidget(self._status_parse_label)
         self._status_translate_label = QLabel("翻译：未配置")
@@ -483,8 +491,16 @@ class MainWindow(QMainWindow):
         self._load_pdf_into_viewer(path)
 
     def _on_reparse(self, path: str):
-        """重新解析+整合 —— 清除页缓存与整合结果，全流程自动重跑。"""
+        """重新解析+整合 —— 先停后台处理器，再清页缓存与整合结果，全流程自动重跑。
+
+        顺序很重要：必须先 cancel 再删除缓存，否则正在运行的 Docling 线程
+        会在删除后通过 makedirs 重新创建缓存目录并写回 manifest/页面，
+        导致新处理器读到不一致的零完成页状态。
+        """
+        from .utils.config import delete_doc_state, delete_page_cache
         self._cancel_processor(path)
+        delete_page_cache(path)
+        delete_doc_state(path)
         self._begin_pdf_switch(path)
         self._load_pdf_into_viewer(path)
 
@@ -493,31 +509,62 @@ class MainWindow(QMainWindow):
 
     def _cancel_llm_worker(self) -> None:
         if self._llm_worker and self._llm_worker.isRunning():
-            self._llm_worker.quit()
-            if not self._llm_worker.wait(3000):
-                self._llm_worker.terminate()
-                self._llm_worker.wait()
+            # 优雅中断：不再 terminate（原生 HTTP 调用中强杀线程会随机崩溃），
+            # 线程由注册表保活，流式循环检测到中断后自然退出。
+            self._llm_worker.requestInterruption()
         self._llm_worker = None
 
-    def _on_follow_up_from_reader(self, context: str):
+    def _on_follow_up_from_reader(self, question: str, image_path: str = ""):
         if not self._llm_parse:
-            QMessageBox.warning(self, "未配置识图接口", "请先在设置中配置识图接口。")
+            QMessageBox.warning(self, "未配置解析接口", "请先在设置中配置解析接口。")
             return
         self.chat_panel.set_input_enabled(True)
-        self.chat_panel.add_user_message(f"[追问] {context[:100]}...")
-        self._context_manager.add_to_history("user", context)
-        messages = self._context_manager.build_messages(context)
+        self.chat_panel.add_user_message(question)
+        self._context_manager.add_to_history("user", question)
+        messages = self._context_manager.build_messages(question)
+        if image_path:
+            messages = self._attach_vision_message(messages, question, image_path)
         self.chat_panel.start_ai_response()
         self._cancel_llm_worker()
         self._llm_worker = LLMWorker(self._llm_parse, messages)
+        track(self._llm_worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._llm_worker.chunk_received.connect(self._on_ai_chunk)
         self._llm_worker.finished.connect(self._on_ai_finished)
         self._llm_worker.error.connect(self._on_ai_error)
         self._llm_worker.start()
 
+    @staticmethod
+    def _attach_vision_message(messages: list[dict], question: str,
+                               image_path: str) -> list[dict]:
+        """把最后一条 user 消息替换为多模态内容（图片 base64 data URI + 问题）。
+
+        对话历史仍保存纯文本问题，视觉内容只随本次请求发送。
+        """
+        import base64
+        if not image_path or not os.path.exists(image_path):
+            return messages
+        try:
+            with open(image_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+        except OSError:
+            return messages
+        ext = os.path.splitext(image_path)[1].lower()
+        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}.get(
+            ext.lstrip("."), "image/png")
+        msgs = [dict(m) for m in messages]
+        msgs[-1] = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": question},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            ],
+        }
+        return msgs
+
     def _on_user_message(self, text: str):
         if not self._llm_parse:
-            QMessageBox.warning(self, "未配置识图接口", "请先在设置中配置识图接口。")
+            QMessageBox.warning(self, "未配置解析接口", "请先在设置中配置解析接口。")
             self.chat_panel.set_input_enabled(False)
             return
         if not self._context_manager.has_pdf:
@@ -532,15 +579,20 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("AI 正在思考...")
         self._cancel_llm_worker()
         self._llm_worker = LLMWorker(self._llm_parse, messages)
+        track(self._llm_worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._llm_worker.chunk_received.connect(self._on_ai_chunk)
         self._llm_worker.finished.connect(self._on_ai_finished)
         self._llm_worker.error.connect(self._on_ai_error)
         self._llm_worker.start()
 
     def _on_ai_chunk(self, chunk: str):
+        if self.sender() is not self._llm_worker:
+            return  # 旧 worker 的残余流直接丢弃，不污染当前答复
         self.chat_panel.append_ai_text(chunk)
 
     def _on_ai_finished(self):
+        if self.sender() is not self._llm_worker:
+            return
         ai_text = ""
         if self.chat_panel._current_ai_bubble:
             ai_text = self.chat_panel._current_ai_bubble.get_content()
@@ -555,6 +607,8 @@ class MainWindow(QMainWindow):
         self._llm_worker = None
 
     def _on_ai_error(self, error_msg: str):
+        if self.sender() is not self._llm_worker:
+            return
         self.chat_panel.append_ai_text(f"\n\n❌ 错误：{error_msg}")
         self.chat_panel.finish_ai_response()
         self.status_bar.showMessage(f"错误：{error_msg}")
@@ -609,7 +663,7 @@ class MainWindow(QMainWindow):
             "<h3>PDFasker</h3>"
             "<p>AI 论文解读助手 v1.0.0</p>"
             "<p>支持 DeepSeek、Mimo、OpenCode 及所有 OpenAI 兼容接口。</p>"
-             "<p>三套接口：识图、翻译、写作（引文核查+风格分析+文献推荐）</p>"
+             "<p>三套接口：解析、翻译、写作（引文核查+风格分析+文献推荐）</p>"
              "<p>本地版式解析 · 结构化阅读视图 · 知识库驱动写作辅助 · Zotero 引文核查 · PubMed 文献检索</p>"
         )
 
@@ -631,13 +685,23 @@ class MainWindow(QMainWindow):
             if hasattr(proc, 'cancel'):
                 proc.cancel()
         if self._llm_worker and self._llm_worker.isRunning():
-            self._llm_worker.quit()
-            if not self._llm_worker.wait(3000):
-                self._llm_worker.terminate()
-                self._llm_worker.wait()
+            self._llm_worker.requestInterruption()
         if self._docling_warmup and self._docling_warmup.isRunning():
             # 导入阶段无法安全中断，等待其自然完成，避免 QThread 被销毁时崩溃。
             self._docling_warmup.wait()
+        # 有界等待剩余后台线程自然退出（LLM 调用中的线程由注册表保活，
+        # 最多等待 15 秒；空闲时立即返回，不拖慢正常关窗）。
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            pending = any(
+                p.is_stage1_running or p.is_stage2_running
+                for p in self._processors.values()
+            )
+            llm_busy = self._llm_worker is not None and self._llm_worker.isRunning()
+            if not pending and not llm_busy:
+                break
+            QApplication.processEvents()
+            time.sleep(0.1)
         super().closeEvent(event)
 
     def _init_all_clients(self) -> None:
@@ -669,7 +733,7 @@ class MainWindow(QMainWindow):
             label.style().unpolish(label)
             label.style().polish(label)
 
-        _set_chip(self._status_parse_label, self._llm_parse, _label(self._llm_parse, "识图"))
+        _set_chip(self._status_parse_label, self._llm_parse, _label(self._llm_parse, "解析"))
         _set_chip(self._status_translate_label, self._llm_translate, _label(self._llm_translate, "翻译"))
         _set_chip(self._status_write_label, self._llm_write, _label(self._llm_write, "写作与引用"))
 

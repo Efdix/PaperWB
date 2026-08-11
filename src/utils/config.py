@@ -58,7 +58,7 @@ DEFAULT_CONFIG: dict = {
         "api_key": "",
         "base_url": "https://api.deepseek.com",
         "model": "deepseek-v4-flash",
-        "description": "识图接口 — 用于跨页整合和论文问答；逐页版式解析由本地模型完成",
+        "description": "解析接口 — 用于跨页段落整合和论文问答（含图片解读）；逐页版式解析由本地模型完成",
     },
     "translate_api": {
         "provider": "DeepSeek",
@@ -194,7 +194,7 @@ def load_config() -> dict:
     # ---- 迁移旧 reading_api → parse_api ----
     if "reading_api" in saved and "parse_api" not in saved:
         saved["parse_api"] = saved.pop("reading_api")
-        saved["parse_api"]["description"] = "识图接口 — 用于跨页整合和论文问答；逐页版式解析由本地模型完成"
+        saved["parse_api"]["description"] = "解析接口 — 用于跨页段落整合和论文问答；逐页版式解析由本地模型完成"
 
     # ---- 迁移旧 review_api → write_api ----
     if "review_api" in saved and "write_api" not in saved:

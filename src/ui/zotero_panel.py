@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
@@ -34,9 +35,11 @@ class ZoteroPanel(QWidget):
 
     信号:
         pdf_selected(str): 用户点击了带 PDF 附件的条目，传出 PDF 绝对路径。
+        reparse_requested(str): 清缓存后全流程重跑（解析+整合）。
     """
 
     pdf_selected = Signal(str)
+    reparse_requested = Signal(str)
 
     def __init__(self, library: "ZoteroLibrary | None" = None,
                  watcher: "ZoteroWatcher | None" = None, parent=None):
@@ -247,12 +250,23 @@ class ZoteroPanel(QWidget):
 
     def _on_context_menu(self, pos):
         item = self._tree.itemAt(pos)
+        if item is None:
+            return  # 空白区域不弹出空菜单
         menu = QMenu(self)
         data = item.data(0, Qt.ItemDataRole.UserRole) if item else None
         if data and data.get("kind") == "item":
+            has_pdf = bool(data.get("pdf_path"))
             a = menu.addAction("  📖 在阅读器中打开")
-            a.setEnabled(bool(data.get("pdf_path")))
+            a.setEnabled(has_pdf)
             a.triggered.connect(lambda: self._open_item(data))
+            menu.addSeparator()
+            a = menu.addAction("  🔄 重新解析整合")
+            a.setEnabled(has_pdf)
+            a.triggered.connect(lambda: self._on_reparse(data))
+            a = menu.addAction("  📂 打开文件位置")
+            a.setEnabled(has_pdf)
+            a.triggered.connect(lambda: self._open_file_location(data))
+            menu.addSeparator()
             a = menu.addAction("  🔄 手动同步")
             a.triggered.connect(self._on_manual_refresh)
             menu.exec(self._tree.viewport().mapToGlobal(pos))
@@ -265,6 +279,51 @@ class ZoteroPanel(QWidget):
     def _open_item(self, data: dict):
         if data.get("pdf_path"):
             self.pdf_selected.emit(data["pdf_path"])
+
+    # ---- 重新解析整合 / 打开文件位置（与「其它文献」面板行为一致）----
+
+    def _confirm_rerun(self, title: str, message: str) -> bool:
+        r = QMessageBox.question(
+            self, title, message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return r == QMessageBox.StandardButton.Yes
+
+    def _on_reparse(self, data: dict):
+        """请求重新解析并整合（缓存清除由 app 层在停止后台线程后执行）。"""
+        path = data.get("pdf_path", "")
+        if not path:
+            return
+        if self._confirm_rerun(
+            "重新解析整合",
+            "将清除该文献的逐页解析与整合结果并全流程重跑（解析+整合），\n继续？",
+        ):
+            self.reparse_requested.emit(path)
+
+    def _open_file_location(self, data: dict):
+        """在资源管理器中打开 PDF 所在位置并选中该文件。"""
+        path = data.get("pdf_path", "")
+        if not path:
+            return
+        import subprocess
+        try:
+            if os.name == "nt":
+                subprocess.Popen(["explorer", "/select,", path])
+                return
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", path])
+                return
+            subprocess.Popen(["xdg-open", os.path.dirname(path) or "."])
+        except OSError:
+            dirname = os.path.dirname(path) or "."
+            try:
+                if os.name == "nt":
+                    os.startfile(dirname)  # noqa: S606
+                else:
+                    subprocess.Popen([sys.platform == "darwin" and "open" or "xdg-open", dirname])
+            except OSError as e:
+                QMessageBox.warning(self, "打开失败", f"无法打开文件位置：{e}")
 
     def _on_manual_refresh(self):
         if self._watcher is not None:
