@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import copy
 import os
 import time
 from typing import TYPE_CHECKING
@@ -91,7 +92,15 @@ class ParagraphCard(QFrame):
         self._setup_ui()
 
     def hasHeightForWidth(self) -> bool:
-        return True
+        # 高度在 resizeEvent 中显式同步，避免 QVBoxLayout 混合多个
+        # heightForWidth 卡片时使用错误宽度缓存导致卡片重叠。
+        return False
+
+    def sizeHint(self):
+        """给滚动区一个包含图片的初始高度，避免卡片被压成一条细线。"""
+        base = super().sizeHint()
+        width = max(base.width(), 640)
+        return QSize(width, self.heightForWidth(width))
 
     def heightForWidth(self, w: int) -> int:
         marg = self.contentsMargins()
@@ -107,6 +116,19 @@ class ParagraphCard(QFrame):
     def sizeHint(self):
         base = super().sizeHint()
         return QSize(base.width(), self.heightForWidth(base.width()))
+
+    def _sync_card_height(self, width: int | None = None) -> None:
+        width = width or self.width() or 640
+        # QLabel 的 heightForWidth 不总是包含样式表 padding，尤其是多行标题。
+        # 预留少量安全空间，避免最后一行文字被卡片边界裁掉。
+        required = self.heightForWidth(max(width, 50)) + 20
+        if self.minimumHeight() != required:
+            self.setMinimumHeight(required)
+        self.updateGeometry()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._sync_card_height(self.width())
 
     def _detect_en(self, text: str) -> bool:
         if not text:
@@ -164,6 +186,7 @@ class ParagraphCard(QFrame):
             self._setup_reference_card()
         else:
             self._setup_body_card()
+        self._sync_card_height(640)
 
     def _make_card_base(self, bg: str = "#fffdfa", border: str = "#e5e1d9"):
         self.setStyleSheet(
@@ -469,6 +492,7 @@ class ParagraphCard(QFrame):
             self.trans_btn.setVisible(False)
         if hasattr(self, 're_trans_btn'):
             self.re_trans_btn.setVisible(True)
+        self._sync_card_height(self.width())
 
     def show_translation_error(self, err: str):
         if hasattr(self, 'trans_btn'):
@@ -512,12 +536,13 @@ class ImageCard(QFrame):
         self._page_label: QLabel | None = None
         self._caption_label: QLabel | None = None
         self._desc_label: QLabel | None = None
+        self._separator: QFrame | None = None
         self._qa_btn: QPushButton | None = None
         self._qa_edit: QLineEdit | None = None
         self._setup_ui()
 
     def hasHeightForWidth(self) -> bool:
-        return True
+        return False
 
     def heightForWidth(self, w: int) -> int:
         """按给定宽度计算整卡所需高度（含图片缩放、图注换行、按钮、输入框）。
@@ -536,6 +561,8 @@ class ImageCard(QFrame):
         if self._desc_label is not None:
             items_h.append(self._desc_label.heightForWidth(inner_w))
         if self._qa_btn is not None:
+            if self._separator is not None:
+                items_h.append(1)
             items_h.append(self._qa_btn.sizeHint().height())
         if self._qa_edit is not None and self._qa_edit.isVisible():
             items_h.append(self._qa_edit.heightForWidth(inner_w))
@@ -566,7 +593,9 @@ class ImageCard(QFrame):
             "ImageCard { background-color: #fffdfa; border: 1px solid #e5e1d9; "
             "border-radius: 12px; margin: 8px 12px; }"
         )
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        policy.setHeightForWidth(False)
+        self.setSizePolicy(policy)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(self.MARGIN_LR, self.MARGIN_TB, self.MARGIN_LR, self.MARGIN_TB)
         layout.setSpacing(8)
@@ -595,6 +624,11 @@ class ImageCard(QFrame):
             desc.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             layout.addWidget(desc)
             self._desc_label = desc
+
+        self._separator = QFrame()
+        self._separator.setFrameShape(QFrame.Shape.HLine)
+        self._separator.setStyleSheet("background-color: #e5e1d9; max-height: 1px;")
+        layout.addWidget(self._separator)
 
         self._qa_btn = QPushButton("🔍 解读图片" if etype == "figure" else "📊 解读表格")
         self._qa_btn.setStyleSheet(
@@ -665,6 +699,8 @@ class ImageCard(QFrame):
             return
         pixmap = self._original_pixmap
         if not pixmap or pixmap.isNull():
+            self.setMinimumHeight(self.heightForWidth(card_w))
+            self.updateGeometry()
             return
         inner_w = max(card_w - self.MARGIN_LR * 2, 50)
         pw, ph = pixmap.width(), pixmap.height()
@@ -677,7 +713,9 @@ class ImageCard(QFrame):
             display = pixmap
         self._img_label.setPixmap(display)
         self._img_label.setFixedHeight(display.height())
-        # 卡片高度交给 heightForWidth 计算，随宽度自适应，不再强制固定高度
+        # QVBoxLayout 在滚动区中有时不会采用 heightForWidth 的结果，
+        # 显式同步最小高度，避免图片标签溢出后被下一张卡片覆盖。
+        self.setMinimumHeight(self.heightForWidth(card_w))
         self.updateGeometry()
 
 
@@ -805,7 +843,12 @@ class PDFViewerPanel(QWidget):
         from ..utils.config import load_doc_state
         cached_state = load_doc_state(file_path)
         cached_doc = cached_state.get("structured_document")
-        if cached_doc:
+        from ..core.pdf_processor import FAST_DOCUMENT_VERSION
+        cache_is_current = (
+            cached_state.get("doc_format") == "fast"
+            and cached_state.get("fast_version", 0) == FAST_DOCUMENT_VERSION
+        )
+        if cached_doc and cache_is_current:
             try:
                 from ..core.pdf_processor import StructuredDocument
                 doc = StructuredDocument.from_dict(cached_doc)
@@ -1075,7 +1118,34 @@ class PDFViewerPanel(QWidget):
             try:
                 if elem.element_type in ("figure", "table"):
                     elem.image_path = self._resolve_image_path(elem, image_base_dir)
-                    card = ImageCard(elem, parent=self.container)
+                    caption_text = (elem.image_caption or "").strip()
+                    image_elem = copy(elem)
+                    image_elem.image_caption = ""
+                    card = ImageCard(image_elem, parent=self.container)
+                    card.qa_requested.connect(self._on_card_qa)
+                    self._cards.append(card)
+                    self.card_layout.addWidget(card)
+
+                    if caption_text:
+                        caption_elem = copy(elem)
+                        caption_elem.element_type = (
+                            "figure_caption" if elem.element_type == "figure"
+                            else "table_caption"
+                        )
+                        caption_elem.text = caption_text
+                        caption_elem.image_path = ""
+                        caption_elem.image_caption = ""
+                        caption_elem.element_id = f"{elem.element_id}:caption"
+                        caption_card = ParagraphCard(
+                            caption_elem, i, parent=self.container,
+                        )
+                        caption_card.translate_requested.connect(
+                            self._on_translate_request
+                        )
+                        caption_card.qa_requested.connect(self._on_card_qa)
+                        self._cards.append(caption_card)
+                        self.card_layout.addWidget(caption_card)
+                    continue
                 elif elem.element_type in ("header_footer", "publisher_logo"):
                     continue
                 else:

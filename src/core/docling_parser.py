@@ -75,6 +75,10 @@ def get_converter(do_ocr: bool = False) -> DocumentConverter:
     do_ocr=False 使用纯版式解析（文本型 PDF，默认、快）；
     do_ocr=True 启用 OCR（扫描版 PDF 回退，慢）。
     两种配置分别缓存，互不干扰。
+
+    docling 2.x 的 DocumentConverter 构造签名改为
+    ``(allowed_formats, format_options)``，旧版（1.x）仍接受 ``pipeline_options``
+    关键字。这里优先用新版 API，TypeError 时回退旧写法以兼容两种版本。
     """
     key = bool(do_ocr)
     conv = _converters.get(key)
@@ -86,7 +90,16 @@ def get_converter(do_ocr: bool = False) -> DocumentConverter:
                 from docling.datamodel.pipeline_options import PdfPipelineOptions
                 opts = PdfPipelineOptions()
                 opts.do_ocr = key
-                conv = DocumentConverter(pipeline_options=opts)
+                try:
+                    # docling >= 2.0：通过 format_options 传入 PDF 管线选项
+                    from docling.document_converter import PdfFormatOption
+                    from docling.datamodel.base_models import InputFormat
+                    conv = DocumentConverter(format_options={
+                        InputFormat.PDF: PdfFormatOption(pipeline_options=opts),
+                    })
+                except TypeError:
+                    # docling 1.x：直接传 pipeline_options
+                    conv = DocumentConverter(pipeline_options=opts)
                 _converters[key] = conv
     return conv
 
@@ -241,24 +254,34 @@ def _append_missing_bitmaps(pdf_path: str, doc, rows: list[dict],
                             page_counter: dict[int, int]) -> None:
     """Docling 布局模型漏检图片时，用 PyMuPDF 位图区域兜底补成 figure 元素。
 
-    只作用于本页没有任何 figure/table 元素的页面；被更大图覆盖的嵌套区域去重。
+    - 本页无任何 figure/table 元素：全量补充位图区域（原逻辑）。
+    - 本页已检出 figure/table：仍检查未被现有 figure/table bbox 覆盖的
+      大位图区域并补充（避免 docling 只检出小图、漏掉大图）。
+    被更大图覆盖的嵌套区域去重。
     """
     try:
         import fitz
     except Exception:
         return
-    pages_with_fig = {r["page"] for r in rows if r["type"] in ("figure", "table")}
+    # 已检出的 figure/table 的像素 bbox（150dpi，左上原点）
+    existing_pixel_bbox: dict[int, list[list[float]]] = {}
+    for r in rows:
+        if r["type"] in ("figure", "table") and len(r.get("bbox") or []) == 4:
+            existing_pixel_bbox.setdefault(r["page"], []).append(
+                [float(v) for v in r["bbox"]]
+            )
     try:
         pdf = fitz.open(pdf_path)
     except Exception:
         return
+    scale = 150.0 / 72.0  # pt → 150dpi 像素
     try:
         for page_no in range(1, len(pdf) + 1):
-            if page_no in pages_with_fig:
-                continue
             try:
                 infos = pdf[page_no - 1].get_image_info()
             except Exception:
+                continue
+            if not infos:
                 continue
             added = 0
             taken: list[list[float]] = []
@@ -266,11 +289,25 @@ def _append_missing_bitmaps(pdf_path: str, doc, rows: list[dict],
                 bbox = info.get("bbox", [0, 0, 0, 0])
                 if len(bbox) != 4 or bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
                     continue
-                area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                w = bbox[2] - bbox[0]
+                h = bbox[3] - bbox[1]
+                area = w * h
                 if area < _MIN_IMAGE_AREA_PT2:
+                    continue
+                # 细长条（页边装饰线/分隔条带）不是内容图：宽高比异常大/小 → 跳过
+                if w / h > 8 or h / w > 8:
                     continue
                 if any(_rect_intersect_area(bbox, t) >= area * 0.7 for t in taken):
                     continue  # 已被更大的图覆盖
+                # 位图 bbox → 150dpi 像素，与 docling 检出的 figure/table bbox 同坐标系
+                px_bbox = [v * scale for v in bbox]
+                px_area = area * scale * scale
+                # 已被 docling 检出的 figure/table bbox 覆盖 70% 以上 → 跳过
+                if any(
+                    _rect_intersect_area(px_bbox, ex) >= px_area * 0.7
+                    for ex in existing_pixel_bbox.get(page_no, [])
+                ):
+                    continue
                 taken.append(bbox)
                 idx = page_counter.get(page_no, 0) + 1
                 page_counter[page_no] = idx
@@ -290,9 +327,137 @@ def _append_missing_bitmaps(pdf_path: str, doc, rows: list[dict],
                 })
                 added += 1
             if added:
-                print(f"[Docling] 第 {page_no} 页 Docling 未检出图片，按位图区域补 {added} 个")
+                print(f"[Docling] 第 {page_no} 页按位图区域补 {added} 个缺失图片")
     finally:
         pdf.close()
+
+
+def _append_missing_page_texts(pdf_path: str, doc, rows: list[dict],
+                               page_counter: dict[int, int]) -> None:
+    """Docling 布局模型整页漏检（0 元素）时，用 PyMuPDF 文本块兜底补 body 元素。
+
+    某些 PDF 页 docling 2.x 的 iterate_items 会完全无输出（pages dict 有该页，
+    但没有任何 item），导致整页正文丢失。此时退回 PyMuPDF 逐块提取文本，
+    按阅读顺序（y 自上而下）补成 body 元素，保证正文不因解析器遗漏而断裂。
+    """
+    try:
+        import fitz
+    except Exception:
+        return
+    try:
+        pdf = fitz.open(pdf_path)
+    except Exception:
+        return
+    try:
+        pages_with_rows: set[int] = {r["page"] for r in rows}
+        for page_no in range(1, len(pdf) + 1):
+            if page_no in pages_with_rows:
+                continue  # 该页 docling 已有输出，不重复兜底
+            try:
+                blocks = pdf[page_no - 1].get_text("blocks")
+            except Exception:
+                continue
+            meaningful = [
+                b for b in blocks
+                if b[4] and len(b[4].strip()) > 1
+                and not _looks_like_page_watermark(b[4])
+            ]
+            if not meaningful:
+                continue
+            merged_blocks = _merge_text_blocks(meaningful)
+            try:
+                page_h = float(doc.pages[page_no].size.height)
+            except Exception:
+                page_h = float(pdf[page_no - 1].rect.height)
+            scale = 150.0 / 72.0
+            for b in merged_blocks:
+                x0, y0, x1, y1 = b["bbox"]
+                idx = page_counter.get(page_no, 0) + 1
+                page_counter[page_no] = idx
+                # PyMuPDF 左上原点 → 应用 150dpi 像素 bbox
+                rows.append({
+                    "page": page_no,
+                    "id": f"p{page_no}_e{idx}",
+                    "type": "body",
+                    "text": b["text"],
+                    "bbox": [
+                        round(x0 * scale, 1),
+                        round(y0 * scale, 1),
+                        round(x1 * scale, 1),
+                        round(y1 * scale, 1),
+                    ],
+                    "caption": "",
+                    "is_meaningful": True,
+                    "description": "",
+                    "section_name": "",
+                    "font_size": 0.0,
+                    "is_bold": False,
+                    "level": 0,
+                    "source": "pymupdf_fallback",
+                })
+            if merged_blocks:
+                print(f"[Docling] 第 {page_no} 页 Docling 无任何输出，"
+                      f"用 PyMuPDF 文本块兜底补 {len(merged_blocks)} 个正文段落")
+    finally:
+        pdf.close()
+
+
+def _looks_like_page_watermark(text: str) -> bool:
+    """判断文本块是否仅为铺页水印噪声（如 ARTICLE IN PRESS 旋转水印）。"""
+    t = " ".join(text.split()).lower()
+    if not t:
+        return True
+    return t in ("article in press", "article in press1", "article in press ")
+
+
+def _merge_text_blocks(blocks: list[tuple]) -> list[dict]:
+    """将 PyMuPDF 按行返回的文本块合并为自然段。
+
+    文本层异常的 PDF 可能把每一行都暴露为独立 block。相邻行若处于
+    同一栏且垂直间距接近行距，则合并；明显更大的间距保留为段落边界。
+    """
+    ordered = sorted(blocks, key=lambda b: (float(b[1]), float(b[0])))
+    merged: list[dict] = []
+    for block in ordered:
+        text = " ".join(str(block[4]).split())
+        if not text:
+            continue
+        x0, y0, x1, y1 = (float(block[0]), float(block[1]),
+                          float(block[2]), float(block[3]))
+        current = {
+            "bbox": [x0, y0, x1, y1],
+            "text": text,
+            "_last_y0": y0,
+            "_last_y1": y1,
+        }
+        if merged:
+            prev = merged[-1]
+            px0, py0, px1, py1 = prev["bbox"]
+            prev_w = max(px1 - px0, 1.0)
+            curr_w = max(x1 - x0, 1.0)
+            overlap = min(px1, x1) - max(px0, x0)
+            same_column = abs(x0 - px0) <= 10.0 and overlap >= min(prev_w, curr_w) * 0.55
+            last_y0 = prev["_last_y0"]
+            last_y1 = prev["_last_y1"]
+            line_height = max(last_y1 - last_y0, y1 - y0, 1.0)
+            gap = y0 - last_y1
+            if same_column and 0.0 <= gap <= max(14.0, line_height * 1.05):
+                joiner = "" if prev["text"].endswith("-") else " "
+                if joiner == "":
+                    prev["text"] = prev["text"][:-1] + text
+                else:
+                    prev["text"] += joiner + text
+                prev["bbox"] = [
+                    min(px0, x0), min(py0, y0), max(px1, x1), max(py1, y1),
+                ]
+                prev["_last_y0"] = y0
+                prev["_last_y1"] = y1
+                continue
+        merged.append(current)
+    return [
+        {"bbox": item["bbox"], "text": item["text"]}
+        for item in merged
+    ]
 
 
 def parse_pdf(pdf_path: str, dpi: int = 150) -> list[dict]:
@@ -361,8 +526,10 @@ def parse_pdf(pdf_path: str, dpi: int = 150) -> list[dict]:
         })
 
     # 按页聚合
-    # 兜底：Docling 漏检的位图区域补成 figure 元素
+    # 兜底 1：Docling 漏检的位图区域补成 figure 元素
     _append_missing_bitmaps(pdf_path, doc, rows, page_counter)
+    # 兜底 2：Docling 整页无输出时用 PyMuPDF 文本块补正文
+    _append_missing_page_texts(pdf_path, doc, rows, page_counter)
     pages: dict[int, list[dict]] = {}
     for r in rows:
         pages.setdefault(r["page"], []).append(r)

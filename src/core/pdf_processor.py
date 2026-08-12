@@ -9,6 +9,8 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -19,6 +21,33 @@ from ..utils.threads import track
 
 if TYPE_CHECKING:
     from .llm_client import LLMClient
+
+
+FAST_DOCUMENT_VERSION = 3
+DOCLING_PARSER_VERSION = "docling_v3"
+
+
+def _warm_up_converter(get_converter) -> None:
+    """在普通 Python 线程里创建 docling converter（两套：OCR/非 OCR）。
+
+    docling/torch 的转换器若在 QThread 内首次创建会与 Qt 事件循环死锁
+    （权重加载后线程卡死，Stage 1 永不结束）。docling 的全局转换器缓存
+    ``_converters`` 是跨线程共享的：这里先在普通线程建好并缓存，之后
+    QThread 里的 ``parse_pdf`` 只会命中已就绪的转换器，从而避开死锁。
+    """
+    def _create() -> None:
+        try:
+            get_converter(False)
+        except Exception:
+            pass
+        try:
+            get_converter(True)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_create, daemon=True)
+    t.start()
+    t.join()  # 阻塞等待：converter 就绪后 QThread 才继续，保证不触发线程内首次创建
 
 
 # ============================================================
@@ -216,7 +245,7 @@ class PageManifest:
     created_at: float = 0.0
     updated_at: float = 0.0
     integration_version: int = 0  # 跨页整合版本号（变更prompt时可递增使缓存失效）
-    parser: str = "docling"       # 固定使用本地版式解析
+    parser: str = DOCLING_PARSER_VERSION  # 固定使用本地版式解析
 
     @property
     def done_count(self) -> int:
@@ -262,7 +291,7 @@ class PageManifest:
             created_at=d.get("created_at", 0.0),
             updated_at=d.get("updated_at", 0.0),
             integration_version=d.get("integration_version", 0),
-            parser=d.get("parser", "docling"),
+            parser=d.get("parser", DOCLING_PARSER_VERSION),
         )
 
 
@@ -441,6 +470,25 @@ _FAST_PRIORITY: dict[str, str] = {
 # 参与跨页接缝检测的文本元素类型
 _SEAM_TEXT_TYPES = frozenset({"body", "abstract_body"})
 
+# 铺页水印（ARTICLE IN PRESS 等），docling 可能把水印并进正文段落开头或中间
+_WATERMARK_RE = re.compile(
+    r"\bARTICLE\s+IN\s+PRESS\d*\b|\bARTICLE\s+IN\s+PRESS\b", re.IGNORECASE
+)
+
+
+def _strip_watermarks(text: str) -> str:
+    """从元素文本中剥离铺页水印（如 ARTICLE IN PRESS），压缩多余空白。
+
+    水印可能出现在段落开头（摘要/正文被整体误判）或段落中间
+    （docling 把旋转水印识别进正文），剥离后保留真实正文。
+    """
+    if not text:
+        return ""
+    t = _WATERMARK_RE.sub(" ", text)
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    return t
+
+
 # 期刊页眉/版头黑名单（按前缀/精确匹配剔除，避免当标题或小节显示）
 _RUNNING_HEAD_BLACKLIST = (
     "article in press", "article in press1", "article in press ",
@@ -453,8 +501,19 @@ _RUNNING_HEAD_BLACKLIST = (
 
 
 def _is_running_head(text: str) -> bool:
-    """判断文本是否为期刊运行页眉/版头噪声（如 ARTICLE IN PRESS）。"""
-    t = (text or "").strip()
+    """判断文本是否为期刊运行页眉/版头噪声（如 ARTICLE IN PRESS）。
+
+    先剥离铺页水印再判断：
+    - 原文本为空（如 figure/table 元素只有截图无文字）→ 不是 running head，保留
+    - 原文非空但剥离水印后为空（如封面大图区被识别成纯水印 text）→ 纯噪声，剔除
+    - 水印+正文（如摘要被并入水印）→ 剥离后保留正文，避免整段误杀
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return False  # 空元素（图/表）不是噪声
+    t = _strip_watermarks(raw)
+    if not t:
+        return True  # 剥离水印后为空 → 纯噪声
     low = t.lower()
     return any(low.startswith(p) for p in _RUNNING_HEAD_BLACKLIST)
 
@@ -525,6 +584,114 @@ def _figure_internal_text(e: dict, figure_bboxes: list[list[float]]) -> bool:
     except (TypeError, KeyError, IndexError, ValueError):
         pass
     return False
+
+
+_FIGURE_CAPTION_RE = re.compile(
+    r"^(?:fig(?:ure)?|extended\s+data|supplementary\s+fig(?:ure)?)\s*"
+    r"[.:]?\s*\d+",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_figure_caption(text: str) -> bool:
+    """识别图版页上仍应保留的明确图注。"""
+    return bool(_FIGURE_CAPTION_RE.match(_strip_watermarks(text)))
+
+
+def _is_decorative_figure(element: dict, page_elements: list[dict],
+                           page_no: int) -> bool:
+    """过滤出版社 Logo/更新图标等无图注装饰图，不影响正文大图。"""
+    if element.get("type") != "figure":
+        return False
+    if not element.get("is_meaningful", True):
+        return True
+    if (element.get("text") or "").strip() or (element.get("caption") or "").strip():
+        return False
+    bbox = element.get("bbox") or []
+    if len(bbox) != 4:
+        return False
+    area = max(0.0, float(bbox[2]) - float(bbox[0])) * max(
+        0.0, float(bbox[3]) - float(bbox[1])
+    )
+    if area < 2500.0:
+        return True
+    boxes = [
+        e.get("bbox") for e in page_elements
+        if len(e.get("bbox") or []) == 4
+    ]
+    if not boxes:
+        return False
+    page_area = max(float(b[2]) for b in boxes) * max(float(b[3]) for b in boxes)
+    # 首页无图注且只占页面小部分的图，通常是出版社 Logo/更新徽标。
+    return page_no == 1 and page_area > 0 and area / page_area < 0.25
+
+
+def _is_front_matter_noise(text: str, page_no: int, element_type: str) -> bool:
+    """过滤首页出版社模板碎片，不误删正文中的同名术语。"""
+    if page_no != 1 or element_type not in ("body", "subtitle", "metadata"):
+        return False
+    t = _strip_watermarks(text).strip()
+    low = t.lower()
+    if not t:
+        return True
+    if low in {"article", "article type", "check for updates"}:
+        return True
+    if "doi.org/" in low or low.startswith("https://doi"):
+        return True
+    return len(t) <= 60 and not re.search(r"[a-z\u4e00-\u9fff]", t, re.IGNORECASE)
+
+
+def _figure_plate_pages(page_data: list[dict]) -> set[int]:
+    """识别以整页图版为主的页面，避免把坐标轴标签当正文卡片。
+
+    论文正文中的单个插图不触发该规则；只有页面上有多幅图且文字大多是
+    短标签，或一幅图覆盖页面主要区域时才认定为图版页。
+    """
+    plate_pages: set[int] = set()
+    for page in page_data:
+        try:
+            page_no = int(page.get("page", 0))
+        except (TypeError, ValueError):
+            continue
+        elements = [e for e in page.get("elements", []) if isinstance(e, dict)]
+        figures = [
+            e for e in elements
+            if e.get("type") in ("figure", "table")
+            and len(e.get("bbox") or []) == 4
+        ]
+        if not figures:
+            continue
+        boxes = [e["bbox"] for e in elements if len(e.get("bbox") or []) == 4]
+        if not boxes:
+            continue
+        page_w = max(float(b[2]) for b in boxes)
+        page_h = max(float(b[3]) for b in boxes)
+        page_area = max(page_w * page_h, 1.0)
+        areas = [
+            max(0.0, float(e["bbox"][2]) - float(e["bbox"][0]))
+            * max(0.0, float(e["bbox"][3]) - float(e["bbox"][1]))
+            for e in figures
+        ]
+        largest_ratio = max(areas, default=0.0) / page_area
+        text_items = [
+            _strip_watermarks(e.get("text") or "")
+            for e in elements
+            if e.get("type") not in (
+                "figure", "table", "figure_caption", "table_caption",
+            )
+        ]
+        text_items = [t for t in text_items if t]
+        short_ratio = (
+            sum(len(t) <= 80 for t in text_items) / len(text_items)
+            if text_items else 1.0
+        )
+        if (
+            len(figures) >= 3 and short_ratio >= 0.75
+        ) or (
+            largest_ratio >= 0.55 and short_ratio >= 0.75
+        ):
+            plate_pages.add(page_no)
+    return plate_pages
 
 
 def _sorted_elements(elements: list[dict]) -> list[dict]:
@@ -662,7 +829,7 @@ def _bind_captions(page_data: list[dict]) -> tuple[dict[str, str], set[str]]:
             if etype in ("figure", "table"):
                 figure_map.setdefault(pn, []).append(e)
             elif etype in ("figure_caption", "table_caption"):
-                if (e.get("text") or "").strip():
+                if _strip_watermarks(e.get("text") or ""):
                     captions.append(e)
                     page_of[str(e["id"])] = pn
     binding: dict[str, str] = {}
@@ -675,7 +842,7 @@ def _bind_captions(page_data: list[dict]) -> tuple[dict[str, str], set[str]]:
             continue
         taken.add(fid)
         used.add(cid)
-        cap_txt = (cap.get("text") or "").strip()
+        cap_txt = _strip_watermarks(cap.get("text") or "")
         old = binding.get(fid)
         if old:
             cap_txt = old + " " + cap_txt
@@ -697,6 +864,25 @@ def build_document_fast(page_data: list[dict],
     if not isinstance(merged_seams, dict):
         merged_seams = {}
     binding, used_captions = _bind_captions(page_data)
+    figure_plate_pages = _figure_plate_pages(page_data)
+    page_elements_by_no = {
+        int(page.get("page", 0)): [
+            e for e in page.get("elements", []) if isinstance(e, dict)
+        ]
+        for page in page_data
+    }
+    plate_primary_ids = {
+        int(page.get("page", 0)): next(
+            (
+                str(e.get("id"))
+                for e in page.get("elements", [])
+                if e.get("type") in ("figure", "table") and e.get("id")
+            ),
+            "",
+        )
+        for page in page_data
+        if int(page.get("page", 0)) in figure_plate_pages
+    }
 
     by_id: dict[str, dict] = {}
     page_by_id: dict[str, int] = {}
@@ -730,22 +916,24 @@ def build_document_fast(page_data: list[dict],
         e = ordered[i]
         eid = str(e.get("id", ""))
         etype = e.get("type", "unknown")
-        text = (e.get("text", "") or "").strip()
+        text = _strip_watermarks(e.get("text", "") or "")
+        page_no = page_by_id.get(eid, int(e.get("page", 0) or 0))
 
         # 跨页接缝：命中缓存 → 合并为一个正文元素
         seam = merged_seams.get(eid) if isinstance(merged_seams, dict) else None
         if seam and etype in _SEAM_TEXT_TYPES:
             next_id = str(seam.get("with_id", ""))
-            merged_text = str(seam.get("merged_text", "") or "").strip()
+            merged_text = _strip_watermarks(seam.get("merged_text", "") or "")
             if next_id and merged_text:
                 elem = StructuredElement(
                     element_type="body",
                     text=merged_text,
-                    page=page_by_id.get(eid, 0),
+                    page=page_no,
                     heading_level=0,
                     section_name=current_section,
                     display_priority="normal",
                     element_id=eid,
+                    bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
                 )
                 display.append(elem)
                 # 跳过被合并的下一页首元素
@@ -763,11 +951,30 @@ def build_document_fast(page_data: list[dict],
         if eid in used_captions:
             continue  # 已并入图表块
 
+        is_media = etype in ("figure", "table", "figure_caption", "table_caption")
+        if _is_front_matter_noise(text, page_no, etype):
+            continue
+        if etype == "figure" and _is_decorative_figure(
+            e, page_elements_by_no.get(page_no, []), page_no,
+        ):
+            continue
+        if (
+            page_no in figure_plate_pages
+            and etype in ("figure", "table")
+            and eid != plate_primary_ids.get(page_no)
+        ):
+            continue  # 多面板图版改为一张完整页面图
+        if not text and not is_media:
+            continue
+        if page_no in figure_plate_pages and not is_media:
+            if not _looks_like_figure_caption(text):
+                continue
+
         # 运行页眉噪声（ARTICLE IN PRESS 等）与图内标签文字不进入正文流
         if _is_running_head(text):
             continue
         if etype not in ("figure", "table"):
-            fb = figure_bboxes_by_page.get(page_by_id.get(eid, 0), [])
+            fb = figure_bboxes_by_page.get(page_no, [])
             if fb and _figure_internal_text(e, fb):
                 if len(text) <= 60 or not text:
                     continue
@@ -782,11 +989,12 @@ def build_document_fast(page_data: list[dict],
             elem = StructuredElement(
                 element_type="subtitle",
                 text=text,
-                page=page_by_id.get(eid, 0),
+                page=page_no,
                 heading_level=current_level,
                 section_name="",
                 display_priority=priority,
                 element_id=eid,
+                bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
             )
             display.append(elem)
             toc.append({
@@ -812,7 +1020,7 @@ def build_document_fast(page_data: list[dict],
         if etype in ("figure", "table"):
             image_caption = binding.get(eid, "")
             if not image_caption:
-                image_caption = str(e.get("caption", "") or "").strip()
+                image_caption = _strip_watermarks(e.get("caption", "") or "")
         if etype in ("figure", "table") and not text and not image_caption:
             # 空图 + 无图注：仍保留（截图由 image_path 回填后展示）
             pass
@@ -820,11 +1028,13 @@ def build_document_fast(page_data: list[dict],
         elem = StructuredElement(
             element_type=etype,
             text=text,
-            page=page_by_id.get(eid, 0),
+            page=page_no,
             heading_level=0,
             section_name=current_section if etype in ("body", "abstract_body") else "",
             display_priority=priority,
             element_id=eid,
+            bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+            image_path=str(e.get("image_path") or ""),
             image_caption=image_caption,
         )
         display.append(elem)
@@ -865,6 +1075,7 @@ def rebuild_document_fast(pdf_path: str) -> "StructuredDocument | None":
             continue
     if not page_data:
         return None
+    ensure_figure_page_snapshots(pdf_path, str(cache_dir), page_data)
     state = load_doc_state(pdf_path)
     merged = state.get("merged_seams") or {}
     if not isinstance(merged, dict):
@@ -895,6 +1106,10 @@ def backfill_image_paths(doc: StructuredDocument, cache_dir: str) -> None:
         if not elem.element_id or elem.element_id in seen:
             continue
         seen.add(elem.element_id)
+        full_snapshot = os.path.join(cache_dir, f"page_{elem.page:03d}_full.png")
+        if elem.element_type == "figure" and os.path.exists(full_snapshot):
+            elem.image_path = full_snapshot
+            continue
         filepath = os.path.join(cache_dir, f"page_{elem.page:03d}.json")
         if not os.path.exists(filepath):
             continue
@@ -1046,13 +1261,58 @@ def crop_meaningful_images(pdf_path: str, cache_dir: str,
         pass  # 裁剪失败不阻塞流程
 
 
+def render_figure_page_snapshot(pdf_path: str, cache_dir: str,
+                                page_num: int, dpi: int = 150) -> str:
+    """将图版页完整渲染为一张 PNG，保留多面板图的原始排版。"""
+    import fitz
+
+    filename = f"page_{page_num:03d}_full.png"
+    output_path = os.path.join(cache_dir, filename)
+    try:
+        doc = fitz.open(pdf_path)
+        if page_num < 1 or page_num > len(doc):
+            doc.close()
+            return ""
+        page = doc[page_num - 1]
+        pix = page.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72), alpha=False)
+        os.makedirs(cache_dir, exist_ok=True)
+        pix.save(output_path)
+        doc.close()
+        return filename
+    except Exception:
+        return ""
+
+
+def ensure_figure_page_snapshots(pdf_path: str, cache_dir: str,
+                                 page_data: list[dict]) -> None:
+    """为图版页生成完整页面图，并挂到该页第一个媒体元素。"""
+    plate_pages = _figure_plate_pages(page_data)
+    for page in page_data:
+        page_no = int(page.get("page", 0) or 0)
+        if page_no not in plate_pages:
+            continue
+        media = [
+            e for e in page.get("elements", [])
+            if e.get("type") in ("figure", "table")
+        ]
+        if not media:
+            continue
+        filename = f"page_{page_no:03d}_full.png"
+        output_path = os.path.join(cache_dir, filename)
+        if not os.path.exists(output_path):
+            filename = render_figure_page_snapshot(pdf_path, cache_dir, page_no)
+        if filename:
+            media[0]["image_path"] = filename
+            media[0]["image_caption"] = media[0].get("caption", "")
+
+
 class DoclingParseWorker(QThread):
     """Docling 本地解析整本 PDF → 逐页缓存（Stage 1 的本地引擎）。"""
 
     page_done = Signal(int)            # page_num（复用 PDFProcessor._on_stage1_page_done）
     progress = Signal(int, int)        # current, total
     status = Signal(str)               # 初始化/解析阶段提示
-    finished = Signal()
+    completed = Signal()               # 解析成功且全部页面落盘后才触发
     error = Signal(str)
     done = Signal()                    # 线程必然退出信号（run 的 finally 触发）
 
@@ -1072,24 +1332,42 @@ class DoclingParseWorker(QThread):
     def _run(self) -> None:
         try:
             self.status.emit("正在加载本地版式模型，首次使用可能需要较长时间...")
-            from .docling_parser import parse_pdf
+            from .docling_parser import parse_pdf, get_converter
             if self.isInterruptionRequested():
                 return
             self.status.emit("正在用本地版式解析器读取 PDF...")
+            # 关键：docling/torch 的 converter 不能在 QThread 内首次创建
+            # （会与 Qt 事件循环死锁）。先在普通 Python 线程里创建并缓存，
+            # 之后 parse_pdf 只会命中已就绪的转换器。
+            _warm_up_converter(get_converter)
+            if self.isInterruptionRequested():
+                return
             pages = parse_pdf(self._pdf_path)
         except Exception as e:  # noqa: BLE001
             self.error.emit(f"Docling 解析失败：{e}")
             return
 
         self._manifest.total_pages = len(pages)
+        figure_plate_pages = _figure_plate_pages(pages)
+        ensure_figure_page_snapshots(self._pdf_path, self._cache_dir, pages)
         for i, page in enumerate(pages):
             if self.isInterruptionRequested():
                 return
             page_num = int(page.get("page", i + 1))
             elements = page.get("elements", [])
 
-            # 裁剪图表区域
-            crop_meaningful_images(self._pdf_path, self._cache_dir, page_num, elements)
+            if page_num in figure_plate_pages:
+                # 图版页保留原始多面板排版，不把每个坐标轴/小位图拆成几十张卡片。
+                full_path = os.path.join(
+                    self._cache_dir, f"page_{page_num:03d}_full.png",
+                )
+                if not os.path.exists(full_path):
+                    crop_meaningful_images(
+                        self._pdf_path, self._cache_dir, page_num, elements,
+                    )
+            else:
+                # 正文页仍按 figure/table bbox 裁剪，支持单图问答。
+                crop_meaningful_images(self._pdf_path, self._cache_dir, page_num, elements)
 
             result = {
                 "page": page_num,
@@ -1099,7 +1377,7 @@ class DoclingParseWorker(QThread):
                 "raw_text": "",
                 "error_message": "",
                 "processed_at": time.time(),
-                "parser": "docling",
+                "parser": DOCLING_PARSER_VERSION,
             }
             self._save_page_cache(page_num, result)
             self._manifest.pages[page_num] = "done"
@@ -1118,7 +1396,7 @@ class DoclingParseWorker(QThread):
                   f"共生成 {png_count} 张图表截图（含位图兜底）")
         except OSError:
             pass
-        self.finished.emit()
+        self.completed.emit()
 
     def _save_page_cache(self, page_num: int, data: dict) -> None:
         os.makedirs(self._cache_dir, exist_ok=True)
@@ -1162,6 +1440,8 @@ class PDFProcessor(QObject):
     stage2_error = Signal(str, str)           # pdf_path, error
     stage2_merged = Signal(str, object)       # pdf_path, StructuredDocument（接缝合并后刷新）
 
+    _STAGE1_MAX_RETRIES = 2  # done_count==0 时回退 Stage 1 的最大重试次数
+
     def __init__(self, pdf_path: str, llm_client: "LLMClient | None") -> None:
         super().__init__()  # QObject init
         self._pdf_path = pdf_path
@@ -1172,6 +1452,7 @@ class PDFProcessor(QObject):
         self._cache_dir: str = ""
         self._integrated_doc: StructuredDocument | None = None
         self._seams_done = False  # 本次会话是否已跑过接缝合并
+        self._stage1_retries = 0  # done_count==0 时回退 Stage 1 的重试次数
 
         self._init_cache()
 
@@ -1208,7 +1489,7 @@ class PDFProcessor(QObject):
 
     @staticmethod
     def _current_parser() -> str:
-        return "docling"
+        return DOCLING_PARSER_VERSION
 
     def _create_fresh_manifest(self) -> PageManifest:
         """创建全新的 manifest（通过 PyMuPDF 获取总页数）。"""
@@ -1230,7 +1511,7 @@ class PDFProcessor(QObject):
             pages={p: "pending" for p in range(1, total + 1)},
             created_at=time.time(),
             updated_at=time.time(),
-            parser="docling",
+            parser=DOCLING_PARSER_VERSION,
         )
 
     # ---- 公共 API ----
@@ -1309,7 +1590,7 @@ class PDFProcessor(QObject):
         self._docling_worker.status.connect(
             lambda message: self.stage1_status.emit(self._pdf_path, message)
         )
-        self._docling_worker.finished.connect(lambda: self._on_stage1_all_done(self._manifest))
+        self._docling_worker.completed.connect(lambda: self._on_stage1_all_done(self._manifest))
         self._docling_worker.error.connect(self._on_stage1_docling_error)
         self._docling_worker.start()
 
@@ -1329,9 +1610,12 @@ class PDFProcessor(QObject):
 
         done_count = self._manifest.done_count
         if done_count == 0:
-            if not self._manifest.is_complete and not self.is_stage1_running:
+            if (not self._manifest.is_complete and not self.is_stage1_running
+                    and self._stage1_retries < self._STAGE1_MAX_RETRIES):
                 # 尚未有任何页面解析完成：回退到 Stage 1 自我修复，
                 # 而不是直接报"没有已完成的页面"（可能由缓存被清/竞态引起）。
+                # 但最多重试有限次数，避免解析持续失败时无限循环"解析/构建"。
+                self._stage1_retries += 1
                 self.start_stage1()
                 return
             self.stage2_error.emit(self._pdf_path, "没有已完成的页面，请等待 Stage 1 完成")
@@ -1442,7 +1726,13 @@ class PDFProcessor(QObject):
         self.stage1_page_done.emit(self._pdf_path, page_num)
 
     def _on_stage1_all_done(self, manifest: PageManifest) -> None:
-        """Stage 1 全部完成。"""
+        """Stage 1 全部完成。
+
+        只有确实解析出页面（done_count > 0）才广播完成事件；否则解析必然已
+        通过 error 信号报告失败，这里直接忽略，避免失败也被当成「完成」。
+        """
+        if manifest is None or manifest.done_count == 0:
+            return
         done = manifest.done_count + manifest.error_count
         self.stage1_progress.emit(self._pdf_path, done, manifest.total_pages)
         self.stage1_complete.emit(self._pdf_path)
@@ -1465,6 +1755,7 @@ class PDFProcessor(QObject):
             state = load_doc_state(self._pdf_path)
             state["structured_document"] = doc.to_dict()
             state["doc_format"] = "fast"  # 标记规则组装格式，旧版整合结果据此重建
+            state["fast_version"] = FAST_DOCUMENT_VERSION
             save_doc_state(self._pdf_path, state)
         except Exception:
             pass  # 保存失败不阻塞流程，可随时重新整合
