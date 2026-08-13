@@ -1,17 +1,16 @@
-# PDFasker — AI 论文解读助手
+# PaperWB — AI 论文解读助手
 
 ## 运行环境
 
-- Python 环境: `D:\science\miniforge3\envs\PDFasker`（conda env，Python 3.11）
-- 所有 Python 命令前需激活: `conda activate PDFasker`
+- Python 环境: `D:\Science\miniforge\envs\PaperWB`（conda env，Python 3.11）
+- 所有 Python 命令前需激活: `conda activate PaperWB`
 - 包管理: pip + `requirements.txt`
-- 3 个核心依赖: `PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3`
-- （`python-dotenv` 在 requirements.txt 中但未被使用）
+- 依赖（requirements.txt）: `PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3` `docling==2.118.0` `rank_bm25==0.2.2` `hf_transfer==0.1.9`
 
 ## 项目入口
 
 ```powershell
-conda activate PDFasker
+conda activate PaperWB
 python main.py
 ```
 
@@ -26,7 +25,7 @@ src/
 │   ├── pdf_parser.py      # PDF 底层工具（PyMuPDF）: 文本提取/渲染
 │   ├── pdf_processor.py   # 核心！两阶段管线:
 │   │                      #   Stage 1: Docling 本地布局解析 → JSON → 缓存
-│   │                      #   Stage 2: 读缓存 → LLM跨页整合 → StructuredDocument → UI
+│   │                      #   Stage 2: 读缓存 → 本地规则组装 → StructuredDocument → UI（跨页接缝合并可调 LLM，失败自动规则兜底）
 │   ├── docling_parser.py  # Docling 本地解析器: PDF → 与视觉管线兼容的逐页元素（设置 HF 镜像/禁用编译）
 │   ├── llm_client.py      # OpenAI 兼容 API 客户端 + json_mode(response_format) + 5 个提供商预设
 │   ├── context_manager.py # Token 预算管理: 长文档走 BM25 检索增强（只发相关段落），短文档用"前70%+后30%"
@@ -45,7 +44,7 @@ src/
 │   ├── writing_panel.py   # 写作面板: 编辑器+知识库管理+Zotero+AI辅助(润色/仅核查/文献补充)+自动保存+字数统计
 │   ├── diff_dialog.py     # 润色对比对话框: 内联 diff(单编辑框)+导航栏(上一处/下一处/接受/拒绝)+AI 对话+引用高亮
 │   ├── lit_search_dialog.py # 文献补充对话框: LLM 双轨推荐(已知文献+搜索词)→PubMed 检索→导出 CSV（非模态）
-│   ├── settings_dialog.py # 设置对话框: API接口设置(解析/翻译/写作)+Zotero路径+缓存文件存储路径+连接测试
+│   ├── settings_dialog.py # 设置对话框: API接口设置(解析/翻译/写作)+连接测试（Zotero/缓存路径在独立 DirectorySettingDialog，与 API 设置平级菜单）
 │   └── styles.py          # 暖白研究工作台主题 QSS
 └── utils/
     ├── config.py          # 持久化层: 配置(含多接口/数据根目录/Zotero)+图书馆+聊天+缓存+草稿+润色历史
@@ -57,11 +56,11 @@ src/
 
 ### 数据存储架构
 
-- 配置文件: `%APPDATA%/PDFasker/config.json`（固定路径）
+- 配置文件: `%APPDATA%/PaperWB/config.json`（固定路径）
 - 数据根目录: 首次启动弹窗选择，存储在 config 的 `data_root` 字段
-- 所有用户数据在 `{data_root}/.pdfasker/` 下，包括 library.json、chats、states、page_cache、writing_kb、drafts、polish_history
+- 所有用户数据在 `{data_root}/.paperwb/` 下，包括 library.json、chats、states、page_cache、writing_kb、drafts、polish_history
 - PDF 文件存储在 `{data_root}/library/` 下
-- 菜单「设置 → 缓存文件存储路径...」或设置对话框底部可随时更改 data_root（设置对话框中改名「缓存文件存储路径设置」）
+- 菜单「设置 → 缓存文件存储路径设置...」可随时更改 data_root；Zotero 路径也在同一菜单中与 API 设置平级
 
 ### 两阶段解析管线（阅读）
 
@@ -85,8 +84,8 @@ src/
 - **DiffDialog**: 内联 diff 展示 + 导航工具栏 + 逐项接受/拒绝 + 可编辑 diff + AI 对话（非模态）
 - **LitSearchDialog**: 双轨文献推荐——LLM 已知文献 + PubMed 检索词（非模态）
 - 支持 4 种写作类型: 综述/研究型论文/专利/软著
-- 编辑器自动保存（每30秒）到 `{data_root}/.pdfasker/drafts/`
-- 润色历史保存（最近20条）到 `{data_root}/.pdfasker/polish_history/`
+- 编辑器自动保存（每30秒）到 `{data_root}/.paperwb/drafts/`
+- 润色历史保存（最近20条）到 `{data_root}/.paperwb/polish_history/`
 
 ### 引用高亮规则
 
@@ -101,7 +100,7 @@ src/
 - 左侧面板 Tab1「Zotero 文献库」: 只读镜像 Zotero 集合树（集合→文献→PDF 附件），点击文献直接用两阶段管线阅读（不导入本地库）
 - 周期同步: 启动时加载一次，此后 `ZoteroWatcher` 每 30 分钟由 QTimer 后台 `reload()` 一次并按 key 做差异刷新 UI；**不做文件事件监听**（避免 Windows 高 I/O 自激循环）；面板「刷新」按钮可立即手动同步
 - **只读铁律**: 所有访问通过系统临时目录的数据库副本（`tempfile`），绝不写 Zotero 数据目录；PDF 只读打开
-- Zotero 数据目录在设置对话框「API 接口设置」下方单独一格配置（「Zotero 文献库路径设置」），阅读与写作共用；再往下是「缓存文件存储路径设置」
+- Zotero 数据目录在「设置」菜单中与「API 接口设置」平级配置（「Zotero 文献库路径设置」），阅读与写作共用；「缓存文件存储路径设置」同样独立
 - 用户显式指定路径时，仅在该目录下搜索 zotero.sqlite（不全局探测）
 - 年份后缀自动去字母（`2025a` → `2025`）匹配 Zotero
 - 优先选择有 PDF 附件的匹配条目（按标题去重）
@@ -121,3 +120,4 @@ src/
 - 无测试框架/Lint/Typecheck 配置
 - 所有 Python 文件使用 `from __future__ import annotations` 和类型注解
 - 测试数据在 `test/` 目录下（含示例 PDF、写作草稿、缓存快照）
+- 验收脚本: `test/validate_zotero.py`（Zotero 文献两阶段整合验收，`--count` 可调，默认 20，输出 JSON 报告）与 `test/capture_zotero_screenshots.py`（UI 截图验收，`--count` 可调，默认 20，输出 PNG）

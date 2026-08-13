@@ -1,4 +1,4 @@
-"""API 接口设置对话框 —— 解析、翻译、写作三套接口 + Zotero 路径 + 缓存文件存储路径。"""
+"""PaperWB 设置对话框 —— API 接口与本地目录分别配置。"""
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -35,10 +35,9 @@ class _TestConnectionWorker(QThread):
 
 
 class APIConfigTab(QWidget):
-    """单个 API 配置标签页，可选附加底部控件。"""
+    """单个 API 配置标签页。"""
 
-    def __init__(self, tab_name: str, description: str,
-                 footer_widget: QWidget | None = None, parent=None):
+    def __init__(self, tab_name: str, description: str, parent=None):
         super().__init__(parent)
         self._tab_name = tab_name
         layout = QVBoxLayout(self)
@@ -76,9 +75,6 @@ class APIConfigTab(QWidget):
         self.model.setPlaceholderText("选择或输入模型名")
         form.addRow("模型名称：", self.model)
         layout.addWidget(cfg)
-
-        if footer_widget:
-            layout.addWidget(footer_widget)
 
         layout.addStretch()
 
@@ -129,84 +125,106 @@ class APIConfigTab(QWidget):
         }
 
 
-class ZoteroPathGroup(QGroupBox):
-    """阅读与写作共用的 Zotero 文献库路径设置。"""
+class DirectorySettingDialog(QDialog):
+    """独立的本地目录设置对话框，不混入 API 配置标签页。"""
 
-    def __init__(self, parent=None):
-        super().__init__("Zotero 文献库路径设置（阅读与写作共用）", parent)
-        layout = QHBoxLayout(self)
-        layout.setSpacing(6)
+    _METADATA = {
+        "zotero_data_dir": {
+            "title": "Zotero 文献库路径设置",
+            "label": "Zotero 数据目录：",
+            "placeholder": "自动检测或手动选择 Zotero 数据目录...",
+            "hint": "阅读与写作共用此只读 Zotero 数据目录；留空时使用自动检测。",
+        },
+        "data_root": {
+            "title": "缓存文件存储路径设置",
+            "label": "数据根目录：",
+            "placeholder": "选择数据存储根目录（含 library/ 与 .paperwb/）...",
+            "hint": "PDF 论文、解析缓存、对话记录、写作草稿等所有数据均存储在此目录下。",
+        },
+    }
 
-        self._path_edit = QLineEdit()
-        self._path_edit.setPlaceholderText("自动检测或手动选择 Zotero 数据目录...")
-        layout.addWidget(self._path_edit)
+    def __init__(self, config_key: str, parent=None):
+        if config_key not in self._METADATA:
+            raise ValueError(f"不支持的目录配置项：{config_key}")
+        super().__init__(parent)
+        self._config_key = config_key
+        self._config = load_config()
+        meta = self._METADATA[config_key]
+        self.setWindowTitle(meta["title"])
+        self.setMinimumWidth(680)
 
-        browse_btn = QPushButton("浏览")
-        browse_btn.setObjectName("iconBtn")
-        browse_btn.clicked.connect(self._browse)
-        layout.addWidget(browse_btn)
-
-    def _browse(self):
-        path = QFileDialog.getExistingDirectory(self, "选择 Zotero 数据目录")
-        if path:
-            self._path_edit.setText(path)
-
-    def load(self, config: dict):
-        self._path_edit.setText(config.get("zotero_data_dir", ""))
-
-    def get(self) -> str:
-        return self._path_edit.text().strip()
-
-
-class DataDirGroup(QGroupBox):
-    """缓存文件存储路径设置 —— 所有数据（PDF 论文、解析缓存、对话等）的根目录。"""
-
-    def __init__(self, parent=None):
-        super().__init__("缓存文件存储路径设置", parent)
         layout = QVBoxLayout(self)
-        layout.setSpacing(6)
+        layout.setSpacing(12)
+        title = QLabel(meta["title"])
+        title.setObjectName("titleLabel")
+        layout.addWidget(title)
 
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        self._path_edit = QLineEdit()
-        self._path_edit.setPlaceholderText("选择数据存储根目录（含 library/ 与 .pdfasker/）...")
-        row.addWidget(self._path_edit)
-
+        form = QFormLayout()
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        self._path_edit = QLineEdit(self._config.get(config_key, ""))
+        self._path_edit.setPlaceholderText(meta["placeholder"])
+        row_layout.addWidget(self._path_edit)
         browse_btn = QPushButton("浏览")
         browse_btn.setObjectName("iconBtn")
         browse_btn.clicked.connect(self._browse)
-        row.addWidget(browse_btn)
-        layout.addLayout(row)
+        row_layout.addWidget(browse_btn)
+        form.addRow(meta["label"], row)
+        layout.addLayout(form)
 
-        hint = QLabel("PDF 论文、解析缓存、对话记录、写作草稿等所有数据均存储在此目录下。")
+        hint = QLabel(meta["hint"])
         hint.setObjectName("subtitleLabel")
         hint.setWordWrap(True)
         layout.addWidget(hint)
+        layout.addStretch()
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        save = QPushButton("保存设置")
+        save.setObjectName("primaryBtn")
+        save.clicked.connect(self._save)
+        buttons.addWidget(save)
+        layout.addLayout(buttons)
 
     def _browse(self):
-        path = QFileDialog.getExistingDirectory(self, "选择缓存文件存储路径")
+        path = QFileDialog.getExistingDirectory(
+            self,
+            self.windowTitle(),
+            self._path_edit.text(),
+        )
         if path:
             self._path_edit.setText(path)
 
-    def load(self, config: dict):
-        self._path_edit.setText(config.get("data_root", ""))
-
-    def get(self) -> str:
-        return self._path_edit.text().strip()
+    def _save(self):
+        path = self._path_edit.text().strip()
+        if self._config_key == "data_root" and not path:
+            QMessageBox.warning(self, "路径不能为空", "请选择缓存文件存储路径。")
+            return
+        if path and self._config_key == "data_root":
+            from pathlib import Path
+            try:
+                Path(path).mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                QMessageBox.critical(self, "路径不可用", f"无法创建该目录：{e}")
+                return
+        self._config[self._config_key] = path
+        save_config(self._config)
+        self.accept()
 
 
 class SettingsDialog(QDialog):
-    """API 接口设置对话框（解析、翻译、写作 + Zotero 路径 + 缓存存储路径）。"""
+    """API 接口设置对话框（解析、翻译、写作）。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("API 接口设置")
-        self.setMinimumSize(760, 700)
+        self.setMinimumSize(760, 560)
         self.setModal(True)
         self._config = load_config()
-
-        self._zotero_group = ZoteroPathGroup()
-        self._data_dir_group = DataDirGroup()
 
         self._setup_ui()
         self._load()
@@ -238,9 +256,6 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._write_tab, "写作与引用")
         layout.addWidget(self.tabs)
 
-        layout.addWidget(self._zotero_group)
-        layout.addWidget(self._data_dir_group)
-
         btn = QHBoxLayout()
         btn.addStretch()
         self._test_btn = QPushButton("测试当前接口")
@@ -260,19 +275,15 @@ class SettingsDialog(QDialog):
         self._parse_tab.load(self._config.get("parse_api", {}))
         self._translate_tab.load(self._config.get("translate_api", {}))
         self._write_tab.load(self._config.get("write_api", {}))
-        self._zotero_group.load(self._config)
-        self._data_dir_group.load(self._config)
 
     def _save(self):
         self._config["parse_api"] = self._parse_tab.get()
         self._config["translate_api"] = self._translate_tab.get()
         self._config["write_api"] = self._write_tab.get()
-        self._config["zotero_data_dir"] = self._zotero_group.get()
-        self._config["data_root"] = self._data_dir_group.get()
         save_config(self._config)
         QMessageBox.information(
             self, "已保存",
-            "API 接口、Zotero 路径与缓存文件存储路径已保存。"
+            "API 接口设置已保存。"
         )
         self.accept()
 

@@ -92,12 +92,10 @@ class ParagraphCard(QFrame):
         self._setup_ui()
 
     def hasHeightForWidth(self) -> bool:
-        # 高度在 resizeEvent 中显式同步，避免 QVBoxLayout 混合多个
-        # heightForWidth 卡片时使用错误宽度缓存导致卡片重叠。
-        return False
+        return True
 
     def sizeHint(self):
-        """给滚动区一个包含图片的初始高度，避免卡片被压成一条细线。"""
+        """返回当前宽度下包含全部文字和控件的高度。"""
         base = super().sizeHint()
         width = max(base.width(), 640)
         return QSize(width, self.heightForWidth(width))
@@ -113,15 +111,11 @@ class ParagraphCard(QFrame):
         h = marg.top() + marg.bottom() + calc_layout_height(lay, inner_w)
         return max(h, 40)
 
-    def sizeHint(self):
-        base = super().sizeHint()
-        return QSize(base.width(), self.heightForWidth(base.width()))
-
     def _sync_card_height(self, width: int | None = None) -> None:
         width = width or self.width() or 640
-        # QLabel 的 heightForWidth 不总是包含样式表 padding，尤其是多行标题。
-        # 预留少量安全空间，避免最后一行文字被卡片边界裁掉。
-        required = self.heightForWidth(max(width, 50)) + 20
+        if self.layout() is not None:
+            self.layout().activate()
+        required = self.heightForWidth(max(width, 50))
         if self.minimumHeight() != required:
             self.setMinimumHeight(required)
         self.updateGeometry()
@@ -152,7 +146,12 @@ class ParagraphCard(QFrame):
         return txt in KEY_SECTIONS
 
     def _setup_ui(self):
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        policy = QSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
         self.setMinimumWidth(0)
 
         etype = self._elem.element_type
@@ -203,7 +202,8 @@ class ParagraphCard(QFrame):
         f.setBold(True)
         self.text_label = QLabel(self._text)
         self.text_label.setFont(f)
-        self.text_label.setStyleSheet("color: #147c7c; padding: 4px 0; letter-spacing: 0.5px;")
+        self.text_label.setStyleSheet("color: #147c7c; letter-spacing: 0.5px;")
+        self.text_label.setContentsMargins(0, 4, 0, 4)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.text_label)
@@ -220,9 +220,9 @@ class ParagraphCard(QFrame):
         self.text_label = QLabel(self._text)
         self.text_label.setFont(f)
         self.text_label.setStyleSheet(
-            "color: #a76d2b; padding: 6px 0; "
-            "border-left: 4px solid #d99b54; padding-left: 14px;"
+            "color: #a76d2b; border-left: 4px solid #d99b54;"
         )
+        self.text_label.setContentsMargins(14, 6, 0, 6)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.text_label)
@@ -240,9 +240,10 @@ class ParagraphCard(QFrame):
         self.text_label = QLabel(self._text)
         self.text_label.setFont(f)
         self.text_label.setStyleSheet(
-            f"color: {colors.get(level, '#526b6c')}; padding: 3px 0; "
-            f"border-left: 3px solid {colors.get(level, '#d2dfda')}; padding-left: 10px;"
+            f"color: {colors.get(level, '#526b6c')}; "
+            f"border-left: 3px solid {colors.get(level, '#d2dfda')};"
         )
+        self.text_label.setContentsMargins(10, 3, 0, 3)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.text_label)
@@ -280,7 +281,8 @@ class ParagraphCard(QFrame):
         f = QFont("Microsoft YaHei UI", 11)
         self.text_label = QLabel(self._text)
         self.text_label.setFont(f)
-        self.text_label.setStyleSheet("color: #718180; line-height: 1.5; padding: 2px 0;")
+        self.text_label.setStyleSheet("color: #718180; line-height: 1.5;")
+        self.text_label.setContentsMargins(0, 2, 0, 2)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.text_label)
@@ -294,9 +296,10 @@ class ParagraphCard(QFrame):
         self.text_label = QLabel(self._text)
         self.text_label.setFont(f)
         self.text_label.setStyleSheet(
-            "color: #29434a; line-height: 1.9; padding: 4px 0; "
-            "border-left: 3px solid #86bdb2; padding-left: 12px;"
+            "color: #29434a; line-height: 1.9; "
+            "border-left: 3px solid #86bdb2;"
         )
+        self.text_label.setContentsMargins(12, 4, 0, 4)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.text_label)
@@ -312,7 +315,8 @@ class ParagraphCard(QFrame):
         layout.addWidget(header)
         self.text_label = QLabel(self._text)
         self.text_label.setFont(QFont("Microsoft YaHei UI", 12))
-        self.text_label.setStyleSheet("color: #526b6c; line-height: 1.7; padding: 4px 0;")
+        self.text_label.setStyleSheet("color: #526b6c; line-height: 1.7;")
+        self.text_label.setContentsMargins(0, 4, 0, 4)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.text_label)
@@ -324,7 +328,8 @@ class ParagraphCard(QFrame):
         layout.setSpacing(4)
         self.text_label = QLabel(self._text)
         self.text_label.setFont(QFont("Microsoft YaHei UI", 11))
-        self.text_label.setStyleSheet("color: #718180; line-height: 1.5; padding: 2px 0; font-style: italic;")
+        self.text_label.setStyleSheet("color: #718180; line-height: 1.5; font-style: italic;")
+        self.text_label.setContentsMargins(0, 2, 0, 2)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.text_label)
@@ -336,7 +341,8 @@ class ParagraphCard(QFrame):
         layout.setSpacing(2)
         self.text_label = QLabel(self._text)
         self.text_label.setFont(QFont("Microsoft YaHei UI", 10))
-        self.text_label.setStyleSheet("color: #82908d; line-height: 1.4; padding: 2px 0;")
+        self.text_label.setStyleSheet("color: #82908d; line-height: 1.4;")
+        self.text_label.setContentsMargins(0, 2, 0, 2)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.text_label)
@@ -361,7 +367,8 @@ class ParagraphCard(QFrame):
         layout.addWidget(self.toggle_btn)
         self.text_label = QLabel(self._text)
         self.text_label.setFont(QFont("Microsoft YaHei UI", 10))
-        self.text_label.setStyleSheet("color: #82908d; line-height: 1.5; padding: 2px 0;")
+        self.text_label.setStyleSheet("color: #82908d; line-height: 1.5;")
+        self.text_label.setContentsMargins(0, 2, 0, 2)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.text_label.setVisible(False)
@@ -380,6 +387,7 @@ class ParagraphCard(QFrame):
                 f"{name}（{len(self._text)} 字）{'▴' if self._expanded else '▾'}"
             )
         self.updateGeometry()
+        self._sync_card_height(self.width())
         self.parent().updateGeometry() if self.parent() else None
 
     def add_qa_input(self, btn_text: str):
@@ -414,6 +422,7 @@ class ParagraphCard(QFrame):
         else:
             self._qa_edit.setVisible(True)
             self._qa_edit.setFocus()
+        self._sync_card_height(self.width())
 
     def _submit_qa(self):
         if self._qa_edit is None:
@@ -436,7 +445,8 @@ class ParagraphCard(QFrame):
             f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.3)
         self.text_label = QLabel(self._text)
         self.text_label.setFont(f)
-        self.text_label.setStyleSheet("color: #29434a; line-height: 1.9; padding: 4px 0; background-color: transparent;")
+        self.text_label.setStyleSheet("color: #29434a; line-height: 1.9; background-color: transparent;")
+        self.text_label.setContentsMargins(0, 4, 0, 4)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.text_label)
@@ -444,12 +454,14 @@ class ParagraphCard(QFrame):
         if len(self._text.strip()) > 20:
             sep = QFrame()
             sep.setFrameShape(QFrame.Shape.HLine)
-            sep.setStyleSheet("background-color: #e5e1d9; max-height: 1px;")
+            sep.setFixedHeight(1)
+            sep.setStyleSheet("background-color: #e5e1d9;")
             layout.addWidget(sep)
             self.zh_label = QLabel()
             self.zh_label.setWordWrap(True)
             self.zh_label.setFont(QFont("Microsoft YaHei UI", 12))
-            self.zh_label.setStyleSheet("color: #278273; line-height: 1.7; padding: 4px 0;")
+            self.zh_label.setStyleSheet("color: #278273; line-height: 1.7;")
+            self.zh_label.setContentsMargins(0, 4, 0, 4)
             self.zh_label.setVisible(False)
             self.zh_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             layout.addWidget(self.zh_label)
@@ -542,48 +554,25 @@ class ImageCard(QFrame):
         self._setup_ui()
 
     def hasHeightForWidth(self) -> bool:
-        return False
+        return True
 
     def heightForWidth(self, w: int) -> int:
-        """按给定宽度计算整卡所需高度（含图片缩放、图注换行、按钮、输入框）。
-
-        不再用 setFixedHeight 手算：布局会随宽度变化（如滚动区变窄）正确重排，
-        避免按钮/图注被压缩到图片上造成遮挡。
-        """
-        inner_w = max(w - self.MARGIN_LR * 2, 50)
-        h = self.MARGIN_TB * 2
-        items_h: list[int] = []
-        if self._img_label is not None:
-            items_h.append(self._page_label_height())
-            items_h.append(self._image_display_height(inner_w))
-        if self._caption_label is not None:
-            items_h.append(self._caption_label.heightForWidth(inner_w))
-        if self._desc_label is not None:
-            items_h.append(self._desc_label.heightForWidth(inner_w))
-        if self._qa_btn is not None:
-            if self._separator is not None:
-                items_h.append(1)
-            items_h.append(self._qa_btn.sizeHint().height())
-        if self._qa_edit is not None and self._qa_edit.isVisible():
-            items_h.append(self._qa_edit.heightForWidth(inner_w))
-        if items_h:
-            h += sum(items_h) + 8 * (len(items_h) - 1)
+        """按实际布局计算整卡高度，避免控件或分割线覆盖图片。"""
+        marg = self.contentsMargins()
+        inner_w = max(w - marg.left() - marg.right(), 50)
+        lay = self.layout()
+        if lay is None:
+            return 80
+        h = marg.top() + marg.bottom() + calc_layout_height(lay, inner_w)
         return max(h, 80)
 
-    def _page_label_height(self) -> int:
-        if self._page_label is not None:
-            return self._page_label.heightForWidth(100)
-        return 30
-
-    def _image_display_height(self, inner_w: int) -> int:
-        pixmap = self._original_pixmap
-        if not pixmap or pixmap.isNull():
-            return 0
-        pw, ph = pixmap.width(), pixmap.height()
-        if pw <= 0 or ph <= 0:
-            return 0
-        target_w = min(pw, inner_w, self.MAX_IMAGE_WIDTH)
-        return int(ph * target_w / pw)
+    def _sync_card_height(self) -> None:
+        if self.layout() is not None:
+            self.layout().activate()
+        required = self.heightForWidth(self.width() or 640)
+        if self.minimumHeight() != required:
+            self.setMinimumHeight(required)
+        self.updateGeometry()
 
     def _setup_ui(self):
         etype = self._elem.element_type
@@ -594,7 +583,7 @@ class ImageCard(QFrame):
             "border-radius: 12px; margin: 8px 12px; }"
         )
         policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        policy.setHeightForWidth(False)
+        policy.setHeightForWidth(True)
         self.setSizePolicy(policy)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(self.MARGIN_LR, self.MARGIN_TB, self.MARGIN_LR, self.MARGIN_TB)
@@ -612,7 +601,8 @@ class ImageCard(QFrame):
             cap = QLabel(self._caption)
             cap.setWordWrap(True)
             cap.setFont(QFont("Microsoft YaHei UI", 11))
-            cap.setStyleSheet("color: #718180; font-style: italic; padding: 4px 0;")
+            cap.setStyleSheet("color: #718180; font-style: italic;")
+            cap.setContentsMargins(0, 4, 0, 4)
             cap.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             layout.addWidget(cap)
             self._caption_label = cap
@@ -620,14 +610,16 @@ class ImageCard(QFrame):
             desc = QLabel(f"提示 · {self._description}")
             desc.setWordWrap(True)
             desc.setFont(QFont("Microsoft YaHei UI", 11))
-            desc.setStyleSheet("color: #147c7c; padding: 4px 0;")
+            desc.setStyleSheet("color: #147c7c;")
+            desc.setContentsMargins(0, 4, 0, 4)
             desc.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             layout.addWidget(desc)
             self._desc_label = desc
 
         self._separator = QFrame()
         self._separator.setFrameShape(QFrame.Shape.HLine)
-        self._separator.setStyleSheet("background-color: #e5e1d9; max-height: 1px;")
+        self._separator.setFixedHeight(1)
+        self._separator.setStyleSheet("background-color: #e5e1d9;")
         layout.addWidget(self._separator)
 
         self._qa_btn = QPushButton("🔍 解读图片" if etype == "figure" else "📊 解读表格")
@@ -662,6 +654,7 @@ class ImageCard(QFrame):
         else:
             self._qa_edit.setVisible(True)
             self._qa_edit.setFocus()
+        self._sync_card_height()
 
     def _submit_qa(self):
         if self._qa_edit is None:
@@ -699,8 +692,7 @@ class ImageCard(QFrame):
             return
         pixmap = self._original_pixmap
         if not pixmap or pixmap.isNull():
-            self.setMinimumHeight(self.heightForWidth(card_w))
-            self.updateGeometry()
+            self._sync_card_height()
             return
         inner_w = max(card_w - self.MARGIN_LR * 2, 50)
         pw, ph = pixmap.width(), pixmap.height()
@@ -713,10 +705,8 @@ class ImageCard(QFrame):
             display = pixmap
         self._img_label.setPixmap(display)
         self._img_label.setFixedHeight(display.height())
-        # QVBoxLayout 在滚动区中有时不会采用 heightForWidth 的结果，
-        # 显式同步最小高度，避免图片标签溢出后被下一张卡片覆盖。
-        self.setMinimumHeight(self.heightForWidth(card_w))
-        self.updateGeometry()
+        # 以实际缩放结果为准重新计算，避免分割线进入图片底部。
+        self._sync_card_height()
 
 
 class PDFViewerPanel(QWidget):
@@ -748,11 +738,10 @@ class PDFViewerPanel(QWidget):
 
     def set_parse_client(self, client: "LLMClient | None"):
         self._parse_client = client
-        # 之前因未配置解析接口而挂起的自动整合，配置就绪后补触发。
-        # 仅在当前文献确实已加载时才补触发，避免切换文献瞬间用旧处理器重复启动 stage2。
+        # 兼容旧状态：如果此前等待过整合，配置变更后继续触发。
         if (self._pending_integrate and self._stage1_complete
                 and self._current_path and self._structured_doc is None
-                and client is not None):
+                ):
             self._auto_start_stage2()
 
     def set_translate_client(self, client: "LLMClient | None"):
@@ -872,7 +861,7 @@ class PDFViewerPanel(QWidget):
                     title_msg += f"（{failed} 个元素渲染失败已跳过）"
                 self.info_label.setText(title_msg)
                 self.info_label.setStyleSheet("color: #278273;")
-                self.progress_bar.setVisible(True)
+                self.progress_bar.setVisible(False)
                 self.progress_bar.setValue(100)
                 self.auto_trans_btn.setEnabled(True)
                 self._processor = existing_processor  # 保留引用，后台任务继续
@@ -1004,11 +993,6 @@ class PDFViewerPanel(QWidget):
             return
         if self._stage2_timer is not None:
             return  # 已有整合等待定时器在跑（stage2 尚未结束），不重复启动
-        if not self._parse_client:
-            self._pending_integrate = True
-            self.info_label.setText("本地解析已完成，请先在设置中配置解析接口（配置后自动整合）")
-            self.info_label.setStyleSheet("color: #a76d2b;")
-            return
         self._pending_integrate = False
         self.info_label.setText("正在构建结构化文档...")
         self.info_label.setStyleSheet("color: #a76d2b;")

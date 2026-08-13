@@ -1,7 +1,7 @@
-"""PDF 智能处理器 —— 两阶段管线：本地版式解析 + 跨页整合。
+"""PDF 智能处理器 —— 两阶段管线：本地版式解析 + 本地规则跨页整合。
 
 Stage 1（自动触发）: PDF导入 → Docling 本地版式解析 → 结构化 JSON → 缓存到磁盘
-Stage 2（用户点击）: 读缓存 → LLM跨页整合 → StructuredDocument → UI渲染
+Stage 2（点击论文）: 读缓存 → 本地规则组装（章节/引文/图表绑定 + 跨页接缝合并）→ StructuredDocument → UI渲染
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from .llm_client import LLMClient
 
 
-FAST_DOCUMENT_VERSION = 3
+FAST_DOCUMENT_VERSION = 5
 DOCLING_PARSER_VERSION = "docling_v3"
 
 
@@ -474,6 +474,20 @@ _SEAM_TEXT_TYPES = frozenset({"body", "abstract_body"})
 _WATERMARK_RE = re.compile(
     r"\bARTICLE\s+IN\s+PRESS\d*\b|\bARTICLE\s+IN\s+PRESS\b", re.IGNORECASE
 )
+_LIGATURE_STOP_PREFIXES = frozenset({
+    "a", "an", "and", "as", "at", "by", "for", "from", "in", "of",
+    "on", "or", "the", "this", "to", "with",
+})
+
+
+def _repair_ligature_spacing(match: re.Match[str]) -> str:
+    """修复 fi/fl 连字拆分，同时保留正常的 ``to fi gure`` 词间空格。"""
+    prefix = match.group("prefix") or ""
+    fragment = match.group("fragment")
+    suffix = match.group("suffix")
+    if prefix and prefix.lower() in _LIGATURE_STOP_PREFIXES:
+        return f"{prefix} {fragment}{suffix}"
+    return f"{prefix}{fragment}{suffix}"
 
 
 def _strip_watermarks(text: str) -> str:
@@ -485,6 +499,19 @@ def _strip_watermarks(text: str) -> str:
     if not text:
         return ""
     t = _WATERMARK_RE.sub(" ", text)
+    # 部分 PDF 字体把 fi/fl 连字拆成独立文本片段，Docling 会输出
+    # ``pro fi ling``、``fi bers`` 等形式；同时修复标题中 ``AReview``
+    # 和单个大写字母被空格拆开的常见版式伪影。只处理高置信模式，
+    # 不对普通英文词间空格做激进合并。
+    t = re.sub(r"\bA(?=[A-Z][a-z])", "A ", t)
+    t = re.sub(r"\b([B-HJ-Z])\s+([a-z]{3,})\b", r"\1\2", t)
+    t = re.sub(
+        r"\b(?:(?P<prefix>[A-Za-z]+)\s+)?(?P<fragment>fi|fl)\s+"
+        r"(?P<suffix>[a-z]+)\b",
+        _repair_ligature_spacing,
+        t,
+        flags=re.IGNORECASE,
+    )
     t = re.sub(r"\s{2,}", " ", t).strip()
     return t
 
@@ -733,6 +760,15 @@ def _looks_like_continuation(text_a: str, text_b: str) -> bool:
     return True
 
 
+def _join_cross_page_text(text_a: str, text_b: str) -> str:
+    """按换页规则拼接明显连续的两段文本。"""
+    a = text_a.rstrip()
+    b = text_b.lstrip()
+    if a.endswith("-") and len(a) > 1 and b and b[0].isalnum():
+        return a[:-1] + b
+    return f"{a} {b}".strip()
+
+
 def find_cross_page_seams(page_data: list[dict]) -> list[dict]:
     """检测相邻页之间疑似被分页断裂的正文段落（接缝候选）。
 
@@ -850,6 +886,23 @@ def _bind_captions(page_data: list[dict]) -> tuple[dict[str, str], set[str]]:
     return binding, used
 
 
+def _index_merged_seams(merged_seams: dict) -> dict[str, dict]:
+    """按接缝起始元素索引合并缓存。
+
+    缓存键使用 ``element_a|element_b``，而组装循环逐个访问当前元素 ID。
+    统一在入口建立索引，兼容旧版按单元素 ID 保存的缓存格式。
+    """
+    indexed: dict[str, dict] = {}
+    for raw_key, value in merged_seams.items():
+        if not isinstance(value, dict):
+            continue
+        key = str(raw_key)
+        source_id = key.split("|", 1)[0].strip() if "|" in key else key.strip()
+        if source_id:
+            indexed[source_id] = value
+    return indexed
+
+
 def build_document_fast(page_data: list[dict],
                         merged_seams: dict | None = None) -> StructuredDocument:
     """规则组装 —— 不用 LLM，直接按版面规则构建 StructuredDocument。
@@ -863,6 +916,7 @@ def build_document_fast(page_data: list[dict],
     """
     if not isinstance(merged_seams, dict):
         merged_seams = {}
+    merged_by_source = _index_merged_seams(merged_seams)
     binding, used_captions = _bind_captions(page_data)
     figure_plate_pages = _figure_plate_pages(page_data)
     page_elements_by_no = {
@@ -920,7 +974,7 @@ def build_document_fast(page_data: list[dict],
         page_no = page_by_id.get(eid, int(e.get("page", 0) or 0))
 
         # 跨页接缝：命中缓存 → 合并为一个正文元素
-        seam = merged_seams.get(eid) if isinstance(merged_seams, dict) else None
+        seam = merged_by_source.get(eid)
         if seam and etype in _SEAM_TEXT_TYPES:
             next_id = str(seam.get("with_id", ""))
             merged_text = _strip_watermarks(seam.get("merged_text", "") or "")
@@ -1452,12 +1506,13 @@ class PDFProcessor(QObject):
         self._cache_dir: str = ""
         self._integrated_doc: StructuredDocument | None = None
         self._seams_done = False  # 本次会话是否已跑过接缝合并
+        self._seam_candidates: list[dict] = []
         self._stage1_retries = 0  # done_count==0 时回退 Stage 1 的重试次数
 
         self._init_cache()
 
     def set_llm_client(self, client: "LLMClient | None") -> None:
-        """更新识图接口（配置变更后同步到后台处理器）。"""
+        """更新解析接口（配置变更后同步到后台处理器）。"""
         self._client = client
 
     def _init_cache(self) -> None:
@@ -1633,13 +1688,38 @@ class PDFProcessor(QObject):
             return
         self._on_stage2_finished(doc)
 
-        # 检查跨页接缝：已有缓存或本次已跑过，则不再调用 LLM
-        if merged or self._seams_done:
+        # 检查跨页接缝：只跳过已经缓存的接缝，不能因部分缓存而漏掉其余候选。
+        if self._seams_done:
             return
         self._seams_done = True
         seams = find_cross_page_seams(page_data)
+        if merged:
+            cached_keys = {str(key) for key in merged}
+            cached_sources = {
+                key.split("|", 1)[0].strip()
+                for key in cached_keys
+                if "|" in key
+            }
+            seams = [
+                seam for seam in seams
+                if seam["key"] not in cached_keys
+                and seam["element_id_a"] not in cached_sources
+            ]
         if seams:
-            self._start_seam_merge(seams)
+            if self._client is not None:
+                self._start_seam_merge(seams)
+            else:
+                # 没有解析 API 时仍保证明显的跨页正文连续，不让本地整合卡住。
+                fallback = {
+                    seam["key"]: {
+                        "with_id": seam["element_id_b"],
+                        "merged_text": _join_cross_page_text(
+                            seam["text_a"], seam["text_b"]
+                        ),
+                    }
+                    for seam in seams
+                }
+                self._on_seam_merge_done(fallback)
 
     def _load_all_page_data(self) -> list[dict]:
         """加载所有已完成页的完整缓存（含 bbox），供规则组装使用。"""
@@ -1664,6 +1744,7 @@ class PDFProcessor(QObject):
         """启动跨页接缝合并（后台线程），完成后回填并刷新文档。"""
         if self._client is None:
             return
+        self._seam_candidates = list(seams)
         self._seam_worker = SeamMergeWorker(self._client, seams)
         track(self._seam_worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._seam_worker.finished_signal.connect(self._on_seam_merge_done)
@@ -1674,6 +1755,7 @@ class PDFProcessor(QObject):
         """接缝合并完成 → 缓存 + 重建文档 + 通知 UI 刷新。"""
         if not merged:
             return
+        self._seam_candidates = []
         self._save_merged_seams(merged)
         if not self._integrated_doc:
             return
@@ -1691,6 +1773,20 @@ class PDFProcessor(QObject):
 
     def _on_seam_merge_error(self, error_msg: str) -> None:
         print(f"[Docling] 跨页接缝合并失败（忽略，不影响阅读）：{error_msg}")
+        if not self._seam_candidates:
+            return
+        # 接口限流、网络失败等情况下，启发式已确认的正文接缝仍可安全拼接，
+        # 避免整合结果退回为两个被分页截断的卡片。
+        fallback = {
+            seam["key"]: {
+                "with_id": seam["element_id_b"],
+                "merged_text": _join_cross_page_text(
+                    seam["text_a"], seam["text_b"]
+                ),
+            }
+            for seam in self._seam_candidates
+        }
+        self._on_seam_merge_done(fallback)
 
     def _save_merged_seams(self, merged: dict) -> None:
         try:

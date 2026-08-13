@@ -4,7 +4,7 @@
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton,
-    QScrollArea, QLabel, QSizePolicy, QFrame,
+    QScrollArea, QLabel, QSizePolicy, QFrame, QProgressBar,
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QEvent, QSize
 from PySide6.QtGui import QFont, QKeyEvent
@@ -18,12 +18,15 @@ from ..utils.layout import calc_layout_height
 class ChatBubble(QFrame):
     """单条聊天气泡 —— 优化可读性"""
 
-    def __init__(self, role: str, content: str, parent=None):
+    def __init__(self, role: str, content: str, parent=None, thinking: bool = False):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setProperty("role", role)
+        self.setProperty("thinking", thinking)
         self.role = role
+        self._thinking = thinking
         self._content_label: QLabel | None = None
+        self._thinking_bar: QProgressBar | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
@@ -57,6 +60,19 @@ class ChatBubble(QFrame):
         layout.addWidget(content_label)
         self._content_label = content_label  # 保存引用，方便流式更新
 
+        if thinking:
+            thinking_bar = QProgressBar()
+            thinking_bar.setObjectName("thinkingProgress")
+            thinking_bar.setRange(0, 0)
+            thinking_bar.setTextVisible(False)
+            thinking_bar.setFixedHeight(6)
+            thinking_bar.setStyleSheet(
+                "QProgressBar { background: #e7f1ee; border: none; border-radius: 3px; }"
+                "QProgressBar::chunk { background: #72b8aa; border-radius: 3px; }"
+            )
+            layout.addWidget(thinking_bar)
+            self._thinking_bar = thinking_bar
+
         # 分隔线
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
@@ -88,7 +104,25 @@ class ChatBubble(QFrame):
     def append_content(self, chunk: str):
         """追加文本（流式输出）"""
         if self._content_label:
+            if self._thinking:
+                self.set_thinking(False)
             self._content_label.setText(self._content_label.text() + chunk)
+            self.updateGeometry()
+
+    def set_thinking(self, thinking: bool) -> None:
+        """切换等待提示；首个回复分片到达时清除占位文本。"""
+        self._thinking = bool(thinking)
+        self.setProperty("thinking", self._thinking)
+        if self._thinking_bar is not None:
+            self._thinking_bar.setVisible(self._thinking)
+        if self._content_label is not None and not self._thinking:
+            self._content_label.setText("")
+        self.updateGeometry()
+
+    def set_content(self, content: str) -> None:
+        """设置非流式内容，供空回复和历史恢复使用。"""
+        if self._content_label is not None:
+            self._content_label.setText(content)
             self.updateGeometry()
 
 
@@ -103,6 +137,8 @@ class ChatPanel(QWidget):
         self.setObjectName("chatPanel")
         self._bubbles: list[ChatBubble] = []
         self._current_ai_bubble: ChatBubble | None = None
+        self._input_enabled = False
+        self._busy = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -207,6 +243,8 @@ class ChatPanel(QWidget):
         return super().eventFilter(obj, event)
 
     def _on_send(self):
+        if self._busy:
+            return
         text = self.input_box.toPlainText().strip()
         if not text:
             return
@@ -224,8 +262,16 @@ class ChatPanel(QWidget):
 
     def start_ai_response(self):
         """开始 AI 回复（创建空气泡用于流式填充）"""
+        if self._busy:
+            return
+        self._busy = True
         self.send_btn.setEnabled(False)
-        bubble = ChatBubble("assistant", "")
+        self.input_box.setEnabled(False)
+        bubble = ChatBubble(
+            "assistant",
+            "AI 正在思考...",
+            thinking=True,
+        )
         self._insert_bubble(bubble)
         self._current_ai_bubble = bubble
         self._bubbles.append(bubble)
@@ -238,19 +284,28 @@ class ChatPanel(QWidget):
 
     def finish_ai_response(self):
         """完成 AI 回复"""
+        if self._current_ai_bubble:
+            self._current_ai_bubble.set_thinking(False)
+            if not self._current_ai_bubble.get_content().strip():
+                self._current_ai_bubble.set_content("（模型未返回内容）")
         self._current_ai_bubble = None
-        self.send_btn.setEnabled(True)
+        self._busy = False
+        self._apply_input_state()
 
     def clear_messages(self):
         """清除所有消息"""
         self._bubbles.clear()
         self._current_ai_bubble = None
-        while self.msg_layout.count() > 1:
+        while self.msg_layout.count():
             item = self.msg_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget:
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
         self.msg_layout.addStretch()
-        self.send_btn.setEnabled(True)
+        self._busy = False
+        self._apply_input_state()
 
     def _insert_bubble_from_history(self, role: str, content: str):
         """从历史记录恢复气泡（不做动画）"""
@@ -260,6 +315,11 @@ class ChatPanel(QWidget):
 
     def set_input_enabled(self, enabled: bool):
         """设置输入框是否可用"""
+        self._input_enabled = bool(enabled)
+        self._apply_input_state()
+
+    def _apply_input_state(self) -> None:
+        enabled = self._input_enabled and not self._busy
         self.input_box.setEnabled(enabled)
         self.send_btn.setEnabled(enabled)
 
@@ -279,11 +339,11 @@ class ChatPanel(QWidget):
         from PySide6.QtWidgets import QFileDialog, QMessageBox
         import datetime
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出对话", f"PDFasker_chat_{datetime.date.today()}.md", "Markdown (*.md)"
+            self, "导出对话", f"PaperWB_chat_{datetime.date.today()}.md", "Markdown (*.md)"
         )
         if not path:
             return
-        lines = ["# PDFasker 对话记录\n", f"导出时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n---\n"]
+        lines = ["# PaperWB 对话记录\n", f"导出时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n---\n"]
         for bubble in self._bubbles:
             role = "🤖 AI" if bubble.role == "assistant" else "👤 用户"
             content = bubble.get_content()

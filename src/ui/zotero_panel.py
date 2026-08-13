@@ -1,4 +1,4 @@
-"""Zotero 文献库面板 —— 只读镜像 Zotero 集合树，实时同步增删改。"""
+"""Zotero 文献库面板 —— 只读镜像 Zotero 集合树，周期同步（每 30 分钟）+ 手动刷新。"""
 
 from __future__ import annotations
 

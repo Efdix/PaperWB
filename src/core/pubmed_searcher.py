@@ -38,7 +38,7 @@ class PubMedSearcher:
 
     ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     EFETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-    USER_AGENT = "PDFasker/2.0"
+    USER_AGENT = "PaperWB/2.0"
 
     def __init__(self, delay: float = 0.4) -> None:
         """delay: 请求间隔秒数（无 API key 上限 3 req/s，设置 0.4s 安全）。"""

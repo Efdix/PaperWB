@@ -7,9 +7,9 @@ __pycache__/
 dist/
 build/
 
-# PyInstaller spec（保留 PDFasker.spec）
+# PyInstaller spec（保留 PaperWB.spec）
 *.spec
-!PDFasker.spec
+!PaperWB.spec
 
 # 虚拟环境
 venv/
@@ -22,6 +22,7 @@ env/
 .idea/
 
 # 运行时数据（含 API Key，切勿提交！）
+.paperwb/
 .pdfasker/
 .env
 *.secret

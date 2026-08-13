@@ -1,4 +1,4 @@
-"""PDFasker 主窗口 —— 本地版式阅读 + 识图问答 + 写作辅助。"""
+"""PaperWB 主窗口 —— 本地版式阅读 + 图表问答 + 写作辅助。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from .ui.chat_panel import ChatPanel
 from .ui.pdf_list_panel import PDFListPanel
 from .ui.pdf_viewer import PDFViewerPanel
 from .ui.writing_panel import WritingPanel
-from .ui.settings_dialog import SettingsDialog
+from .ui.settings_dialog import DirectorySettingDialog, SettingsDialog
 from .ui.styles import STYLESHEET
 from .utils.config import (
     delete_chat_history, get_parse_api, get_translate_api, get_write_api,
@@ -74,7 +74,7 @@ class FirstLaunchDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("PDFasker · 首次设置")
+        self.setWindowTitle("PaperWB · 首次设置")
         self.setMinimumSize(520, 430)
         self.setModal(True)
         self.setStyleSheet(STYLESHEET)
@@ -106,7 +106,7 @@ class FirstLaunchDialog(QDialog):
         form.setSpacing(8)
 
         from pathlib import Path
-        default_path = str(Path.home() / "Documents" / "PDFasker_Data")
+        default_path = str(Path.home() / "Documents" / "PaperWB_Data")
 
         self._path_edit = QLineEdit(default_path)
         browse_btn = QPushButton("浏览...")
@@ -157,7 +157,7 @@ class FirstLaunchDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    """PDFasker 主窗口 v2 —— 阅读 + 写作。"""
+    """PaperWB 主窗口 v2 —— 阅读 + 写作。"""
 
     def __init__(self) -> None:
         super().__init__()
@@ -196,7 +196,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(800, self._start_docling_warmup)
 
     def _setup_ui(self):
-        self.setWindowTitle("PDFasker · AI 论文研究工作台")
+        self.setWindowTitle("PaperWB · AI 论文研究工作台")
         self.setMinimumSize(1180, 760)
         self.resize(1440, 900)
 
@@ -213,7 +213,10 @@ class MainWindow(QMainWindow):
         api_action.triggered.connect(self._on_open_settings)
         settings_menu.addAction(api_action)
         settings_menu.addSeparator()
-        data_dir_action = QAction("缓存文件存储路径...", self)
+        zotero_dir_action = QAction("Zotero 文献库路径设置...", self)
+        zotero_dir_action.triggered.connect(self._on_change_zotero_dir)
+        settings_menu.addAction(zotero_dir_action)
+        data_dir_action = QAction("缓存文件存储路径设置...", self)
         data_dir_action.triggered.connect(self._on_change_data_dir)
         settings_menu.addAction(data_dir_action)
 
@@ -295,7 +298,7 @@ class MainWindow(QMainWindow):
 
         brand_text = QVBoxLayout()
         brand_text.setSpacing(0)
-        brand_title = QLabel("PDFasker")
+        brand_title = QLabel("PaperWB")
         brand_title.setObjectName("brandTitle")
         brand_text.addWidget(brand_title)
         brand_subtitle = QLabel("AI 论文研究工作台")
@@ -412,11 +415,11 @@ class MainWindow(QMainWindow):
 
     def _on_pdf_path_changed(self, path: str):
         fname = os.path.basename(path) if path else ""
-        self.setWindowTitle(f"PDFasker · {fname}" if fname else "PDFasker · AI 论文研究工作台")
+        self.setWindowTitle(f"PaperWB · {fname}" if fname else "PaperWB · AI 论文研究工作台")
 
     def _on_library_pdf_removed(self, path: str):
         self.pdf_viewer._reset_view()
-        self.setWindowTitle("PDFasker · AI 论文研究工作台")
+        self.setWindowTitle("PaperWB · AI 论文研究工作台")
         if path in self._processors:
             proc = self._processors.pop(path)
             self._app_progress_connected.discard(id(proc))
@@ -453,7 +456,7 @@ class MainWindow(QMainWindow):
         self.pdf_viewer.load_pdf(path, existing_processor=existing)
         proc = getattr(self.pdf_viewer, '_processor', None)
         if proc is not None:
-            proc.set_llm_client(self._llm_parse)  # 后台处理器也同步最新识图接口
+            proc.set_llm_client(self._llm_parse)  # 后台处理器也同步最新解析接口
             self._processors[path] = proc
             # viewer.load_pdf 每次都先 detach（断开全部连接）再 attach，
             # 故旧处理器（含同路径重载）的连接已被清除，这里按 id 幂等重连
@@ -486,6 +489,7 @@ class MainWindow(QMainWindow):
         self._cancel_processor(path)
         state = load_doc_state(path)
         state.pop("structured_document", None)
+        state.pop("merged_seams", None)
         save_doc_state(path, state)
         self._begin_pdf_switch(path)
         self._load_pdf_into_viewer(path)
@@ -517,6 +521,9 @@ class MainWindow(QMainWindow):
     def _on_follow_up_from_reader(self, question: str, image_path: str = ""):
         if not self._llm_parse:
             QMessageBox.warning(self, "未配置解析接口", "请先在设置中配置解析接口。")
+            return
+        if self._llm_worker and self._llm_worker.isRunning():
+            self.status_bar.showMessage("已有问题正在回答，请等待当前回答完成")
             return
         self.chat_panel.set_input_enabled(True)
         self.chat_panel.add_user_message(question)
@@ -571,6 +578,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "未加载 PDF", "请先打开一个 PDF 文件。")
             self.chat_panel.set_input_enabled(False)
             return
+        if self._llm_worker and self._llm_worker.isRunning():
+            self.status_bar.showMessage("已有问题正在回答，请等待当前回答完成")
+            return
 
         self.chat_panel.add_user_message(text)
         self._context_manager.add_to_history("user", text)
@@ -623,44 +633,38 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("对话已清空")
 
     def _on_open_settings(self):
-        old_root = self._config.get("data_root", "")
         dialog = SettingsDialog(self)
         if dialog.exec():
             self._config = load_config()
             self._init_all_clients()
             self._init_write()
-            new_root = self._config.get("data_root", "")
-            if new_root and new_root != old_root:
-                self.pdf_list._refresh()
-                self.status_bar.showMessage("缓存文件存储路径已更新")
-            else:
-                self.status_bar.showMessage("接口设置已更新")
+            self.status_bar.showMessage("API 接口设置已更新")
+
+    def _open_directory_setting(self, config_key: str) -> bool:
+        dialog = DirectorySettingDialog(config_key, self)
+        if not dialog.exec():
+            return False
+        self._config = load_config()
+        if config_key == "zotero_data_dir":
+            self._init_write()
+            self.status_bar.showMessage("Zotero 文献库路径已更新")
+        else:
+            self.pdf_list._refresh()
+            self.status_bar.showMessage("缓存文件存储路径已更新")
+        return True
+
+    def _on_change_zotero_dir(self):
+        """独立设置阅读与写作共用的 Zotero 数据目录。"""
+        self._open_directory_setting("zotero_data_dir")
 
     def _on_change_data_dir(self):
-        """更改缓存文件存储路径。"""
-        from pathlib import Path
-        current = self._config.get("data_root", "")
-        path = QFileDialog.getExistingDirectory(self, "选择缓存文件存储路径", current)
-        if path:
-            try:
-                Path(path).mkdir(parents=True, exist_ok=True)
-            except OSError as e:
-                QMessageBox.critical(self, "错误", f"无法使用该目录：{e}")
-                return
-            self._config["data_root"] = path
-            save_config(self._config)
-            QMessageBox.information(
-                self, "已更新",
-                f"缓存文件存储路径已更改为：\n{path}\n\n"
-                "注意：已有的 PDF 论文和缓存不会自动迁移，\n"
-                "如需迁移请手动复制文件到新目录的 library/ 文件夹下。"
-            )
-            self.pdf_list._refresh()
+        """独立设置论文、缓存和写作数据的根目录。"""
+        self._open_directory_setting("data_root")
 
     def _on_about(self) -> None:
         QMessageBox.about(
-            self, "关于 PDFasker",
-            "<h3>PDFasker</h3>"
+            self, "关于 PaperWB",
+            "<h3>PaperWB</h3>"
             "<p>AI 论文解读助手 v1.0.0</p>"
             "<p>支持 DeepSeek、Mimo、OpenCode 及所有 OpenAI 兼容接口。</p>"
              "<p>三套接口：解析、翻译、写作（引文核查+风格分析+文献推荐）</p>"
@@ -760,7 +764,7 @@ class MainWindow(QMainWindow):
         self._writing_panel.set_write_client(self._llm_write)
         self._writing_panel.set_zotero_library(self._zotero)
 
-        # 实时同步 watcher
+        # 周期同步 watcher
         self._zotero_watcher = ZoteroWatcher(self._zotero, parent=self)
         self._zotero_watcher.changed.connect(self._on_zotero_changed)
         if self._zotero.is_available:
@@ -795,11 +799,11 @@ class MainWindow(QMainWindow):
             except OSError:
                 QMessageBox.warning(
                     self, "缓存文件存储路径不可用",
-                    f"存储路径无法创建：\n{dr}\n\n请在菜单「设置 → 缓存文件存储路径...」中重新设置。"
+                    f"存储路径无法创建：\n{dr}\n\n请在菜单「设置 → 缓存文件存储路径设置...」中重新设置。"
                 )
                 return
         if not os.access(str(p), os.W_OK):
             QMessageBox.warning(
                 self, "缓存文件存储路径无写入权限",
-                f"存储路径无写入权限：\n{dr}\n\n请检查权限或在菜单「设置 → 缓存文件存储路径...」中重新设置。"
+                    f"存储路径无写入权限：\n{dr}\n\n请检查权限或在菜单「设置 → 缓存文件存储路径设置...」中重新设置。"
             )

@@ -3,16 +3,16 @@
 
 配置文件位置::
 
-    %APPDATA%/PDFasker/config.json   (Windows)
-    ~/.config/PDFasker/config.json   (Linux)
-    ~/Library/Application Support/PDFasker/config.json  (macOS)
+    %APPDATA%/PaperWB/config.json   (Windows)
+    ~/.config/PaperWB/config.json   (Linux)
+    ~/Library/Application Support/PaperWB/config.json  (macOS)
 
 数据目录结构::
 
     {data_root}/
       ├── library/                  # 导入的 PDF 文件
       │   └── *.pdf
-      ├── .pdfasker/
+       ├── .paperwb/
       │   ├── config.json           # (不存这里，存 %APPDATA%)
       │   ├── library.json          # PDF 图书列表
       │   ├── chats/                # 对话历史
@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -41,13 +42,21 @@ def _app_config_dir() -> Path:
         base = Path.home() / "Library" / "Application Support"
     else:
         base = os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
-    d = Path(base) / "PDFasker"
+    d = Path(base) / "PaperWB"
     d.mkdir(parents=True, exist_ok=True)
+    legacy = Path(base) / "PDFasker"
+    new_config = d / "config.json"
+    old_config = legacy / "config.json"
+    if not new_config.exists() and old_config.exists():
+        try:
+            shutil.copy2(old_config, new_config)
+        except OSError:
+            pass
     return d
 
 
 def _default_data_root() -> Path:
-    return Path.home() / "Documents" / "PDFasker_Data"
+    return Path.home() / "Documents" / "PaperWB_Data"
 
 
 # ---- 默认配置 ----
@@ -101,9 +110,15 @@ def _get_data_root(config: dict | None = None) -> str:
 
 
 def _resolve_data_dir(config: dict | None = None) -> Path:
-    """获取数据子目录 .pdfasker/（在 data_root 下）。"""
+    """获取数据子目录 .paperwb/（在 data_root 下）。"""
     root = _get_data_root(config)
-    d = Path(root) / ".pdfasker"
+    d = Path(root) / ".paperwb"
+    legacy = Path(root) / ".pdfasker"
+    if not d.exists() and legacy.exists():
+        try:
+            legacy.replace(d)
+        except OSError:
+            d = legacy
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -124,49 +139,49 @@ def get_library_dir() -> Path:
 
 
 def get_drafts_dir() -> Path:
-    """编辑器草稿目录：{data_root}/.pdfasker/drafts/"""
+    """编辑器草稿目录：{data_root}/.paperwb/drafts/"""
     d = _resolve_data_dir() / "drafts"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def get_polish_history_dir() -> Path:
-    """润色历史目录：{data_root}/.pdfasker/polish_history/"""
+    """润色历史目录：{data_root}/.paperwb/polish_history/"""
     d = _resolve_data_dir() / "polish_history"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def get_writing_kb_dir() -> Path:
-    """写作知识库目录：{data_root}/.pdfasker/writing_kb/"""
+    """写作知识库目录：{data_root}/.paperwb/writing_kb/"""
     d = _resolve_data_dir() / "writing_kb"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def get_chats_dir() -> Path:
-    """对话历史目录：{data_root}/.pdfasker/chats/"""
+    """对话历史目录：{data_root}/.paperwb/chats/"""
     d = _resolve_data_dir() / "chats"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def get_states_dir() -> Path:
-    """状态缓存目录：{data_root}/.pdfasker/states/"""
+    """状态缓存目录：{data_root}/.paperwb/states/"""
     d = _resolve_data_dir() / "states"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def get_page_cache_root_dir() -> Path:
-    """逐页缓存根目录：{data_root}/.pdfasker/page_cache/"""
+    """逐页缓存根目录：{data_root}/.paperwb/page_cache/"""
     d = _resolve_data_dir() / "page_cache"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def get_page_cache_dir(pdf_path: str) -> Path:
-    """单篇 PDF 逐页缓存：{data_root}/.pdfasker/page_cache/{pdf_md5}/"""
+    """单篇 PDF 逐页缓存：{data_root}/.paperwb/page_cache/{pdf_md5}/"""
     d = get_page_cache_root_dir() / _doc_id(pdf_path)
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -450,7 +465,7 @@ def save_polish_entry(profile_name: str, entry: dict) -> None:
 
 
 def get_reviews_dir() -> Path:
-    """评价结果目录：{data_root}/.pdfasker/reviews/"""
+    """评价结果目录：{data_root}/.paperwb/reviews/"""
     d = _resolve_data_dir() / "reviews"
     d.mkdir(parents=True, exist_ok=True)
     return d

@@ -1,5 +1,8 @@
 import sys
-sys.path.insert(0, r"D:\transient\Documents\GitHub\PDFasker")
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 from src.core.unified_writer import UnifiedWriter
 import json
 
@@ -33,7 +36,7 @@ r = parse(raw5)
 print("Test 5 - unescaped newlines:", "PASS" if r else "FAIL")
 
 # Test 6: Test scenario from test file input
-test_text = open(r"D:\transient\Documents\GitHub\PDFasker\test\写作-test.txt", encoding="utf-8").read()
+test_text = (PROJECT_ROOT / "test" / "写作-test.txt").read_text(encoding="utf-8")
 first_para = test_text.strip().split("\n\n")[0]
 
 raw6 = json.dumps({

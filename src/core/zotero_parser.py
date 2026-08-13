@@ -380,7 +380,7 @@ class ZoteroLibrary:
         sqlite_path = self._sqlite_path
         print(f"[ZoteroLibrary] 从 SQLite 加载: {sqlite_path}")
 
-        tmp_dir = tempfile.mkdtemp(prefix="pdfasker_zotero_")
+        tmp_dir = tempfile.mkdtemp(prefix="paperwb_zotero_")
         tmp_db = os.path.join(tmp_dir, "zotero_copy.sqlite")
         db_conn = None
 

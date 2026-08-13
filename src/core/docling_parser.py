@@ -2,7 +2,7 @@
 
 在 import docling 之前设置环境变量（本模块顶部自动完成）：
 - DOCLING_INFERENCE_COMPILE_TORCH_MODELS=0  禁用 torch.compile（避免要求 MSVC cl.exe）
-- HF_ENDPOINT / HF_HUB_DISABLE_XET           模型下载走国内镜像（可被 PDFASKER_HF_MIRROR=0 关闭）
+- HF_ENDPOINT / HF_HUB_DISABLE_XET           模型下载走国内镜像（可被 PAPERWB_HF_MIRROR=0 关闭）
 - 需要 UTF-8 模式（PYTHONUTF8），由 main.py 启动引导保证
 
 输出格式与 pdf_processor._normalize_page_result 兼容（元素键名为 id/type/text/bbox/caption/
@@ -16,7 +16,11 @@ import threading
 from typing import TYPE_CHECKING
 
 os.environ.setdefault("DOCLING_INFERENCE_COMPILE_TORCH_MODELS", "0")
-if os.environ.get("PDFASKER_HF_MIRROR", "1") == "1":
+_hf_mirror = os.environ.get(
+    "PAPERWB_HF_MIRROR",
+    os.environ.get("PDFASKER_HF_MIRROR", "1"),
+)
+if _hf_mirror == "1":
     os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 

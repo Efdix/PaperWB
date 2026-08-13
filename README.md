@@ -1,10 +1,10 @@
-# PDFasker — AI 论文解读助手
+# PaperWB — AI 论文解读助手
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/PySide6-6.11-green.svg)](https://pypi.org/project/PySide6/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-基于大语言模型的 **Windows 桌面应用**，通过本地 Docling 版式解析 + LLM 跨页整合，将科研论文 PDF 智能解析为结构化阅读视图，并提供综述/论文/专利/软著的全流程写作辅助。
+基于大语言模型的 **Windows 桌面应用**，通过本地 Docling 版式解析 + 本地规则跨页整合（不耗 LLM），将科研论文 PDF 智能解析为结构化阅读视图，并提供综述/论文/专利/软著的全流程写作辅助。
 
 ---
 
@@ -14,10 +14,10 @@
 
 | 功能 | 说明 |
 |------|------|
-| 两阶段解析 | **Stage 1** Docling 本地版式解析（标题/正文/表格/公式/参考文献分区，快/省/离线） → **Stage 2** LLM 跨页整合为完整结构化文档 |
+| 两阶段解析 | **Stage 1** Docling 本地版式解析（标题/正文/表格/公式/参考文献分区，快/省/离线） → **Stage 2** 本地规则组装：章节/正文/引文/图表归类绑定 + 跨页截断段落自动合并为完整结构化文档 |
 | 缓存自动失效 | 解析管线版本变更后旧缓存自动失效；右键菜单可单独重跑 Stage 1 / Stage 2 |
 | 结构化阅读视图 | 标题/章节/正文/图表/参考文献按 `element_type` 分类渲染，关键章节暖金色高亮 |
-| 图表智能提取 | Docling 提供图表 bbox → 自动裁剪保存，LLM 生成图表描述 |
+| 图表智能提取 | Docling 提供图表 bbox → 自动裁剪保存，图注从页面文本回填；图表内容可多模态问答 |
 | 中英对照翻译 | 英文段落一键翻译为中文，逐段对照阅读（独立翻译 API） |
 | 论文问答 | 基于结构化全文上下文（正文+元信息+图表描述+参考文献）的流式 AI 对话；长文档自动启用 **BM25 检索增强**（只发相关段落） |
 | 断点续传 | Stage 1 每页独立缓存，重新打开无需重新解析；支持右键分开重跑 |
@@ -47,7 +47,7 @@
 |------|------|
 | 多 API 预设 | DeepSeek / Mimo / OpenCode Go / OpenCode Zen / 自定义，共 5 个预设、50+ 模型 |
 | 三套独立 API | 阅读-解析 / 阅读-翻译 / 写作 各可独立配置不同的 API Key、Base URL、模型 |
-| Zotero 集成 | 左侧「Zotero」标签页只读镜像集合树，**实时同步**增删改（QFileSystemWatcher + 防抖 + 后台重载）；引文核查提取 PDF 相关段落 |
+| Zotero 集成 | 左侧「Zotero」标签页只读镜像集合树，**周期同步**（启动加载 + 每 30 分钟后台重载 + 手动刷新）；引文核查提取 PDF 相关段落 |
 | 流式对话 | AI 回复实时逐字显示，Markdown 渲染，上下文自动管理（1M token 窗口） |
 | 论文库 | 拖拽导入 PDF，文件夹分类管理，对话和解析状态按文档持久化 |
 | 暖白主题 | 暖白研究工作台配色（暖米色纸张底色 + 墨字），全组件自定义 QSS 样式 |
@@ -66,10 +66,10 @@
 ### 安装
 
 ```bash
-git clone https://github.com/Efdix/PDFasker.git
-cd PDFasker
-conda create -n PDFasker python=3.11 -y
-conda activate PDFasker
+git clone https://github.com/Efdix/PaperWB.git
+cd PaperWB
+conda create -n PaperWB python=3.11 -y
+conda activate PaperWB
 pip install -r requirements.txt
 ```
 
@@ -84,7 +84,7 @@ pip install -r requirements.txt
 
 > **Docling 说明**：用于 Stage 1 的 PDF 版式本地解析（标题/正文/表格/公式/参考文献分区）。
 > - 首次使用时自动下载模型（一次性，之后离线运行）：版式识别模型来自 Hugging Face（缓存在 `~/.cache/huggingface`），文字识别模型（RapidOCR）自动从 ModelScope 下载
-> - Hugging Face 镜像 (hf-mirror.com) **默认开启、无需设置**；如需回退官方源，设置环境变量 `PDFASKER_HF_MIRROR=0`
+> - Hugging Face 镜像 (hf-mirror.com) **默认开启、无需设置**；如需回退官方源，设置环境变量 `PAPERWB_HF_MIRROR=0`
 > - 无需 Java / Docker / GPU，纯 CPU 即可运行；程序已默认禁用 torch JIT 编译（`DOCLING_INFERENCE_COMPILE_TORCH_MODELS=0`），不要求安装 Visual Studio C++ 编译器或开启开发者模式
 > - 启动入口 `main.py` 会自动以 UTF-8 模式运行（避免中文 Windows 编码问题）
 
@@ -100,44 +100,44 @@ pip install -r requirements.txt
 | OpenCode Zen | `https://opencode.ai/zen/v1` | ✅ deepseek-v4-flash-free 等 |
 | 自定义 | 任意 OpenAI 兼容 URL | — |
 
-- **阅读-解析**：负责跨页整合与论文问答（逐页版式解析已由本地 Docling 完成），无需多模态能力，普通强文本模型即可
+- **阅读-解析**：负责论文问答与图表内容问答（逐页解析与跨页段落整合由本地完成），无需多模态能力，普通强文本模型即可
 - **阅读-翻译**：可用便宜/免费模型
 - **写作**：需要强推理能力，建议 `deepseek-v4-pro`
 
 ### 启动
 
 ```bash
-conda activate PDFasker
+conda activate PaperWB
 python main.py
 ```
 
-首次启动弹出数据根目录选择窗口。之后在 **菜单 → 设置 → API 接口设置...** 中填入 API Key 即可使用。该对话框底部还有两个独立设置项：**Zotero 文献库路径设置**（阅读与写作共用）和 **缓存文件存储路径设置**（可随时更改数据根目录）；Zotero 路径也可在**写作面板工具栏**中设置（两处联动）。
+首次启动弹出数据根目录选择窗口。之后在 **菜单 → 设置 → API 接口设置...** 中填入 API Key 即可使用。**Zotero 文献库路径设置**和**缓存文件存储路径设置**在设置菜单中与 API 接口设置平级，分别独立保存。
 
 ---
 
 ## 打包（Windows）
 
-使用 `PyInstaller` 按仓库的 `PDFasker.spec`（**onedir** 目录式）打包：
+使用 `PyInstaller` 按仓库的 `PaperWB.spec`（**onedir** 目录式）打包：
 
 ```powershell
-conda activate PDFasker
+conda activate PaperWB
 pip install pyinstaller
-pyinstaller --noconfirm --clean PDFasker.spec
+pyinstaller --noconfirm --clean PaperWB.spec
 ```
 
-产物在 `dist/PDFasker/`（`PDFasker.exe` + `_internal/` 依赖目录），构建中间产物在 `build/` 下。
+产物在 `dist/PaperWB/`（`PaperWB.exe` + `_internal/` 依赖目录），构建中间产物在 `build/` 下。
 
-> **为什么用 onedir 而非单文件 onefile**：程序体积约 500MB（含 torch/PySide6/Docling），onefile 每次启动需解压 30 秒以上且易踩 PyInstaller 大包解压竞态；onedir 秒开、更新只需替换 `PDFasker.exe`、DLL 就近加载更稳。
+> **为什么用 onedir 而非单文件 onefile**：程序体积约 500MB（含 torch/PySide6/Docling），onefile 每次启动需解压 30 秒以上且易踩 PyInstaller 大包解压竞态；onedir 秒开、更新只需替换 `PaperWB.exe`、DLL 就近加载更稳。
 
 **打包要点**：
 - **Docling 模型不打进包**：首次使用 Docling 引擎时自动下载到用户缓存（版式模型在 `~/.cache/huggingface`，RapidOCR 模型在 rapidocr 目录），之后离线；Hugging Face 镜像默认开启，无需设置
-- **运行验证**：`dist\PDFasker\PDFasker.exe --selftest <样例.pdf>` 会无头自检（模块导入、Zotero 只读加载、Docling 解析），结果写入 `%TEMP%\pdfasker_selftest.log`
+- **运行验证**：`dist\PaperWB\PaperWB.exe --selftest <样例.pdf>` 会无头自检（模块导入、Zotero 只读加载、Docling 解析），结果写入 `%TEMP%\paperwb_selftest.log`
 - 打包前请确保已安装 `requirements.txt` 中的依赖；目标机器如缺 Visual C++ 运行时请安装对应版本
 
-**分发**：将 `dist\PDFasker` 整个目录压缩为发行包：
+**分发**：将 `dist\PaperWB` 整个目录压缩为发行包：
 
 ```powershell
-Compress-Archive -Path dist\PDFasker\* -DestinationPath build\PDFasker.zip
+Compress-Archive -Path dist\PaperWB\* -DestinationPath build\PaperWB.zip
 ```
 
 
@@ -156,7 +156,7 @@ Compress-Archive -Path dist\PDFasker\* -DestinationPath build\PDFasker.zip
 ### 综述写作
 
 1. 切换到 **"写作"** 标签页
-2. 连接 Zotero：工具栏或 API 设置中指定 Zotero 数据目录
+2. 连接 Zotero：在「设置 → Zotero 文献库路径设置」中指定 Zotero 数据目录
 3. 创建知识库：下拉菜单选择 "+ 新建知识库..."，添加写作范文 PDF 和期刊范文 PDF
 4. 点击 **"生成风格指南"**，LLM 分析写作习惯（术语/句式/段落/过渡/引用详略度/引用密度）
 5. 风格生成后可点击 **"查看风格指南"** 随时回顾
@@ -179,7 +179,7 @@ Compress-Archive -Path dist\PDFasker\* -DestinationPath build\PDFasker.zip
 
 ## 数据存储
 
-配置文件位置：`%APPDATA%/PDFasker/config.json`
+配置文件位置：`%APPDATA%/PaperWB/config.json`
 
 用户数据存储在首次启动时选择的数据根目录下：
 
@@ -187,7 +187,7 @@ Compress-Archive -Path dist\PDFasker\* -DestinationPath build\PDFasker.zip
 {data_root}/
 ├── library/                        # 导入的 PDF 论文
 │   └── *.pdf
-└── .pdfasker/
+└── .paperwb/
     ├── config.json                 # （不存这里，见上方 %APPDATA%）
     ├── library.json                # PDF 图书列表
     ├── chats/                      # 对话历史（按文档 MD5 隔离）
@@ -210,20 +210,20 @@ Compress-Archive -Path dist\PDFasker\* -DestinationPath build\PDFasker.zip
 ## 项目结构
 
 ```
-PDFasker/
+PaperWB/
 ├── main.py                      # 入口: QApplication + MainWindow（自动 UTF-8 重启 + --selftest 无头自检）
 ├── requirements.txt             # 依赖清单（PySide6/openai/PyMuPDF/docling 等）
 ├── src/
 │   ├── app.py                   # MainWindow — 首次启动弹窗 + 信号枢纽 + 三套 LLMClient + Zotero watcher
 │   ├── core/
 │   │   ├── pdf_parser.py        # PDF 底层工具: 文本提取/渲染 (PyMuPDF)
-│   │   ├── pdf_processor.py     # 两阶段管线: Docling 本地布局 (Stage 1) + LLM 跨页整合 (Stage 2)
+│   │   ├── pdf_processor.py     # 两阶段管线: Docling 本地布局 (Stage 1) + 本地规则跨页整合 (Stage 2)
 │   │   ├── docling_parser.py    # Docling 本地解析器: PDF → 逐页元素（HF 镜像/禁用 torch 编译）
 │   │   ├── llm_client.py        # OpenAI 兼容 API 客户端 + 5 个提供商预设
 │   │   ├── context_manager.py   # Token 预算管理: 长文档 BM25 检索增强（只发相关段落）
 │   │   ├── retriever.py         # 轻量本地检索器: Retriever 接口 + Bm25Retriever
 │   │   ├── zotero_parser.py     # Zotero SQLite 解析器: 集合层级/文献/附件 + reload()
-│   │   ├── zotero_watcher.py    # Zotero 实时同步: QFileSystemWatcher + 防抖 + 后台重载
+│   │   ├── zotero_watcher.py    # Zotero 周期同步: 每 30 分钟后台重载 + 手动刷新
 │   │   ├── unified_writer.py    # 统一润色+引文核查: 证据检索化 + JSON 多层容错
 │   │   ├── draft_reviewer.py    # 草稿评审
 │   │   ├── writing_coach.py     # 写作教练: 知识库/风格分析/引用密度
@@ -240,12 +240,13 @@ PDFasker/
 │   │   ├── review_dialog.py     # 评审对话框
 │   │   ├── polish_history_dialog.py  # 润色历史对话框
 │   │   ├── lit_search_dialog.py # 文献补充对话框: LLM 推荐 + PubMed 检索（非模态）
-│   │   ├── settings_dialog.py   # API 接口设置: 识图/翻译/写作标签页 + Zotero 路径 + 缓存路径
+│   │   ├── settings_dialog.py   # API 接口设置: 解析/翻译/写作标签页 + 连接测试（Zotero/缓存路径为独立菜单项）
 │   │   └── styles.py            # 暖白研究工作台主题 QSS
 │   └── utils/
 │       ├── config.py            # 持久化层: 配置/图书馆/聊天/缓存/草稿/润色历史 读写
-│       └── layout.py            # 递归布局高度计算
-├── test/                        # 测试数据
+│       ├── layout.py            # 递归布局高度计算
+│       └── threads.py           # 运行中 QThread 全局保活注册表
+├── test/                        # 测试数据 + 验收脚本（validate_zotero / capture_zotero_screenshots）
 └── .opencode/                   # opencode 开发辅助配置
 ```
 
@@ -259,9 +260,9 @@ PDFasker/
 
 **Stage 1 解析太慢？** Stage 1 固定为 **Docling 本地解析**（快、免费、离线，无 API 限流），速度取决于 CPU；首次使用前需先自动下载模型（一次性）。可在右键菜单对单篇「重新逐页解析」。
 
-**Docling 首次使用要下载模型？** 是，约数百 MB，一次性缓存在用户目录（版式模型走 Hugging Face，RapidOCR 模型走 ModelScope）。镜像默认开启无需设置；下载失败时解析会提示错误，可设置环境变量 `PDFASKER_HF_MIRROR=0` 回退官方源重试。
+**Docling 首次使用要下载模型？** 是，约数百 MB，一次性缓存在用户目录（版式模型走 Hugging Face，RapidOCR 模型走 ModelScope）。镜像默认开启无需设置；下载失败时解析会提示错误，可设置环境变量 `PAPERWB_HF_MIRROR=0` 回退官方源重试。
 
-**Zotero 文献怎么实时同步到软件？** 左侧面板切换到「📚 Zotero」标签页，软件会自动监听 Zotero 数据库与附件目录，增删改在约 1 秒内刷新；点击带 📄 的文献直接用两阶段管线阅读（只读，不会改动你的 Zotero 库）。
+**Zotero 文献怎么同步到软件？** 左侧面板切换到「📚 Zotero」标签页，启动时自动加载，此后每 30 分钟后台自动同步一次（增删改自动反映），也可点面板「刷新」按钮立即手动同步；点击带 📄 的文献直接用两阶段管线阅读（只读，不会改动你的 Zotero 库）。
 
 **引文核查匹配不上文献？** 确保 Zotero 中该文献已附加 PDF 附件。引文年份带字母后缀（如 `2025a`）会被自动去后缀匹配。支持 Author-Year 和 [1] 编号两种引用格式。
 

@@ -1,4 +1,4 @@
-"""PDFasker — AI 论文解读助手，主入口模块。"""
+"""PaperWB — AI 论文解读助手，主入口模块。"""
 
 import os
 import sys
@@ -15,10 +15,10 @@ def _ensure_utf8_mode() -> None:
     """
     if os.name != "nt" or sys.flags.utf8_mode:
         return
-    if os.environ.get("PDFASKER_UTF8_REEXEC"):
+    if os.environ.get("PAPERWB_UTF8_REEXEC") or os.environ.get("PDFASKER_UTF8_REEXEC"):
         return
     os.environ["PYTHONUTF8"] = "1"
-    os.environ["PDFASKER_UTF8_REEXEC"] = "1"
+    os.environ["PAPERWB_UTF8_REEXEC"] = "1"
     frozen = getattr(sys, "frozen", False)
     cmd = [sys.executable] + ([] if frozen else ["-X", "utf8"]) + sys.argv
     os.execv(sys.executable, cmd)
@@ -140,7 +140,7 @@ def _install_faulthandler() -> None:
     except ImportError:
         return
     try:
-        log_dir = os.path.join(os.environ.get("APPDATA", ""), "PDFasker")
+        log_dir = os.path.join(os.environ.get("APPDATA", ""), "PaperWB")
         os.makedirs(log_dir, exist_ok=True)
         faulthandler.enable(
             open(os.path.join(log_dir, "faulthandler.log"), "a", encoding="utf-8")
@@ -150,7 +150,7 @@ def _install_faulthandler() -> None:
 
 
 def _install_excepthook() -> None:
-    """全局未捕获异常处理器：写入 %APPDATA%/PDFasker/error.log 并打印到终端。
+    """全局未捕获异常处理器：写入 %APPDATA%/PaperWB/error.log 并打印到终端。
 
     避免线程/槽回调中的异常只出现在 stdout 而难以定位；日志含时间戳与完整
     traceback，路径与配置文件同目录，便于打包版用户反馈。
@@ -163,7 +163,7 @@ def _install_excepthook() -> None:
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         text = f"\n===== {ts} =====\n" + "".join(lines)
         try:
-            log_dir = os.path.join(os.environ.get("APPDATA", ""), "PDFasker")
+            log_dir = os.path.join(os.environ.get("APPDATA", ""), "PaperWB")
             os.makedirs(log_dir, exist_ok=True)
             with open(os.path.join(log_dir, "error.log"), "a", encoding="utf-8") as f:
                 f.write(text)
@@ -177,10 +177,10 @@ def _install_excepthook() -> None:
 def _run_selftest() -> int:
     """无头自检：导入全部模块 + 配置 + Zotero 只读加载 +（可选）Docling 解析样例。
 
-    用法: PDFasker --selftest [sample.pdf]
-    结果写入 %TEMP%/pdfasker_selftest.log（供打包产物验证）。
+    用法: PaperWB --selftest [sample.pdf]
+    结果写入 %TEMP%/paperwb_selftest.log（供打包产物验证）。
     """
-    log_path = os.path.join(tempfile.gettempdir(), "pdfasker_selftest.log")
+    log_path = os.path.join(tempfile.gettempdir(), "paperwb_selftest.log")
     results: list[tuple[str, bool, str]] = []
 
     def _ok(name: str):
@@ -302,9 +302,9 @@ if __name__ == "__main__":
     from src.app import MainWindow
 
     app = QApplication(sys.argv)
-    app.setApplicationName("PDFasker")
+    app.setApplicationName("PaperWB")
     app.setApplicationVersion("1.0.0")
-    app.setOrganizationName("PDFasker")
+    app.setOrganizationName("PaperWB")
     app.setStyle("Fusion")  # 跨平台一致的 QSS 基础
 
     window = MainWindow()

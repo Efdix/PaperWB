@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# PDFasker onedir 打包配置（正式产物）。
+# PaperWB onedir 打包配置（正式产物）。
 # 说明：
 # - onedir：exe + _internal/ 文件夹，启动快、更新只换 exe，DLL 就近加载无 onefile 解压竞态
 # - docling/transformers/rapidocr 通过 collect_all 打入（含 OCR 模型数据文件）
@@ -68,7 +68,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='PDFasker',
+    name='PaperWB',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -88,5 +88,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='PDFasker',
+    name='PaperWB',
 )
