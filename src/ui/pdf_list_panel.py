@@ -17,8 +17,7 @@ from PySide6.QtGui import QBrush, QColor, QDragEnterEvent, QDropEvent
 
 from ..utils.config import (
     load_config, save_config, load_library, save_library,
-    add_pdf_to_library, remove_pdf_from_library, get_library_folders,
-    delete_chat_history, delete_doc_state, delete_page_cache,
+    add_pdf_to_library, get_library_folders,
     load_doc_state, get_library_dir,
 )
 from .zotero_panel import ZoteroPanel
@@ -410,26 +409,17 @@ class PDFListPanel(QWidget):
             "• 清除对话历史\n"
             "• 清除翻译/排版状态")
         if r == QMessageBox.StandardButton.Yes:
-            delete_chat_history(path)
-            delete_doc_state(path)
-            delete_page_cache(path)
-            remove_pdf_from_library(path)
-            try:
-                os.remove(path)
-            except OSError as e:
-                print(f"[PDFList] 删除文件失败: {e}")
+            # 删除动作统一由 app 层执行：必须先取消该文献的后台解析线程，
+            # 再清缓存/删文件；否则运行中的 Docling 线程会把已删除的
+            # 缓存目录重新创建并写回数据（孤儿缓存）。
             self.pdf_removed.emit(path)
-            self._refresh()
 
     def _reload_pdf(self, path: str):
-        """清除所有缓存并重新加载 PDF。"""
+        """清除所有缓存并重新加载 PDF（删除动作由 app 层在停止后台线程后执行）。"""
         r = QMessageBox.question(self, "确认",
             f"重新加载此 PDF？\n\n这将清除逐页解析缓存、跨页整合结果和对话历史，\n"
             f"然后重新解析 PDF。下次需要重新运行 LLM。")
         if r == QMessageBox.StandardButton.Yes:
-            delete_chat_history(path)
-            delete_doc_state(path)
-            delete_page_cache(path)
             self.pdf_reload_requested.emit(path)
 
     def _rename_folder(self, old: str):

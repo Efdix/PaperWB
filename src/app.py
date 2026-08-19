@@ -20,6 +20,7 @@ from .core.zotero_watcher import ZoteroWatcher
 from .ui.chat_panel import ChatPanel
 from .ui.pdf_list_panel import PDFListPanel
 from .ui.pdf_viewer import PDFViewerPanel
+from .ui.workbench_panel import WorkbenchPanel
 from .ui.writing_panel import WritingPanel
 from .ui.settings_dialog import DirectorySettingDialog, SettingsDialog
 from .ui.styles import STYLESHEET
@@ -278,6 +279,11 @@ class MainWindow(QMainWindow):
         self._writing_panel = WritingPanel()
         self._main_tabs.addTab(self._writing_panel, "写作工作台")
 
+        # Tab 2: 文献工作台（库内跨文献问答 + 定时文献巡视）
+        self._workbench_panel = WorkbenchPanel()
+        self._workbench_panel.open_pdf_requested.connect(self._on_workbench_open_pdf)
+        self._main_tabs.addTab(self._workbench_panel, "文献工作台")
+
         # 顶部应用栏：把工作区切换和高频操作从传统标签页中提出来。
         shell = QWidget()
         shell.setObjectName("appShell")
@@ -326,6 +332,12 @@ class MainWindow(QMainWindow):
         self._write_nav.clicked.connect(lambda _checked=False: self._switch_workspace(1))
         header_layout.addWidget(self._write_nav)
 
+        self._scout_nav = QPushButton("文献工作台")
+        self._scout_nav.setObjectName("workspaceNav")
+        self._scout_nav.setCheckable(True)
+        self._scout_nav.clicked.connect(lambda _checked=False: self._switch_workspace(2))
+        header_layout.addWidget(self._scout_nav)
+
         header_layout.addStretch()
 
         settings_header_btn = QPushButton("设置")
@@ -350,11 +362,14 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self._status_write_label)
 
     def _switch_workspace(self, index: int) -> None:
-        """切换阅读/写作工作区，并同步顶部导航状态。"""
+        """切换阅读/写作/文献工作区，并同步顶部导航状态。"""
+        names = ("阅读工作台", "写作工作台", "文献工作台")
         self._main_tabs.setCurrentIndex(index)
         self._read_nav.setChecked(index == 0)
         self._write_nav.setChecked(index == 1)
-        self.status_bar.showMessage("已切换到阅读工作台" if index == 0 else "已切换到写作工作台")
+        self._scout_nav.setChecked(index == 2)
+        if 0 <= index < len(names):
+            self.status_bar.showMessage(f"已切换到{names[index]}")
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(STYLESHEET)
@@ -418,13 +433,34 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"PaperWB · {fname}" if fname else "PaperWB · AI 论文研究工作台")
 
     def _on_library_pdf_removed(self, path: str):
-        self.pdf_viewer._reset_view()
-        self.setWindowTitle("PaperWB · AI 论文研究工作台")
-        if path in self._processors:
-            proc = self._processors.pop(path)
-            self._app_progress_connected.discard(id(proc))
-            if hasattr(proc, 'cancel'):
-                proc.cancel()
+        """从库中移除文献：先停后台线程，再删缓存与文件（顺序不可颠倒）。"""
+        # 先丢弃当前会话引用：对话历史即将被删除，不能在切换/关窗时写回复活
+        if self._current_pdf_path == path:
+            self._current_pdf_path = ""
+            self._context_manager.load_pdf_text("")
+            self.chat_panel.clear_messages()
+            self.chat_panel.set_token_count(0)
+            self.chat_panel.set_input_enabled(False)
+            self.pdf_viewer._reset_view()
+            self.setWindowTitle("PaperWB · AI 论文研究工作台")
+        elif self.pdf_viewer.get_current_path() == path:
+            self.pdf_viewer._reset_view()
+
+        self._cancel_processor(path)
+
+        from .utils.config import (
+            delete_chat_history, delete_doc_state, delete_page_cache,
+            remove_pdf_from_library,
+        )
+        delete_chat_history(path)
+        delete_doc_state(path)
+        delete_page_cache(path)
+        remove_pdf_from_library(path)
+        try:
+            os.remove(path)
+        except OSError as e:
+            print(f"[Library] 删除文件失败: {e}")
+        self.pdf_list._refresh()
 
     def _on_pdf_imported(self, path: str):
         if not path:
@@ -440,9 +476,20 @@ class MainWindow(QMainWindow):
             self._load_pdf_into_viewer(path)
 
     def _on_library_pdf_reload(self, path: str):
-        if path:
-            self._begin_pdf_switch(path)
-            self._load_pdf_into_viewer(path)
+        """重新加载文献：必须先取消后台处理器再清缓存，否则旧线程会向
+        已删除的缓存目录回写数据、且复用的 manifest 仍认为缓存完整。"""
+        from .utils.config import (
+            delete_chat_history, delete_doc_state, delete_page_cache,
+        )
+        self._cancel_processor(path)
+        delete_chat_history(path)
+        delete_doc_state(path)
+        delete_page_cache(path)
+        # 对话历史已删除：切换时不能把内存里的旧会话重新写盘
+        if self._current_pdf_path == path:
+            self._current_pdf_path = ""
+        self._begin_pdf_switch(path)
+        self._load_pdf_into_viewer(path)
 
     def _load_pdf_into_viewer(self, path: str) -> None:
         """统一入口：复用/创建处理器 → 注入客户端 → 加载 PDF → 登记进度回调。
@@ -669,6 +716,7 @@ class MainWindow(QMainWindow):
             "<p>支持 DeepSeek、Mimo、OpenCode 及所有 OpenAI 兼容接口。</p>"
              "<p>三套接口：解析、翻译、写作（引文核查+风格分析+文献推荐）</p>"
              "<p>本地版式解析 · 结构化阅读视图 · 知识库驱动写作辅助 · Zotero 引文核查 · PubMed 文献检索</p>"
+             "<p>文献工作台：库内跨文献综合问答（BM25 全库索引）+ 定向文献巡视（定时检索 PubMed，自动过滤库内已有）</p>"
         )
 
     def closeEvent(self, event) -> None:
@@ -683,6 +731,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._writing_panel.shutdown()
+        self._workbench_panel.shutdown()
         if self._zotero_watcher is not None:
             self._zotero_watcher.stop()
         for proc in self._processors.values():
@@ -702,7 +751,8 @@ class MainWindow(QMainWindow):
                 for p in self._processors.values()
             )
             llm_busy = self._llm_worker is not None and self._llm_worker.isRunning()
-            if not pending and not llm_busy:
+            wb_busy = self._workbench_panel.has_busy_workers()
+            if not pending and not llm_busy and not wb_busy:
                 break
             QApplication.processEvents()
             time.sleep(0.1)
@@ -725,6 +775,7 @@ class MainWindow(QMainWindow):
         self.pdf_viewer.set_parse_client(self._llm_parse)
         self.pdf_viewer.set_translate_client(self._llm_translate)
         self.chat_panel.set_input_enabled(self._llm_parse is not None)
+        self._workbench_panel.set_parse_client(self._llm_parse)
 
         def _label(client, prefix):
             if client:
@@ -755,7 +806,12 @@ class MainWindow(QMainWindow):
             self._zotero_watcher = None
 
         self._zotero = ZoteroLibrary(zotero_dir)
-        count = self._zotero.load()
+        try:
+            count = self._zotero.load()
+        except Exception as e:  # noqa: BLE001
+            # 探测/复制数据库的意外错误不应阻断主窗口启动
+            print(f"[Zotero] 初始加载异常: {e}")
+            count = 0
         if count == 0 and zotero_dir:
             QMessageBox.warning(
                 self, "Zotero 加载失败",
@@ -771,6 +827,7 @@ class MainWindow(QMainWindow):
             self._zotero_watcher.start()
         self.pdf_list.zotero_panel.set_library(self._zotero)
         self.pdf_list.zotero_panel.set_watcher(self._zotero_watcher)
+        self._workbench_panel.set_zotero_library(self._zotero)
 
     def _on_zotero_pdf_selected(self, path: str) -> None:
         """点击 Zotero 文献 PDF —— 直接进入两阶段阅读管线（只读，不导入本地库）。"""
@@ -782,9 +839,15 @@ class MainWindow(QMainWindow):
         self._begin_pdf_switch(path)
         self._load_pdf_into_viewer(path)
 
+    def _on_workbench_open_pdf(self, path: str) -> None:
+        """文献工作台引用跳转 → 切到阅读工作台并按两阶段管线打开该 PDF。"""
+        self._switch_workspace(0)
+        self._on_zotero_pdf_selected(path)
+
     def _on_zotero_changed(self, diff: dict) -> None:
-        """Zotero 侧增删改 → 刷新写作面板状态。"""
+        """Zotero 侧增删改 → 刷新写作面板状态 + 文献工作台索引。"""
         self._writing_panel.refresh_zotero_status()
+        self._workbench_panel.on_zotero_changed()
 
     def _validate_data_root(self) -> None:
         """启动时校验缓存文件存储路径是否可访问。"""

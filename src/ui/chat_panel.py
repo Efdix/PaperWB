@@ -111,11 +111,14 @@ class ChatBubble(QFrame):
 
     def set_thinking(self, thinking: bool) -> None:
         """切换等待提示；首个回复分片到达时清除占位文本。"""
+        was_thinking = self._thinking
         self._thinking = bool(thinking)
         self.setProperty("thinking", self._thinking)
         if self._thinking_bar is not None:
             self._thinking_bar.setVisible(self._thinking)
-        if self._content_label is not None and not self._thinking:
+        # 只在「思考中 → 完成」的首次切换时清占位文本；
+        # 再次调用（流式结束后）不得清掉已渲染的回答内容
+        if was_thinking and not self._thinking and self._content_label is not None:
             self._content_label.setText("")
         self.updateGeometry()
 

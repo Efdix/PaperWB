@@ -13,6 +13,8 @@ import time
 
 from PySide6.QtCore import QObject, QThread, QTimer, QFileSystemWatcher, Signal
 
+from ..utils.threads import track
+
 
 class ZoteroReloadWorker(QThread):
     """后台重载 Zotero 库（避免大库阻塞 UI）。"""
@@ -21,6 +23,8 @@ class ZoteroReloadWorker(QThread):
     error_signal = Signal(str)
 
     def __init__(self, library, parent=None):
+        # 不设 parent：运行中的线程随父窗口析构会被 Qt 直接销毁导致闪退，
+        # 生命周期统一交给 threads.track() 注册表保活。
         super().__init__(parent)
         self._library = library
 
@@ -89,9 +93,18 @@ class ZoteroWatcher(QObject):
         self._debounce.stop()
         self._sync_timer.stop()
         self._remove_all_watched()
-        if self._worker and self._worker.isRunning():
-            self._worker.quit()
-            self._worker.wait(1000)
+        if self._worker is not None:
+            worker = self._worker
+            self._worker = None
+            if worker.isRunning():
+                # 断开信号：窗口关闭后迟到的 changed/status 不再驱动 UI；
+                # 线程由 track() 注册表保活直至自然退出。
+                try:
+                    worker.finished_signal.disconnect()
+                    worker.error_signal.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                worker.requestInterruption()
 
     def request_reload(self, show_status: bool = True) -> None:
         """立即触发一次后台重载（周期定时与面板刷新按钮共用）。
@@ -157,7 +170,8 @@ class ZoteroWatcher(QObject):
     def _start_reload(self, show_status: bool = True) -> None:
         if show_status:
             self.status.emit("正在重新同步 Zotero 文献库...")
-        self._worker = ZoteroReloadWorker(self._library, self)
+        self._worker = ZoteroReloadWorker(self._library)
+        track(self._worker)  # 运行期间保活，杜绝运行中 QThread 被 GC/析构销毁
         self._worker.finished_signal.connect(self._on_reload_done)
         self._worker.error_signal.connect(self._on_reload_error)
         self._worker.start()

@@ -46,8 +46,11 @@ class LLMClient:
             temperature=0.3,
         ))
         for chunk in response:
+            # 部分 OpenAI 兼容服务（含 usage 的尾包）会发 choices 为空的 chunk
+            if not chunk.choices:
+                continue
             delta = chunk.choices[0].delta
-            if delta.content:
+            if delta and delta.content:
                 yield delta.content
 
     def chat_sync(self, messages: list[dict], timeout: float = 120.0,

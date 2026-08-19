@@ -334,18 +334,19 @@ class UnifiedWriter:
         citation_sources = pre_citation_sources or self._build_citation_sources(selected_text, zotero_lib)
 
         if verify_only:
+            # 用户文本最后替换：其中若含字面 {citation_sources} 等占位符也不会被二次展开
             prompt = (VERIFY_ONLY_PROMPT
                 .replace("{style_context}", "")
-                .replace("{selected_text}", selected_text)
-                .replace("{citation_sources}", citation_sources))
+                .replace("{citation_sources}", citation_sources)
+                .replace("{selected_text}", selected_text))
             system_prompt = "你是学术写作核查专家。只返回 JSON，不要修改原文。"
         else:
             review_section = f"【评价诊断】（以下问题来自草稿整体评价，请在润色时一并修正）\n{review_findings}" if review_findings else ""
             prompt = (UNIFIED_PROMPT
                 .replace("{style_context}", style_context)
                 .replace("{review_findings}", review_section)
-                .replace("{selected_text}", selected_text)
-                .replace("{citation_sources}", citation_sources))
+                .replace("{citation_sources}", citation_sources)
+                .replace("{selected_text}", selected_text))
 
         messages = [
             {"role": "system", "content": system_prompt or "你是学术写作助手。"},
@@ -572,8 +573,23 @@ class UnifiedWriter:
                 return []
             from .json_utils import parse_json_response
             obj = parse_json_response(response)
-            if obj:
-                return obj.get("citations", [])
+            if not obj:
+                return []
+            raw = obj.get("citations")
+            if not isinstance(raw, list):
+                return []
+            # 出口规范化：LLM 可能把字段返回为 null/数字，
+            # UI 线程直接 .strip()/str.find() 会抛异常
+            citations: list[dict] = []
+            for c in raw:
+                if not isinstance(c, dict):
+                    continue
+                citations.append({
+                    "original_marker": str(c.get("original_marker") or "?"),
+                    "author_hint": str(c.get("author_hint") or "").strip(),
+                    "year_hint": str(c.get("year_hint") or "").strip(),
+                })
+            return citations
         except Exception:
             pass
         return []

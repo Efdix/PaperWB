@@ -244,7 +244,8 @@ class ReviewDialog(QDialog):
         self._cl.addWidget(self._sep())
 
     def _build_section_analysis(self):
-        sa = self._result.get("section_analysis", [])
+        sa = [s for s in (self._result.get("section_analysis") or [])
+              if isinstance(s, dict)]
         if not sa:
             return
         self._cl.addWidget(self._section_header("各部分分析", "#147c7c"))
@@ -298,9 +299,9 @@ class ReviewDialog(QDialog):
                 )
 
     def _build_transition_gaps(self):
-        tsg = self._result.get("transition_summary_gaps", {}) or {}
-        gaps = tsg.get("gaps", [])
-        missing_sums = tsg.get("missing_summaries", [])
+        tsg = self._result.get("transition_summary_gaps") or {}
+        gaps = [g for g in (tsg.get("gaps") or []) if isinstance(g, dict)]
+        missing_sums = tsg.get("missing_summaries") or []
         if not gaps and not missing_sums:
             return
         self._cl.addWidget(self._sep())
@@ -322,7 +323,8 @@ class ReviewDialog(QDialog):
             )
 
     def _build_redundancy(self):
-        items = self._result.get("redundancy", {}).get("items", [])
+        items = (self._result.get("redundancy") or {}).get("items") or []
+        items = [r for r in items if isinstance(r, dict)]
         if not items:
             return
         self._cl.addWidget(self._sep())
@@ -337,7 +339,8 @@ class ReviewDialog(QDialog):
             )
 
     def _build_terminology(self):
-        issues = self._result.get("terminology_consistency", {}).get("issues", [])
+        issues = (self._result.get("terminology_consistency") or {}).get("issues") or []
+        issues = [t for t in issues if isinstance(t, dict)]
         if not issues:
             return
         self._cl.addWidget(self._sep())
@@ -428,7 +431,8 @@ class ReviewDialog(QDialog):
         self._cl.addWidget(self._static_text(text))
 
     def _build_figure_suggestions(self):
-        items = self._result.get("figure_suggestions", {}).get("items", [])
+        items = (self._result.get("figure_suggestions") or {}).get("items") or []
+        items = [f for f in items if isinstance(f, dict)]
         if not items:
             return
         self._cl.addWidget(self._sep())

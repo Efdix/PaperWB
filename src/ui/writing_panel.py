@@ -82,13 +82,13 @@ class StyleGuideDialog(QDialog):
         if profile and profile.has_writing_habits:
             h = profile.writing_habits
             if h.get("citation_detail_level"):
-                cd = h["citation_detail_level"]
+                cd = h["citation_detail_level"] or {}
                 _section("引用详略度",
-                    f"平均 {cd['avg_sentences_per_citation']} 句话 / {cd['avg_chars_per_citation']} 字  "
-                    f"(共 {cd['sample_count']} 个样本)\n"
-                    f"中位数: {cd['med_chars_per_citation']} 字  "
-                    f"四分位: {cd['q25_chars']}-{cd['q75_chars']} 字\n"
-                    f"分布: {cd['distribution_description']}",
+                    f"平均 {cd.get('avg_sentences_per_citation', '?')} 句话 / {cd.get('avg_chars_per_citation', '?')} 字  "
+                    f"(共 {cd.get('sample_count', '?')} 个样本)\n"
+                    f"中位数: {cd.get('med_chars_per_citation', '?')} 字  "
+                    f"四分位: {cd.get('q25_chars', '?')}-{cd.get('q75_chars', '?')} 字\n"
+                    f"分布: {cd.get('distribution_description', '')}",
                     "#147c7c")
             if h.get("argumentation_style"):
                 _section("论述逻辑", h["argumentation_style"], "#147c7c")
@@ -340,9 +340,11 @@ class WritingPanel(QWidget):
         self._review_worker: DraftReviewWorker | None = None
         self._citation_worker: CitationExtractWorker | None = None
         self._active_dialogs: list = []  # 保持非模态对话框引用防止被GC
+        self._draft_dirty = False  # 仅用户真实改动后才允许自动保存落盘
 
         self._setup_ui()
         self._refresh_kb_dropdown()
+        self._load_draft()  # 恢复上次知识库的编辑器草稿（防止空文本覆盖磁盘）
 
         # 自动保存定时器：每 30 秒保存一次编辑器草稿
         self._auto_save_timer = QTimer(self)
@@ -691,7 +693,7 @@ class WritingPanel(QWidget):
             self._on_new_kb()
             return
         if data and data in self._coach.profile_names:
-            # 保存当前草稿
+            # 保存当前草稿（到旧知识库）
             self._auto_save_draft()
             self._coach.switch_profile(data)
             profile = self._coach.current_profile
@@ -702,8 +704,9 @@ class WritingPanel(QWidget):
                     self._type_combo.setCurrentIndex(type_idx)
                     self._type_combo.blockSignals(False)
                     self._current_writing_type = profile.writing_type
-            # 加载新知识库的草稿
-            self._load_draft()
+            # 加载新知识库的草稿：必须整体替换，否则旧库内容会被
+            # 30 秒自动保存写进新库的草稿文件（两库互相污染）
+            self._load_draft(replace=True)
         else:
             self._coach._current_profile = None
         self._update_kb_status()
@@ -788,6 +791,7 @@ class WritingPanel(QWidget):
         self._type_combo.blockSignals(False)
 
     def _on_editor_text_changed(self):
+        self._draft_dirty = True
         text = self.editor.toPlainText()
         chars = len(text)
         self._word_count_label.setText(f"字数: {chars}")
@@ -826,7 +830,7 @@ class WritingPanel(QWidget):
                 )
                 self._refresh_kb_dropdown()
                 self._status_label.setText(f"已创建知识库: {name.strip()}")
-            except ValueError as e:
+            except (ValueError, OSError) as e:
                 QMessageBox.warning(self, "创建失败", str(e))
 
     def _on_delete_kb(self):
@@ -911,6 +915,8 @@ class WritingPanel(QWidget):
         dialog.exec()
 
     def _on_style_guide_ready(self, guide: dict):
+        if self.sender() is not self._style_worker:
+            return
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 100)
         self._style_btn.setEnabled(True)
@@ -923,6 +929,8 @@ class WritingPanel(QWidget):
         dialog.exec()
 
     def _on_style_guide_error(self, err: str):
+        if self.sender() is not self._style_worker:
+            return
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 100)
         self._style_btn.setEnabled(True)
@@ -1061,7 +1069,25 @@ class WritingPanel(QWidget):
         )
 
         if answer == QMessageBox.StandardButton.Yes:
-            self._on_unified_polish()
+            # 重试引文解析：保持当前模式与 verify_only 语义不变
+            # （调 _on_unified_polish 会把仅核查静默变成完整润色）
+            self._set_ai_buttons_busy(True)
+            self._progress_bar.setVisible(True)
+            self._progress_bar.setRange(0, 0)
+            self._cancel_btn.setVisible(True)
+            self._progress_bar.setFormat("AI 正在解析草稿中的引文...")
+            self._status_label.setText("重试解析草稿中的引文...")
+            QApplication.processEvents()
+            self._citation_worker = CitationExtractWorker(
+                self._write_client, text, self._count_citation_markers(text)
+            )
+            self._citation_worker.finished_signal.connect(
+                lambda citations: self._on_citations_extracted(citations, text, review_findings)
+            )
+            self._citation_worker.error_signal.connect(
+                lambda err: self._on_citation_extract_error(err, text, review_findings)
+            )
+            self._citation_worker.start()
         elif answer == QMessageBox.StandardButton.No:
             self._progress_bar.setVisible(True)
             self._progress_bar.setRange(0, 0)
@@ -1072,34 +1098,52 @@ class WritingPanel(QWidget):
 
     def _on_citations_extracted(self, citations: list, text: str, review_findings: str):
         """LLM 引文识别完成 → 在 Zotero 中搜索 → 启动润色。"""
-        pre_citation_sources = ""
-        from ..core.unified_writer import UnifiedWriter
-        uw_helper = UnifiedWriter()
-        if self._zotero:
-            sources_list = []
-            for c in citations:
-                author = c.get("author_hint", "").strip()
-                year = str(c.get("year_hint", "")).strip()
-                marker = c.get("original_marker", "?")
-                if not author or not year or author == "unknown" or year == "unknown":
-                    sources_list.append(f"--- 引文 {marker}: 未能识别到作者/年份 ---\n(无原文可对照)")
+        if self.sender() is not self._citation_worker:
+            return  # 已取消的旧线程迟到结果，不再重启润色流程
+        try:
+            # LLM 返回的字段类型不可信：null/数字都会让 UI 线程抛异常
+            # 并把 AI 按钮永久卡在 busy 态，这里统一规范化
+            clean: list[dict] = []
+            for c in citations or []:
+                if not isinstance(c, dict):
                     continue
-                candidates = self._zotero.find_by_citation(author, year)
-                if not candidates:
-                    sources_list.append(f"--- 引文 {marker} ({author}, {year}): 未在 Zotero 库中匹配到 ---\n(无原文可对照)")
-                    continue
-                query = uw_helper._sentence_around(text, marker)
-                for item in candidates[:2]:
-                    text_pdf = uw_helper._extract_relevant_context(item.pdf_path, query)
-                    title = (item.title or "?")[:100]
-                    authors_list = ", ".join(item.authors[:3]) if item.authors else "?"
-                    sources_list.append(
-                        f"--- 引文 {marker} → {authors_list} ({item.year}) {title} ---\n{text_pdf}"
-                    )
-            pre_citation_sources = "\n\n".join(sources_list) if sources_list else ""
-        self._status_label.setText(f"已识别 {len(citations)} 处引文标记")
+                clean.append({
+                    "author_hint": str(c.get("author_hint") or "").strip(),
+                    "year_hint": str(c.get("year_hint") or "").strip(),
+                    "original_marker": str(c.get("original_marker") or "?"),
+                })
+            citations = clean
 
-        self._start_polish_worker(text, pre_citation_sources, review_findings)
+            pre_citation_sources = ""
+            from ..core.unified_writer import UnifiedWriter
+            uw_helper = UnifiedWriter()
+            if self._zotero:
+                sources_list = []
+                for c in citations:
+                    author = c["author_hint"]
+                    year = c["year_hint"]
+                    marker = c["original_marker"]
+                    if not author or not year or author == "unknown" or year == "unknown":
+                        sources_list.append(f"--- 引文 {marker}: 未能识别到作者/年份 ---\n(无原文可对照)")
+                        continue
+                    candidates = self._zotero.find_by_citation(author, year)
+                    if not candidates:
+                        sources_list.append(f"--- 引文 {marker} ({author}, {year}): 未在 Zotero 库中匹配到 ---\n(无原文可对照)")
+                        continue
+                    query = uw_helper._sentence_around(text, marker)
+                    for item in candidates[:2]:
+                        text_pdf = uw_helper._extract_relevant_context(item.pdf_path, query)
+                        title = (item.title or "?")[:100]
+                        authors_list = ", ".join(item.authors[:3]) if item.authors else "?"
+                        sources_list.append(
+                            f"--- 引文 {marker} → {authors_list} ({item.year}) {title} ---\n{text_pdf}"
+                        )
+                pre_citation_sources = "\n\n".join(sources_list) if sources_list else ""
+            self._status_label.setText(f"已识别 {len(citations)} 处引文标记")
+
+            self._start_polish_worker(text, pre_citation_sources, review_findings)
+        except Exception as e:  # noqa: BLE001
+            self._on_unified_error(f"引文上下文构建失败：{e}")
 
     def _start_polish_worker(self, text: str, pre_citation_sources: str,
                              review_findings: str = "", mode: str = "polish"):
@@ -1126,6 +1170,8 @@ class WritingPanel(QWidget):
         self._unified_worker.start()
 
     def _on_unified_done(self, result: dict):
+        if self.sender() is not self._unified_worker:
+            return  # 已取消的旧线程迟到结果，丢弃
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 100)
         self._cancel_btn.setVisible(False)
@@ -1170,17 +1216,34 @@ class WritingPanel(QWidget):
         dialog.show()
 
     def _on_diff_accepted(self, text: str, result: dict, original: str):
+        # 润色等待期间编辑器可能已被改动：原选区位置失效时不能盲目替换，
+        # 先校验区间文本，不一致则按原文重定位，彻底找不到就追加到文末。
+        plain = self.editor.toPlainText().replace('\u2029', '\n')
+        start = getattr(self, '_pending_cursor_pos', -1)
+        end = getattr(self, '_pending_cursor_end', -1)
+        if not (0 <= start <= end <= len(plain)) or plain[start:end] != original:
+            start = plain.find(original)
+            if start < 0:
+                cursor = self.editor.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                self.editor.setTextCursor(cursor)
+                cursor.insertText(("\n\n" if plain.strip() else "") + text)
+                self._status_label.setText("原选区已被修改，润色结果已追加到文末")
+                self._save_polish_history(result, original, final_text=text)
+                return
+            end = start + len(original)
+            self._status_label.setText("原选区位置已变动，已按原文重新定位替换")
         cursor = self.editor.textCursor()
-        start = getattr(self, '_pending_cursor_pos', cursor.position())
-        end = getattr(self, '_pending_cursor_end', cursor.position())
         cursor.setPosition(start)
         cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
         self.editor.setTextCursor(cursor)
         cursor.insertText(text)
         self._status_label.setText("润色文本已替换")
-        self._save_polish_history(result, original)
+        self._save_polish_history(result, original, final_text=text)
 
     def _on_unified_error(self, err: str):
+        if self.sender() is not self._unified_worker:
+            return
         self._progress_bar.setVisible(False)
         self._cancel_btn.setVisible(False)
         self._progress_bar.setRange(0, 100)
@@ -1252,6 +1315,8 @@ class WritingPanel(QWidget):
         self._review_worker.start()
 
     def _on_review_done(self, result: dict):
+        if self.sender() is not self._review_worker:
+            return
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 100)
         self._cancel_btn.setVisible(False)
@@ -1268,6 +1333,8 @@ class WritingPanel(QWidget):
         dialog.show()
 
     def _on_review_error(self, err: str):
+        if self.sender() is not self._review_worker:
+            return
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 100)
         self._cancel_btn.setVisible(False)
@@ -1379,29 +1446,54 @@ class WritingPanel(QWidget):
         self._active_dialogs.clear()
 
     def _auto_save_draft(self):
-        """自动保存编辑器草稿到磁盘。"""
+        """自动保存编辑器草稿到磁盘。
+
+        只有用户真实修改过（_draft_dirty）才落盘：启动后尚未加载草稿、
+        或程序性 setPlainText 都不触发保存，避免空文本/旧库内容覆盖。
+        """
         try:
-            if self._coach and self._coach.current_profile:
+            if self._coach and self._coach.current_profile and self._draft_dirty:
                 text = self.editor.toPlainText()
                 from ..utils.config import save_draft
                 save_draft(self._coach.current_profile.name, text)
+                self._draft_dirty = False
         except Exception:
             pass
 
-    def _load_draft(self):
-        """加载当前知识库的编辑器草稿。"""
+    def _swap_editor_text(self, text: str) -> None:
+        """程序性替换编辑器全文：不记为用户修改，不触发高亮防抖。"""
+        self.editor.blockSignals(True)
+        self.editor.setPlainText(text)
+        self.editor.blockSignals(False)
+        self._draft_dirty = False
+        self._on_editor_text_changed()
+        self._draft_dirty = False
+        self._refresh_ai_highlight()
+
+    def _load_draft(self, replace: bool = False):
+        """加载当前知识库的编辑器草稿。
+
+        Args:
+            replace: True 时无条件替换编辑器内容（切换知识库场景，
+                     旧库内容不能残留进新库）；False 时仅编辑器为空才恢复。
+        """
         try:
             if self._coach and self._coach.current_profile:
                 from ..utils.config import load_draft
                 text = load_draft(self._coach.current_profile.name)
-                if text and not self.editor.toPlainText().strip():
-                    self.editor.setPlainText(text)
+                if not text:
+                    if replace:
+                        self._swap_editor_text("")
+                    return
+                if replace or not self.editor.toPlainText().strip():
+                    self._swap_editor_text(text)
                     self._status_label.setText("已恢复上次草稿")
         except Exception:
             pass
 
-    def _save_polish_history(self, result: dict, original: str = ""):
-        """保存润色结果到历史记录。"""
+    def _save_polish_history(self, result: dict, original: str = "",
+                             final_text: str = ""):
+        """保存润色结果到历史记录（优先保存用户在 diff 中最终采纳的文本）。"""
         try:
             if self._coach and self._coach.current_profile and not result.get("error"):
                 from datetime import datetime
@@ -1409,7 +1501,7 @@ class WritingPanel(QWidget):
                 entry = {
                     "timestamp": datetime.now().isoformat(),
                     "original": original,
-                    "polished_text": result.get("polished_text", ""),
+                    "polished_text": final_text or result.get("polished_text", ""),
                     "citation_notes": result.get("citation_notes", []),
                     "supervisor_notes": result.get("supervisor_notes", []),
                     "logic_issues": result.get("logic_issues", []),

@@ -308,7 +308,9 @@ class LitSearchDialog(QDialog):
         if self._coach:
             system_prompt = self._coach.build_writing_system_prompt("综述")
 
+        from ..utils.threads import track
         self._worker = LitAnalysisWorker(self._client, self._draft_text, system_prompt)
+        track(self._worker)  # 对话框关闭后线程保活至自然退出，防析构崩溃
         self._worker.finished.connect(self._on_analysis_done)
         self._worker.error.connect(self._on_analysis_error)
         self._worker.start()
@@ -340,8 +342,17 @@ class LitSearchDialog(QDialog):
                 self._start_analysis()
                 return
             elif answer == QMessageBox.StandardButton.No:
-                # 用兜底数据展示
-                data = LitSearchDialog._parse_json("")  # 触发兜底
+                # 原始响应未随错误信号传出，用错误信息构造兜底展示
+                # （_parse_json("") 会返回 None，直接渲染会 AttributeError）
+                data = {
+                    "covered_domains": [],
+                    "known_papers": [],
+                    "gaps": [{
+                        "domain": "分析失败（原始回复不可用）",
+                        "reason": err[:500],
+                        "search_queries": [],
+                    }],
+                }
                 self._analysis_data = data
                 self._render_analysis(data)
                 return
@@ -354,14 +365,16 @@ class LitSearchDialog(QDialog):
         )
 
     def _render_analysis(self, data: dict):
+        # LLM 可能返回字符串数组等非 dict 元素，逐项过滤防 .get 崩溃
+        domains = [d for d in (data.get("covered_domains") or []) if isinstance(d, dict)]
         lines = ["<b style='color: #147c7c;'>已覆盖方向：</b>"]
-        for d in data.get("covered_domains", []):
+        for d in domains:
             lines.append(
                 f"<span style='color: #526b6c;'>  · {d.get('domain', '?')}</span> "
                 f"<span style='color: #718180;'>({d.get('paper_count', 0)} 篇，最新 {d.get('latest_year', '?')})</span>"
             )
 
-        known = data.get("known_papers", [])
+        known = [p for p in (data.get("known_papers") or []) if isinstance(p, dict)]
         if known:
             lines.append("<br><b style='color: #3e8e78;'>AI 推荐的已知文献（可导出）：</b>")
             for i, p in enumerate(known):
@@ -382,7 +395,7 @@ class LitSearchDialog(QDialog):
             self._known_papers = []
             self._export_known_btn.setVisible(False)
 
-        gaps = data.get("gaps", [])
+        gaps = [g for g in (data.get("gaps") or []) if isinstance(g, dict)]
         if gaps:
             lines.append("<br><b style='color: #b87835;'>遗漏方向与搜索关键词：</b>")
             for i, g in enumerate(gaps):
@@ -416,7 +429,9 @@ class LitSearchDialog(QDialog):
         self._refine_btn.setEnabled(False)
         self._search_btn.setEnabled(False)
 
+        from ..utils.threads import track
         self._worker = LitRefineWorker(self._client, self._draft_text, prev, feedback)
+        track(self._worker)
         self._worker.finished.connect(self._on_analysis_done)
         self._worker.error.connect(self._on_analysis_error)
         self._worker.start()
@@ -433,8 +448,11 @@ class LitSearchDialog(QDialog):
             return
 
         queries = []
-        for g in gaps:
-            queries.extend(g.get("search_queries", []))
+        for g in self._analysis_data.get("gaps", []):
+            if not isinstance(g, dict):
+                continue
+            qs = g.get("search_queries") or []
+            queries.extend(q for q in qs if isinstance(q, str))
         if not queries:
             return
 
@@ -443,11 +461,19 @@ class LitSearchDialog(QDialog):
         self._refine_btn.setEnabled(False)
         self._search_btn.setEnabled(False)
 
+        from ..utils.threads import track
         self._worker = PubMedSearchWorker(queries)
+        track(self._worker)
         self._worker.progress.connect(lambda msg: self._progress.setFormat(msg))
         self._worker.finished.connect(self._on_search_done)
         self._worker.error.connect(self._on_search_error)
         self._worker.start()
+
+    def closeEvent(self, event):
+        w = getattr(self, "_worker", None)
+        if w is not None and w.isRunning():
+            w.requestInterruption()  # 线程由注册表保活，自然退出
+        super().closeEvent(event)
 
     def _on_search_done(self, papers: list):
         self._set_busy(False)
@@ -497,7 +523,9 @@ class LitSearchDialog(QDialog):
 
     @staticmethod
     def _normalize_title(title: str) -> str:
-        return re.sub(r"[^a-z0-9]", "", (title or "").lower())
+        # 归一化实现抽至 core.reference_match，与文献工作台巡视共用同一口径
+        from ..core.reference_match import normalize_title
+        return normalize_title(title)
 
     @staticmethod
     def _title_match(title: str, papers: list) -> bool:

@@ -837,21 +837,19 @@ class PDFViewerPanel(QWidget):
             cached_state.get("doc_format") == "fast"
             and cached_state.get("fast_version", 0) == FAST_DOCUMENT_VERSION
         )
+        # PDF 被同名替换（mtime 变化）后缓存必须失效，否则永远显示旧解析
+        try:
+            built_mtime = float(cached_state.get("pdf_mtime", 0.0) or 0.0)
+            cur_mtime = os.path.getmtime(file_path)
+        except (OSError, TypeError, ValueError):
+            built_mtime = cur_mtime = 0.0
+        if built_mtime and cur_mtime and abs(built_mtime - cur_mtime) > 1.0:
+            cache_is_current = False
+
         if cached_doc and cache_is_current:
             try:
                 from ..core.pdf_processor import StructuredDocument
                 doc = StructuredDocument.from_dict(cached_doc)
-                # 旧版（全量 LLM 整合）结果：用规则组装从页缓存重建，
-                # 保证图片回填与新格式一致
-                if cached_state.get("doc_format") != "fast":
-                    from ..core.pdf_processor import rebuild_document_fast
-                    rebuilt = rebuild_document_fast(file_path)
-                    if rebuilt is not None:
-                        doc = rebuilt
-                        cached_state["structured_document"] = doc.to_dict()
-                        cached_state["doc_format"] = "fast"
-                        from ..utils.config import save_doc_state
-                        save_doc_state(file_path, cached_state)
                 self._structured_doc = doc
                 failed = self._render_document(doc)
                 self._restore_translation_state(cached_state)
@@ -865,6 +863,9 @@ class PDFViewerPanel(QWidget):
                 self.progress_bar.setValue(100)
                 self.auto_trans_btn.setEnabled(True)
                 self._processor = existing_processor  # 保留引用，后台任务继续
+                if existing_processor is not None:
+                    # 后台接缝合并仍在跑时，完成信号也要能刷新当前视图
+                    self._attach_processor_signals()
                 self.pdf_path_changed.emit(file_path)
                 full_text = "\n\n".join(e.text for e in doc.display_elements if e.text)
                 self.pdf_loaded.emit(full_text)
@@ -963,6 +964,10 @@ class PDFViewerPanel(QWidget):
         self._auto_start_stage2()
 
     def _on_stage1_error(self, pdf_path: str, page_num: int, error_msg: str):
+        if pdf_path != self._current_path:
+            return  # 后台其它论文的失败不污染当前界面
+        if self._structured_doc is not None:
+            return  # 文档已渲染完成：丢弃迟到的失败事件
         self._stage1_errors += 1
         if page_num > 0:
             message = f"第 {page_num} 页解析失败：{error_msg[:80]}"
@@ -1091,6 +1096,12 @@ class PDFViewerPanel(QWidget):
             card.setParent(None)
             card.deleteLater()
         self._cards.clear()
+        # 清掉上次渲染追加的 spacer（widget 不动），避免接缝合并等
+        # 重复渲染场景下布局项无限累积
+        for i in range(self.card_layout.count() - 1, -1, -1):
+            item = self.card_layout.itemAt(i)
+            if item is not None and item.widget() is None:
+                self.card_layout.takeAt(i)
         self.placeholder.setVisible(False)
 
         from ..utils.config import get_page_cache_dir
@@ -1156,6 +1167,17 @@ class PDFViewerPanel(QWidget):
         if pdf_path != self._current_path:
             return
         self._structured_doc = doc
+        # 合并会移位后续元素的索引：先作废所有在途翻译（按旧索引回调
+        # 会把 A 段译文写到 B 段卡片并错误持久化），再重建卡片
+        self._doc_generation += 1
+        for worker in self._trans_workers.values():
+            if worker.isRunning():
+                worker.requestInterruption()
+            self._retired_trans_workers.append(worker)
+        self._trans_workers.clear()
+        self._retired_trans_workers = [
+            w for w in self._retired_trans_workers if w.isRunning()
+        ]
         self._render_document(doc)
         self._restore_translation_state()
 

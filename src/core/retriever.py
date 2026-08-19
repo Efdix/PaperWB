@@ -66,17 +66,43 @@ class Bm25Retriever(Retriever):
             return []
         scores = self._bm25.get_scores(query_tokens)
         ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-        results: list[dict] = []
+
+        # 退化兜底：极小语料（≤2 篇）时 BM25 的 IDF 全为 0/负（项数过半的词
+        # idf≤0），所有得分都 ≤0，直接截断会颗粒无收 —— 改按词面重叠排序。
+        if scores[ranked[0]] <= 0:
+            query_set = set(query_tokens)
+            overlapped = sorted(
+                range(len(self._chunks)),
+                key=lambda i: len(query_set & set(_tokenize(self._chunks[i]["text"]))),
+                reverse=True)
+            results: list[dict] = []
+            for i in overlapped:
+                overlap = len(query_set & set(_tokenize(self._chunks[i]["text"])))
+                if overlap <= 0:
+                    break
+                results.append(self._make_hit(self._chunks[i], float(overlap)))
+                if len(results) >= top_k:
+                    break
+            return results
+
+        results = []
         for i in ranked:
             if scores[i] <= 0:
                 break
-            c = self._chunks[i]
-            results.append({
-                "text": c.get("text", ""),
-                "section": c.get("section", ""),
-                "page": c.get("page", 0),
-                "score": round(float(scores[i]), 3),
-            })
+            results.append(self._make_hit(self._chunks[i], float(scores[i])))
             if len(results) >= top_k:
                 break
         return results
+
+    @staticmethod
+    def _make_hit(chunk: dict, score: float) -> dict:
+        hit = {
+            "text": chunk.get("text", ""),
+            "section": chunk.get("section", ""),
+            "page": chunk.get("page", 0),
+            "score": round(score, 3),
+        }
+        # 透传调用方附加的自定义键（如库级检索的条目 key "k"）
+        hit.update({k: v for k, v in chunk.items()
+                    if k not in ("text", "section", "page")})
+        return hit

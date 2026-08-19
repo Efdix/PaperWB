@@ -282,13 +282,19 @@ class DraftReviewer:
             格式化的指导文字，或空字符串（无发现问题时）
         """
         # ---- 新格式：用户采纳/编辑过的发现项 ----
-        accepted = review.get("_accepted_items")
-        if isinstance(accepted, list) and accepted:
+        # 键存在但为空列表 = 用户在对话框中明确全部拒绝，不应注入任何
+        # 问题；键不存在才是旧格式（回退到原始字段重建）。
+        if "_accepted_items" in review:
+            accepted = review.get("_accepted_items")
+            if not (isinstance(accepted, list) and accepted):
+                return ""
             lines: list[str] = []
             for item in accepted:
-                cat = item.get("category", "")
-                title = item.get("title", "").strip()
-                sug = item.get("suggestion", "").strip()
+                if not isinstance(item, dict):
+                    continue
+                cat = str(item.get("category", "") or "")
+                title = str(item.get("title", "") or "").strip()
+                sug = str(item.get("suggestion", "") or "").strip()
                 prefix = f"【{cat}】" if cat else ""
                 if title and sug:
                     lines.append(f"· {prefix}{title} → 处理：{sug}")
@@ -301,13 +307,15 @@ class DraftReviewer:
             return ""
 
         # ---- 旧格式回退：原始字段重建 ----
-        lines: list[str] = []
+        lines = []
 
         def _add(line: str) -> None:
             lines.append(f"· {line}")
 
         # 各部分分析中的具体问题
-        for s in review.get("section_analysis", []):
+        for s in review.get("section_analysis") or []:
+            if not isinstance(s, dict):
+                continue
             section = s.get("section", "?")
             issues: list[str] = []
             if s.get("citation_status") and s["citation_status"] not in ("达标", "无基准"):
@@ -337,24 +345,32 @@ class DraftReviewer:
                 _add(f"【{section}】" + "；".join(issues))
 
         # 过渡缺失
-        tsg = review.get("transition_summary_gaps", {})
-        for g in tsg.get("gaps", []):
+        tsg = review.get("transition_summary_gaps") or {}
+        for g in tsg.get("gaps") or []:
+            if not isinstance(g, dict):
+                continue
             if g.get("severity") in ("缺失", "偏弱"):
                 _add(f"【过渡】{g.get('between','?')}：{g.get('suggestion','')}")
-        for ms in tsg.get("missing_summaries", []):
+        for ms in tsg.get("missing_summaries") or []:
             _add(f"【小结】{ms}末尾需要添加小结段落")
 
         # 冗余
-        for r in review.get("redundancy", {}).get("items", []):
+        for r in (review.get("redundancy") or {}).get("items") or []:
+            if not isinstance(r, dict):
+                continue
             locs_str = "、".join(str(x) for x in r.get("locations", []))
             _add(f"【冗余】{r.get('point','?')}（位置：{locs_str}）")
 
         # 图表建议
-        for f in review.get("figure_suggestions", {}).get("items", []):
+        for f in (review.get("figure_suggestions") or {}).get("items") or []:
+            if not isinstance(f, dict):
+                continue
             _add(f"【图表】{f.get('location','?')} — {f.get('type','?')}：{f.get('purpose','?')}")
 
         # 术语一致性
-        for t in review.get("terminology_consistency", {}).get("issues", []):
+        for t in (review.get("terminology_consistency") or {}).get("issues") or []:
+            if not isinstance(t, dict):
+                continue
             variants = " / ".join(str(x) for x in t.get("variants", []))
             _add(f"【术语】{t.get('concept','?')}：{variants} → 统一为「{t.get('suggestion','?')}」")
 

@@ -500,11 +500,11 @@ def _strip_watermarks(text: str) -> str:
         return ""
     t = _WATERMARK_RE.sub(" ", text)
     # 部分 PDF 字体把 fi/fl 连字拆成独立文本片段，Docling 会输出
-    # ``pro fi ling``、``fi bers`` 等形式；同时修复标题中 ``AReview``
-    # 和单个大写字母被空格拆开的常见版式伪影。只处理高置信模式，
-    # 不对普通英文词间空格做激进合并。
+    # ``pro fi ling``、``fi bers`` 等形式；同时修复标题中 ``AStudy``
+    # 连写。只处理高置信模式，不做激进合并：单个大写字母 + 空格 +
+    # 小写词在正常学术英语中大量存在（T cell / B cells / X axis /
+    # G protein / N terminal），无条件合并会永久损坏正文文本。
     t = re.sub(r"\bA(?=[A-Z][a-z])", "A ", t)
-    t = re.sub(r"\b([B-HJ-Z])\s+([a-z]{3,})\b", r"\1\2", t)
     t = re.sub(
         r"\b(?:(?P<prefix>[A-Za-z]+)\s+)?(?P<fragment>fi|fl)\s+"
         r"(?P<suffix>[a-z]+)\b",
@@ -794,7 +794,8 @@ def find_cross_page_seams(page_data: list[dict]) -> list[dict]:
     for i, pn in enumerate(pages[:-1]):
         qn = pages[i + 1]
         if qn - pn > 2:
-            continue  # 中间隔了整页缺失，不做判断
+            continue  # 中间隔了不止一页（无正文元素的页不算），不做判断；
+            # 恰好隔一页（如整页图版页）时正文仍可能是连续段落，继续检测
         prev_elems = by_page[pn]
         next_elems = by_page[qn]
         if not prev_elems or not next_elems:
@@ -1508,6 +1509,7 @@ class PDFProcessor(QObject):
         self._seams_done = False  # 本次会话是否已跑过接缝合并
         self._seam_candidates: list[dict] = []
         self._stage1_retries = 0  # done_count==0 时回退 Stage 1 的重试次数
+        self._generation = 0  # cancel/重跑代际：迟到的后台结果据此丢弃
 
         self._init_cache()
 
@@ -1747,9 +1749,25 @@ class PDFProcessor(QObject):
         self._seam_candidates = list(seams)
         self._seam_worker = SeamMergeWorker(self._client, seams)
         track(self._seam_worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
-        self._seam_worker.finished_signal.connect(self._on_seam_merge_done)
-        self._seam_worker.error.connect(self._on_seam_merge_error)
+        gen = self._generation
+        self._seam_worker.finished_signal.connect(
+            lambda merged: self._on_seam_merge_done_if_current(gen, merged)
+        )
+        self._seam_worker.error_signal.connect(
+            lambda err: self._on_seam_merge_error_if_current(gen, err)
+        )
         self._seam_worker.start()
+
+    def _on_seam_merge_done_if_current(self, gen: int, merged: dict) -> None:
+        """取消/重跑后迟到的合并结果直接丢弃，防止旧接缝写回已清空的缓存。"""
+        if gen != self._generation:
+            return
+        self._on_seam_merge_done(merged)
+
+    def _on_seam_merge_error_if_current(self, gen: int, err: str) -> None:
+        if gen != self._generation:
+            return
+        self._on_seam_merge_error(err)
 
     def _on_seam_merge_done(self, merged: dict) -> None:
         """接缝合并完成 → 缓存 + 重建文档 + 通知 UI 刷新。"""
@@ -1802,16 +1820,19 @@ class PDFProcessor(QObject):
             pass  # 缓存失败可下次重跑接缝合并
 
     def cancel(self) -> None:
-        """取消所有进行中的操作。"""
+        """取消所有进行中的操作。
+
+        Docling/torch 可能在执行原生代码，必须等线程自然退出；但等待有界
+        （GUI 线程调用时无界等待会冻结界面），超时后线程由 track() 注册表
+        保活自行退出。
+        """
+        self._generation += 1  # 使在途后台结果的回调全部失效
         if self._seam_worker and self._seam_worker.isRunning():
             self._seam_worker.requestInterruption()
-            self._seam_worker.quit()
         if self._docling_worker and self._docling_worker.isRunning():
             self._docling_worker.requestInterruption()
-            self._docling_worker.quit()
-            # Docling/torch 可能正在执行原生代码，强制 terminate 会导致
-            # Windows 打包版首次解析时随机崩溃；必须等待线程自然退出。
-            self._docling_worker.wait()
+            # 逐页循环会尽快响应中断；有界等待避免主线程长时间冻结
+            self._docling_worker.wait(10_000)
 
     # ---- 内部回调 ----
 
@@ -1852,6 +1873,10 @@ class PDFProcessor(QObject):
             state["structured_document"] = doc.to_dict()
             state["doc_format"] = "fast"  # 标记规则组装格式，旧版整合结果据此重建
             state["fast_version"] = FAST_DOCUMENT_VERSION
+            try:
+                state["pdf_mtime"] = os.path.getmtime(self._pdf_path)
+            except OSError:
+                pass
             save_doc_state(self._pdf_path, state)
         except Exception:
             pass  # 保存失败不阻塞流程，可随时重新整合

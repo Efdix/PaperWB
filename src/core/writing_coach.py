@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -212,6 +213,15 @@ class WritingCoach:
 
         if name in self._profiles:
             raise ValueError(f"知识库 '{name}' 已存在")
+        # 库名直接用作目录/文件名（config.json、drafts、polish_history、reviews），
+        # 含 Windows 非法字符时会导致持久化静默失败
+        if re.search(r'[\\/:*?"<>|\r\n\t]', name) or name.strip() != name or not name.strip():
+            raise ValueError(
+                "知识库名称不能包含以下字符：\\ / : * ? \" < > |，"
+                "且不能以空格开头或结尾"
+            )
+        if len(name) > 80:
+            raise ValueError("知识库名称过长（最多 80 个字符）")
 
         now = datetime.now().isoformat()
         profile = WritingProfile(
@@ -235,12 +245,24 @@ class WritingCoach:
         return self._current_profile
 
     def delete_profile(self, name: str) -> None:
-        """删除知识库及其所有数据。"""
+        """删除知识库及其所有数据（含草稿、润色历史、评价记录）。"""
         if name not in self._profiles:
             return
         d = self._profile_dir(name)
         if d.exists():
             shutil.rmtree(str(d))
+        # 同名残留会让「删除后重建」复活旧草稿/旧评价
+        from ..utils.config import (
+            get_drafts_dir, get_polish_history_dir, get_reviews_dir,
+        )
+        for base in (get_drafts_dir(), get_polish_history_dir(), get_reviews_dir()):
+            try:
+                for ext in (".txt", ".json"):
+                    f = base / f"{name}{ext}"
+                    if f.exists():
+                        f.unlink()
+            except OSError:
+                pass
         self._profiles.pop(name, None)
         if self._current_profile and self._current_profile.name == name:
             self._current_profile = None
@@ -754,7 +776,7 @@ class WritingCoach:
             ctx_end_idx = min(len(sent_spans), sent_idx + 3)  # +3 = 当前句 + 后面2句
 
             # 检查上下文是否被其他引文标记污染：如果前/后2句范围内有另一个引文标记，则缩小到那个标记
-            for si in range(sent_idx - 1, max(0, sent_idx - 3), -1):
+            for si in range(sent_idx - 1, max(-1, sent_idx - 3), -1):
                 if si < 0:
                     break
                 ss, se = sent_spans[si]

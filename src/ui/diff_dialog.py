@@ -25,6 +25,10 @@ class DiffDialog(QDialog):
 
     accepted_signal = Signal(str)  # 非模态模式下发射润色后文本
 
+    # 新增文本的背景色（渲染与锚点探测/拒绝删除必须使用同一份定义，
+    # 曾经两处各自硬编码导致绿色永远探测不到、拒绝后新增文本残留）
+    INSERT_BG = QColor("#e2f3ee")
+
     def __init__(self, original: str, polished: str,
                  citation_notes: list[dict] | None = None,
                  supervisor_notes: list[dict] | None = None,
@@ -272,7 +276,7 @@ class DiffDialog(QDialog):
 
             fmt_equal = self._fmt(QColor("#526b6c"))
             fmt_del = self._fmt(QColor("#b24f4a"), bg=QColor("#fbe9e6"))
-            fmt_insert = self._fmt(QColor("#278273"), bg=QColor("#e2f3ee"))
+            fmt_insert = self._fmt(QColor("#278273"), bg=QColor(self.INSERT_BG))
 
             cursor = self._diff_edit.textCursor()
             cursor.beginEditBlock()
@@ -334,14 +338,13 @@ class DiffDialog(QDialog):
                 i = j
                 continue
             bg = fmt.background().color()
-            if bg.isValid() and bg.red() < 50 and bg.green() > 100 and bg.blue() < 50:
+            if bg.isValid() and bg == DiffDialog.INSERT_BG:
                 j = i
                 while j < n:
                     f2 = doc.characterFormat(j)
                     b2 = f2.background().color()
                     if (not f2.fontStrikeOut()
-                            and b2.isValid() and b2.red() < 50
-                            and b2.green() > 100 and b2.blue() < 50):
+                            and b2.isValid() and b2 == DiffDialog.INSERT_BG):
                         j += 1
                     else:
                         break
@@ -372,11 +375,14 @@ class DiffDialog(QDialog):
         self._anchor_label.setText(f"修改: {len(self._change_anchors)} 处")
 
     def _highlight_citations(self):
-        """高亮引用标记：Author-Year / [n] / 中文格式。"""
+        """高亮引用标记：Author-Year / [n] / 中文格式。
+
+        只改前景色：若同时设置背景色会把插入文本的绿底/删除文本的红底
+        覆盖掉，导致锚点重算与「拒绝」的绿色探测全部失效。
+        """
         doc = self._diff_edit.document()
         plain = doc.toPlainText()
         h_fmt = QTextCharFormat()
-        h_fmt.setBackground(QColor("#3d3520"))
         h_fmt.setForeground(QColor("#b87835"))
 
         import re
@@ -527,8 +533,7 @@ class DiffDialog(QDialog):
         while cursor.position() < sel_end:
             cursor.movePosition(QTextCursor.MoveOperation.NextCharacter, QTextCursor.MoveMode.KeepAnchor)
             cf = cursor.charFormat()
-            bg_c = cf.background().color()
-            if bg_c.red() < 50 and bg_c.green() > 100 and bg_c.blue() < 50:
+            if cf.background().color() == DiffDialog.INSERT_BG:
                 cursor.removeSelectedText()
                 sel_end -= 1
             else:
@@ -786,21 +791,35 @@ class DiffDialog(QDialog):
                     self.error_sig.emit(str(e))
 
         def on_done(reply: str):
-            self._chat_input.setEnabled(True)
-            self._chat_input.setFocus()
-            # 替换占位气泡
-            self._chat_history.append({"role": "assistant", "content": reply})
-            self._refresh_chat_bubbles()
+            try:
+                self._chat_input.setEnabled(True)
+                self._chat_input.setFocus()
+                # 替换占位气泡
+                self._chat_history.append({"role": "assistant", "content": reply})
+                self._refresh_chat_bubbles()
+            except RuntimeError:
+                pass  # 对话框已销毁（关闭后迟到的回复）
 
         def on_error(err: str):
-            self._chat_input.setEnabled(True)
-            self._chat_history.append({"role": "assistant", "content": f"对话出错：{err}"})
-            self._refresh_chat_bubbles()
+            try:
+                self._chat_input.setEnabled(True)
+                self._chat_history.append({"role": "assistant", "content": f"对话出错：{err}"})
+                self._refresh_chat_bubbles()
+            except RuntimeError:
+                pass
 
+        from ..utils.threads import track
         self._chat_worker = ChatWorker(self._write_client, messages)
+        track(self._chat_worker)  # 关闭对话框后线程仍保活至自然退出，防析构崩溃
         self._chat_worker.finished_sig.connect(on_done)
         self._chat_worker.error_sig.connect(on_error)
         self._chat_worker.start()
+
+    def closeEvent(self, event):
+        w = getattr(self, "_chat_worker", None)
+        if w is not None and w.isRunning():
+            w.requestInterruption()  # 线程由注册表保活，自然退出
+        super().closeEvent(event)
 
     def _build_chat_history_text(self) -> str:
         lines = []
@@ -868,6 +887,21 @@ class DiffDialog(QDialog):
         cursor.insertText(text, fmt)
 
     def _on_accept(self):
+        if self._change_anchors:
+            # 尚有未逐项处理的修改：直接取纯文本会把红色删除线文本一并
+            # 回插编辑器（新旧混杂），先确认并按「全部接受」处理
+            from PySide6.QtWidgets import QMessageBox
+            ret = QMessageBox.question(
+                self, "还有未处理的修改",
+                f"还有 {len(self._change_anchors)} 处修改未逐项处理。\n\n"
+                "确定替换时将全部按【接受】处理（保留新增、移除删除）。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+            while self._change_anchors:
+                self._current_anchor_idx = 0
+                self._apply_change(accept=True)
         self._accepted = True
         text = self._diff_edit.toPlainText()
         self.accepted_signal.emit(text)

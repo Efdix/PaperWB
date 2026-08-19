@@ -36,6 +36,7 @@ class ZoteroItem:
     year: str = ""
     publication: str = ""             # 期刊/会议名
     doi: str = ""
+    abstract: str = ""                # 摘要（abstractNote），供文献工作台检索
     pdf_path: str = ""                # 本地 PDF 绝对路径
     item_type: str = ""               # journalArticle / conferencePaper / book / ...
     collection_ids: list[int] = field(default_factory=list)
@@ -215,7 +216,8 @@ class ZoteroLibrary:
     @staticmethod
     def _auto_detect() -> str:
         """自动检测 Zotero 数据目录（返回含 zotero.sqlite 的目录）"""
-        home = str(Path.home())
+        from pathlib import Path
+        home = Path.home()
 
         # --- Windows ---
         if os.name == "nt":
@@ -352,16 +354,11 @@ class ZoteroLibrary:
         return self.reload()
 
     def reload(self) -> int:
-        """重新从磁盘加载 Zotero 数据库（Zotero 侧发生变更后调用）。"""
-        self._items = []
-        self._items_by_title = {}
-        self._items_by_key = {}
-        self._items_by_id = {}
-        self._collections = []
-        self._collections_by_id = {}
-        self._item_collections = {}
-        self._loaded = False
+        """重新从磁盘加载 Zotero 数据库（Zotero 侧发生变更后调用）。
 
+        构建全新数据集后原子替换引用，期间 UI 线程仍可读取旧快照，
+        避免出现「集合已重建、条目为空」的半新半旧状态。
+        """
         if not self.is_available:
             return 0
 
@@ -376,6 +373,7 @@ class ZoteroLibrary:
         """从 zotero.sqlite 加载文献条目。
 
         先将数据库复制到临时文件以避免 Zotero 运行时的写入锁冲突。
+        全程在局部容器中构建，成功后一次性替换共享状态（主线程可并发读旧快照）。
         """
         sqlite_path = self._sqlite_path
         print(f"[ZoteroLibrary] 从 SQLite 加载: {sqlite_path}")
@@ -383,6 +381,14 @@ class ZoteroLibrary:
         tmp_dir = tempfile.mkdtemp(prefix="paperwb_zotero_")
         tmp_db = os.path.join(tmp_dir, "zotero_copy.sqlite")
         db_conn = None
+
+        collections: list[ZoteroCollection] = []
+        collections_by_id: dict[int, ZoteroCollection] = {}
+        item_collections: dict[int, list[int]] = {}
+        items: list[ZoteroItem] = []
+        items_by_key: dict[str, ZoteroItem] = {}
+        items_by_id: dict[int, ZoteroItem] = {}
+        items_by_title: dict[str, ZoteroItem] = {}
 
         try:
             # 复制主数据库 + WAL/SHM 文件到临时目录（带重试，应对 Zotero 写入锁竞争）
@@ -420,11 +426,11 @@ class ZoteroLibrary:
                         name=row["collectionName"] or "",
                         parent_id=row["parentCollectionID"],
                     )
-                    self._collections.append(coll)
-                    self._collections_by_id[coll.collection_id] = coll
-                for coll in self._collections:
-                    if coll.parent_id is not None and coll.parent_id in self._collections_by_id:
-                        self._collections_by_id[coll.parent_id].child_ids.append(coll.collection_id)
+                    collections.append(coll)
+                    collections_by_id[coll.collection_id] = coll
+                for coll in collections:
+                    if coll.parent_id is not None and coll.parent_id in collections_by_id:
+                        collections_by_id[coll.parent_id].child_ids.append(coll.collection_id)
             except sqlite3.Error as e:
                 print(f"[ZoteroLibrary] 集合读取失败: {e}")
 
@@ -433,9 +439,9 @@ class ZoteroLibrary:
                 cursor.execute("SELECT collectionID, itemID FROM collectionItems")
                 for row in cursor.fetchall():
                     cid, iid = row["collectionID"], row["itemID"]
-                    if cid in self._collections_by_id:
-                        self._collections_by_id[cid].item_ids.append(iid)
-                        self._item_collections.setdefault(iid, []).append(cid)
+                    if cid in collections_by_id:
+                        collections_by_id[cid].item_ids.append(iid)
+                        item_collections.setdefault(iid, []).append(cid)
             except sqlite3.Error as e:
                 print(f"[ZoteroLibrary] collectionItems 读取失败: {e}")
 
@@ -479,7 +485,7 @@ class ZoteroLibrary:
                     item_id=row["itemID"],
                     key=row["key"],
                     item_type=type_name,
-                    collection_ids=self._item_collections.get(row["itemID"], []),
+                    collection_ids=item_collections.get(row["itemID"], []),
                 )
                 self._fill_metadata(cursor, item)
                 self._fill_pdf_path(cursor, item)
@@ -487,17 +493,26 @@ class ZoteroLibrary:
                 if not item.title:
                     item.title = f"[无标题] ({item.key})"
 
-                self._items.append(item)
-                self._items_by_key[item.key] = item
-                self._items_by_id[item.item_id] = item
+                items.append(item)
+                items_by_key[item.key] = item
+                items_by_id[item.item_id] = item
                 title_clean = re.sub(r'[^\w\s]', '', item.title.lower()).strip()
                 if title_clean:
-                    self._items_by_title[title_clean] = item
+                    items_by_title[title_clean] = item
 
+            # 全部构建成功 → 原子替换共享状态
+            self._items = items
+            self._items_by_title = items_by_title
+            self._items_by_key = items_by_key
+            self._items_by_id = items_by_id
+            self._collections = collections
+            self._collections_by_id = collections_by_id
+            self._item_collections = item_collections
             self._loaded = True
 
-        except sqlite3.Error as e:
-            print(f"[ZoteroLibrary] SQLite 错误: {e}")
+        except (sqlite3.Error, OSError) as e:
+            # OSError：数据库复制失败（独占锁/权限/磁盘满），保留旧数据不清空
+            print(f"[ZoteroLibrary] 加载失败: {e}")
             return 0
         finally:
             if db_conn:
@@ -559,6 +574,17 @@ class ZoteroLibrary:
         if row:
             item.doi = row["value"]
 
+        # 摘要（abstractNote）
+        cursor.execute("""
+            SELECT v.value FROM itemData d
+            JOIN itemDataValues v ON d.valueID = v.valueID
+            JOIN fields f ON d.fieldID = f.fieldID
+            WHERE d.itemID = ? AND f.fieldName = 'abstractNote'
+        """, (item.item_id,))
+        row = cursor.fetchone()
+        if row:
+            item.abstract = row["value"] or ""
+
         # 作者
         cursor.execute("""
             SELECT c.firstName, c.lastName
@@ -594,13 +620,13 @@ class ZoteroLibrary:
                     if f.lower().endswith(".pdf"):
                         item.pdf_path = os.path.join(pdf_dir, f)
                         return
-                # 也可能附件放在父条目的 key 目录下
-                parent_dir = os.path.join(self._storage_dir, item.key)
-                if os.path.isdir(parent_dir):
-                    for f in os.listdir(parent_dir):
-                        if f.lower().endswith(".pdf"):
-                            item.pdf_path = os.path.join(parent_dir, f)
-                            return
+            # 也可能附件放在父条目的 key 目录下（不依赖附件目录存在）
+            parent_dir = os.path.join(self._storage_dir, item.key)
+            if os.path.isdir(parent_dir):
+                for f in os.listdir(parent_dir):
+                    if f.lower().endswith(".pdf"):
+                        item.pdf_path = os.path.join(parent_dir, f)
+                        return
 
             # 如果 rel_path 是绝对路径（链接文件模式）
             if os.path.isfile(rel_path) and rel_path.lower().endswith(".pdf"):

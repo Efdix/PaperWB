@@ -609,4 +609,88 @@ QFrame#chatInput {
     background-color: #fffdfa;
     border-top: 1px solid #e4e0d8;
 }
+
+/* ============================== 文献工作台 ============================== */
+QWidget#workbenchPanel {
+    background-color: #f4f1eb;
+}
+
+QFrame#topicPanel,
+QFrame#qaPanel,
+QFrame#feedPanel {
+    background-color: #fffdfa;
+    border: 1px solid #e4e0d8;
+    border-radius: 14px;
+}
+
+QFrame#topicCard,
+QFrame#scoutCard {
+    background-color: #fffdfa;
+    border: 1px solid #e5e1d9;
+    border-radius: 12px;
+}
+
+QFrame#topicCard:hover,
+QFrame#scoutCard:hover {
+    border-color: #9bcac2;
+}
+
+QFrame#refCard {
+    background-color: #f3faf7;
+    border: 1px solid #d9eae4;
+    border-radius: 12px;
+}
+
+QPushButton#refRow {
+    background-color: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 6px;
+    text-align: left;
+    color: #23586b;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QPushButton#refRow:hover {
+    background-color: #e2f1ec;
+    color: #176b61;
+}
+
+QPushButton#refRow:disabled {
+    background-color: transparent;
+    color: #9da8a5;
+}
+
+QPushButton#topicToggle {
+    padding: 4px 10px;
+    font-size: 11px;
+}
+
+QPushButton#topicToggle:checked {
+    background-color: #dff2ec;
+    color: #176b61;
+    border-color: #b9ded4;
+}
+
+QLabel#feedChip {
+    background-color: #e7f3ef;
+    color: #176b61;
+    border: 1px solid #c6e3dc;
+    border-radius: 9px;
+    padding: 2px 9px;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+QLabel#feedChip[kind="topic"] {
+    background-color: #fdf1e4;
+    color: #996222;
+    border-color: #f0d1a5;
+}
+
+QFrame#qaInput {
+    background-color: #fffdfa;
+    border-top: 1px solid #e4e0d8;
+}
 """

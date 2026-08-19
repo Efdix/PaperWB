@@ -15,42 +15,52 @@ import re
 
 
 def parse_json_response(raw: str | None) -> dict | None:
-    """解析 LLM 返回的 JSON，成功返回 dict，失败返回 None。"""
+    """解析 LLM 返回的 JSON，成功返回 dict，失败返回 None。
+
+    顶层不是 JSON 对象（数组/字符串/数字）时同样返回 None：
+    所有调用方都按 dict 使用，返回其它类型会在 ``"error" in result``
+    或 ``result.get`` 处产生更晦涩的崩溃。
+    """
+
+    def _try_loads(text: str):
+        try:
+            obj = _json.loads(text)
+        except (_json.JSONDecodeError, TypeError):
+            return None
+        return obj if isinstance(obj, dict) else None
+
     if not raw or not raw.strip():
         return None
     text = raw.strip()
 
     # 1. 直接解析
-    try:
-        return _json.loads(text)
-    except (_json.JSONDecodeError, TypeError):
-        pass
+    obj = _try_loads(text)
+    if obj is not None:
+        return obj
 
     # 2. ```json ... ``` 或 ``` ... ```
     for pattern in [r'```json\s*\n?(.*?)\n?```', r'```\s*\n?(.*?)\n?```']:
         m = re.search(pattern, text, re.DOTALL)
         if m:
-            try:
-                return _json.loads(m.group(1).strip())
-            except (_json.JSONDecodeError, TypeError):
-                pass
+            obj = _try_loads(m.group(1).strip())
+            if obj is not None:
+                return obj
 
     # 3. 提取 { ... }
     first = text.find('{')
     last = text.rfind('}')
     if first >= 0 and last > first:
         json_str = text[first:last + 1]
-        try:
-            return _json.loads(json_str)
-        except (_json.JSONDecodeError, TypeError):
-            pass
+        obj = _try_loads(json_str)
+        if obj is not None:
+            return obj
         # 3b. 清洗未转义换行符（LLM 常见错误）
         try:
             cleaned = re.sub(r'(?<!\\)"\s*\n\s*', r'\\n', json_str)
             cleaned = re.sub(r'(?<!\\)\n\s*"', r'\\n"', cleaned)
-            result = _json.loads(cleaned)
-            if result is not None:
-                return result
+            obj = _try_loads(cleaned)
+            if obj is not None:
+                return obj
         except Exception:
             pass
 
@@ -60,7 +70,9 @@ def parse_json_response(raw: str | None) -> dict | None:
         first_a = alt.find('{')
         last_a = alt.rfind('}')
         if first_a >= 0 and last_a > first_a:
-            return _json.loads(alt[first_a:last_a + 1])
+            obj = _try_loads(alt[first_a:last_a + 1])
+            if obj is not None:
+                return obj
     except Exception:
         pass
 

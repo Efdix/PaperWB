@@ -180,6 +180,20 @@ def get_page_cache_root_dir() -> Path:
     return d
 
 
+def get_lib_index_dir() -> Path:
+    """文献工作台全库索引目录：{data_root}/.paperwb/lib_index/"""
+    d = _resolve_data_dir() / "lib_index"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_scout_dir() -> Path:
+    """文献巡视（定时检索）数据目录：{data_root}/.paperwb/scout/"""
+    d = _resolve_data_dir() / "scout"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def get_page_cache_dir(pdf_path: str) -> Path:
     """单篇 PDF 逐页缓存：{data_root}/.paperwb/page_cache/{pdf_md5}/"""
     d = get_page_cache_root_dir() / _doc_id(pdf_path)
