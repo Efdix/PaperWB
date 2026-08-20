@@ -234,6 +234,17 @@ def _run_selftest() -> int:
     except Exception as e:  # noqa: BLE001
         _fail("modules-import", str(e))
 
+    # 1.5 预置离线模型（安装包分发排查关键项：确认 HF 缓存重定向是否生效）
+    try:
+        from src.core import docling_parser as _dp
+        if _dp._BUNDLED_HUB:
+            _ok(f"bundled-models(offline={os.environ.get('HF_HUB_OFFLINE', '')}, "
+                f"cache={os.environ.get('HF_HUB_CACHE', '')})")
+        else:
+            _ok(f"bundled-models(none, hf_cache={os.environ.get('HF_HUB_CACHE') or 'default'})")
+    except Exception as e:  # noqa: BLE001
+        _fail("bundled-models", str(e))
+
     # 2. 配置读写
     cfg = {}
     try:
@@ -284,6 +295,17 @@ def _run_selftest() -> int:
     return 0 if all_ok else 1
 
 
+def _app_icon_path() -> str:
+    """定位应用图标：打包版在 _MEIPASS/assets，开发模式在仓库 assets/。找不到返回 ""。"""
+    for base in (getattr(sys, "_MEIPASS", None),
+                 os.path.dirname(os.path.abspath(__file__))):
+        if base:
+            p = os.path.join(base, "assets", "PaperWB.ico")
+            if os.path.isfile(p):
+                return p
+    return ""
+
+
 if __name__ == "__main__":
     _ensure_utf8_mode()
     _ensure_frozen_dll_path()
@@ -297,6 +319,7 @@ if __name__ == "__main__":
     if "--selftest" in sys.argv:
         sys.exit(_run_selftest())
 
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
     from src.app import MainWindow
@@ -306,6 +329,9 @@ if __name__ == "__main__":
     app.setApplicationVersion("1.0.0")
     app.setOrganizationName("PaperWB")
     app.setStyle("Fusion")  # 跨平台一致的 QSS 基础
+    _icon = _app_icon_path()
+    if _icon:
+        app.setWindowIcon(QIcon(_icon))
 
     window = MainWindow()
     window.show()

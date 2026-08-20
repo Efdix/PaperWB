@@ -4,7 +4,52 @@
 [![PySide6](https://img.shields.io/badge/PySide6-6.11-green.svg)](https://pypi.org/project/PySide6/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-基于大语言模型的 **Windows 桌面应用**，通过本地 Docling 版式解析 + 本地规则跨页整合（不耗 LLM），将科研论文 PDF 智能解析为结构化阅读视图，并提供综述/论文/专利/软著的全流程写作辅助。
+基于大语言模型的 **Windows 桌面应用**，通过本地 Docling 版式解析 + 本地规则跨页整合（不耗 LLM），将科研论文 PDF 智能解析为结构化阅读视图，并提供综述/论文/专利/软著的全流程写作辅助，以及面向整个 Zotero 文献库的跨文献问答与定时文献巡视。
+
+---
+
+## 下载与安装（普通用户）
+
+### 安装
+
+1. 下载安装向导 `PaperWB-Setup-x.y.z.exe`（发布页）
+2. 双击运行。由于个人分发未购买代码签名证书，Windows SmartScreen 可能弹出「Windows 已保护你的电脑」：
+   点击 **「更多信息」→「仍要运行」** 即可（本软件不含任何网络服务端，仅调用你配置的 AI 接口）
+3. 跟随向导完成安装：
+   - **许可协议**：MIT 开源许可
+   - **组件选择**：默认勾选「预置离线解析模型」（约 500 MB，推荐）——安装后解析 PDF **完全离线、无需等待下载**；取消勾选则首次解析时自动联网下载（走国内镜像）
+   - **安装目录**：默认当前用户目录（`%LOCALAPPDATA%\Programs\PaperWB`，无需管理员权限），也可在向导中改为「所有用户」
+   - **完成页**：可勾选「运行安装自检」验证核心组件与离线模型（约 1 分钟），以及「立即运行 PaperWB」
+4. 默认安装路径面向当前用户、无需 UAC；桌面/开始菜单快捷方式自动创建
+
+### 获取免费 API Key（推荐入门路径）
+
+论文翻译、图表解读等阅读功能用**智谱 GLM 免费模型**即可零成本上手：
+
+1. 注册智谱开放平台账号：https://open.bigmodel.cn （新用户送额度，免费模型不额外扣费）
+2. 创建 API Key
+3. PaperWB 中「设置 → API 接口设置」→ 预设选 **「GLM（智谱）」** → 粘贴 Key → 模型选 `glm-4.7-flash`（免费文本）/ `glm-4.6v-flash`（免费视觉，图表解读）
+
+其它含免费模型的预设：**OpenCode Zen**（`mimo-v2.5-free`、`hy3-free` 等，需 OpenCode 账号）。
+
+### 卸载
+
+控制面板/设置中卸载，或用开始菜单「PaperWB → 卸载」。卸载时可选是否保留配置（API Key、数据库路径等，位于 `%APPDATA%\PaperWB`）——保留则下次安装无需重新配置。
+
+### 便携版（备选）
+
+不便安装时也可下载 zip 绿色版（解压到任意可写目录后运行 `PaperWB.exe`；不含预置模型，首次解析需联网下载）。
+
+### 故障排查（可发给开发者）
+
+| 日志 | 路径 | 内容 |
+|------|------|------|
+| 安装自检 | `%TEMP%\paperwb_selftest.log` | 组件导入/配置/Zotero/离线模型/Docling 解析逐项结果 |
+| 运行错误 | `%APPDATA%\PaperWB\error.log` | 程序异常完整 traceback（含时间戳） |
+| 原生崩溃 | `%APPDATA%\PaperWB\faulthandler.log` | C++ 层崩溃的全线程调用栈 |
+| 安装器本身 | `%TEMP%\Setup Log*.txt` | Inno Setup 安装日志（向导崩溃/文件占用时） |
+
+手动自检：命令行运行 `PaperWB.exe --selftest [样例.pdf]`，退出码 0 为通过。
 
 ---
 
@@ -18,7 +63,7 @@
 | 缓存自动失效 | 解析管线版本变更后旧缓存自动失效；右键菜单可单独重跑 Stage 1 / Stage 2 |
 | 结构化阅读视图 | 标题/章节/正文/图表/参考文献按 `element_type` 分类渲染，关键章节暖金色高亮 |
 | 图表智能提取 | Docling 提供图表 bbox → 自动裁剪保存，图注从页面文本回填；图表内容可多模态问答 |
-| 中英对照翻译 | 英文段落一键翻译为中文，逐段对照阅读（独立翻译 API） |
+| 中英对照翻译 | 标题/摘要/正文/关键词/图表注均支持一键翻译为中文，逐段对照阅读（独立翻译 API） |
 | 论文问答 | 基于结构化全文上下文（正文+元信息+图表描述+参考文献）的流式 AI 对话；长文档自动启用 **BM25 检索增强**（只发相关段落） |
 | 断点续传 | Stage 1 每页独立缓存，重新打开无需重新解析；支持右键分开重跑 |
 
@@ -45,13 +90,23 @@
 
 | 功能 | 说明 |
 |------|------|
-| 多 API 预设 | DeepSeek / Mimo / OpenCode Go / OpenCode Zen / 自定义，共 5 个预设、50+ 模型 |
+| 多 API 预设 | DeepSeek / GLM（智谱）/ Mimo / OpenCode Go / OpenCode Zen / Ollama / 自定义，共 7 个预设、近 50 个模型 |
 | 三套独立 API | 阅读-解析 / 阅读-翻译 / 写作 各可独立配置不同的 API Key、Base URL、模型 |
 | Zotero 集成 | 左侧「Zotero」标签页只读镜像集合树，**周期同步**（启动加载 + 每 30 分钟后台重载 + 手动刷新）；引文核查提取 PDF 相关段落 |
 | 流式对话 | AI 回复实时逐字显示，Markdown 渲染，上下文自动管理（1M token 窗口） |
 | 论文库 | 拖拽导入 PDF，文件夹分类管理，对话和解析状态按文档持久化 |
 | 暖白主题 | 暖白研究工作台配色（暖米色纸张底色 + 墨字），全组件自定义 QSS 样式 |
 | 任务栏多窗口 | 润色/文献补充对话框各自独立显示在任务栏分组中 |
+
+### 文献工作台（库内问答 + 定向巡视）
+
+| 功能 | 说明 |
+|------|------|
+| 库内跨文献问答 | 对**整个 Zotero 库**提问：元数据 + PDF 全文（PyMuPDF 按页抽段）混合 BM25 检索，点名某篇时元数据命中加权优先；答案标注 `[n]` 来源角标，点击参考文献卡片直接切到阅读工作台打开对应 PDF |
+| 全库自动索引 | 后台构建/增量刷新全文索引（不到 2 分钟可覆盖几百篇），PDF 变更按 mtime 自动失效；「只问库」开关可跳过全文只做元数据级问答 |
+| 定向文献巡视 | 为每个研究方向配置 PubMed 检索式，独立定时器到点自动检索；两级去重（本地 DOI/标题精确匹配 + 可选 LLM 模糊比对），已推送文献跨启动记忆不重复推荐 |
+| 结果落地三条路 | Zotero 只读不能直写，推荐结果支持导出 RIS（Zotero 可导入）/ 导出 CSV / 复制引文，或一键生成检索式跳转 PubMed 网页 |
+| 推荐流 | 最近 200 条推荐跨启动保留，卡片可点击「忽略」后不再出现 |
 
 ---
 
@@ -95,12 +150,14 @@ pip install -r requirements.txt
 | 预设 | Base URL | 含免费模型 |
 |------|----------|-----------|
 | DeepSeek | `https://api.deepseek.com` | 否 |
+| GLM（智谱） | `https://open.bigmodel.cn/api/paas/v4` | ✅ `glm-4.7-flash` / `glm-4.5-flash` / `glm-4.6v-flash`（视觉）等 |
 | Mimo | `https://api.xiaomimimo.com/v1` | 否 |
 | OpenCode Go | `https://opencode.ai/zen/go/v1` | 否 |
-| OpenCode Zen | `https://opencode.ai/zen/v1` | ✅ deepseek-v4-flash-free 等 |
+| OpenCode Zen | `https://opencode.ai/zen/v1` | ✅ `mimo-v2.5-free` / `hy3-free` / `big-pickle` 等 |
+| Ollama | `https://ollama.com/v1`（云端，需 API Key） | `deepseek-v4-flash:0731-cloud` / `gemma4:cloud` / `gpt-oss:120b-cloud` 等（也可手动输入其它云端模型标签） |
 | 自定义 | 任意 OpenAI 兼容 URL | — |
 
-- **阅读-解析**：负责论文问答与图表内容问答（逐页解析与跨页段落整合由本地完成），无需多模态能力，普通强文本模型即可
+- **阅读-解析**：负责论文问答与图表内容问答（逐页解析与跨页段落整合由本地完成）。图表问答会把渲染图作为多模态消息发送给模型，需选择支持视觉的模型（如 GLM 的 `glm-4.6v-flash`）；不使用图表解读时，普通文本模型即可满足论文问答
 - **阅读-翻译**：可用便宜/免费模型
 - **写作**：需要强推理能力，建议 `deepseek-v4-pro`
 
@@ -115,29 +172,61 @@ python main.py
 
 ---
 
-## 打包（Windows）
+## 构建安装包（Windows）
 
-使用 `PyInstaller` 按仓库的 `PaperWB.spec`（**onedir** 目录式）打包：
+正式分发物是 **Inno Setup 安装向导**（用户下载单个 exe，向导指引完成安装，预置离线解析模型）。
+
+### 前置（一次性）
+
+```powershell
+# 1. conda 环境与依赖（含构建工具 PyInstaller，自动装入该环境）
+conda create -n PaperWB python=3.11 -y
+conda activate PaperWB
+pip install -r requirements.txt
+
+# 2. Inno Setup 6（编译安装向导的构建工具）
+winget install -e --id JRSoftware.InnoSetup
+```
+
+### 一条龙构建
 
 ```powershell
 conda activate PaperWB
-pip install pyinstaller
-pyinstaller --noconfirm --clean PaperWB.spec
+powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1
 ```
 
-产物在 `dist/PaperWB/`（`PaperWB.exe` + `_internal/` 依赖目录），构建中间产物在 `build/` 下。
+脚本自动完成五步（均可 `-SkipBuild / -SkipModels / -SkipSelftest` 跳过复用中间产物）：
 
-> **为什么用 onedir 而非单文件 onefile**：程序体积约 500MB（含 torch/PySide6/Docling），onefile 每次启动需解压 30 秒以上且易踩 PyInstaller 大包解压竞态；onedir 秒开、更新只需替换 `PaperWB.exe`、DLL 就近加载更稳。
+1. 检查/安装 PyInstaller（conda 环境 pip）
+2. `pyinstaller --noconfirm --clean PaperWB.spec` → `dist\PaperWB\`（onedir）
+3. `installer/stage_models.py`：从本机 HF 缓存提取 Docling 模型（约 505 MB）到 `installer\models_cache\hub\`（缺模型时先运行一次应用解析任意 PDF 预热缓存）
+4. **验收门**：`dist\PaperWB\PaperWB.exe --selftest <test\ 下首个 PDF>`，任一项 FAIL 即中止出包
+5. ISCC 编译 `installer/PaperWB.iss`（版本号自动从 `main.py` 抓取）
 
-**打包要点**：
-- **Docling 模型不打进包**：首次使用 Docling 引擎时自动下载到用户缓存（版式模型在 `~/.cache/huggingface`，RapidOCR 模型在 rapidocr 目录），之后离线；Hugging Face 镜像默认开启，无需设置
-- **运行验证**：`dist\PaperWB\PaperWB.exe --selftest <样例.pdf>` 会无头自检（模块导入、Zotero 只读加载、Docling 解析），结果写入 `%TEMP%\paperwb_selftest.log`
-- 打包前请确保已安装 `requirements.txt` 中的依赖；目标机器如缺 Visual C++ 运行时请安装对应版本
+产物：`installer\Output\PaperWB-Setup-<版本>.exe`
 
-**分发**：将 `dist\PaperWB` 整个目录压缩为发行包：
+### 体积与耗时预期
+
+| 项 | 预期 |
+|----|------|
+| onedir 产物 `dist\PaperWB\` | 约 3 GB（含 torch/PySide6/Docling） |
+| 安装包（LZMA2 压缩） | 约 1.5–2 GB，压缩 20–40 分钟 |
+| 安装后占用 | 约 3.5 GB（含预置模型 505 MB） |
+
+### 打包要点
+
+- **onedir 而非 onefile**：onefile 每次启动需解压 30 秒以上且易踩 PyInstaller 大包解压竞态；onedir 秒开、DLL 就近加载更稳
+- **离线模型预置原理**：安装包把两个模型缓存目录装入 `<安装目录>\models\hub\`；应用启动时 `src/core/docling_parser.py` 检测到目录齐全即重定向 `HF_HUB_CACHE` 并置 `HF_HUB_OFFLINE=1`——首次解析无需联网。RapidOCR 小模型已随 rapidocr 包打进主程序；未预置模型（绿色版/源码运行）时保持原行为：首次解析经国内镜像自动下载
+- **图标**：`installer/make_icon.py` 生成 `assets/PaperWB.ico`（exe/向导/窗口共用），改动后需重跑
+- **分发前验收**：产物机器上运行 `PaperWB.exe --selftest 样例.pdf`，退出码 0 + `%TEMP%\paperwb_selftest.log` 全 PASS 方可发布
+- 目标机器如缺 Visual C++ 运行时请安装对应版本（无签名可加装 [Broadway 许可的 VC 运行库](https://learn.microsoft.com/visual-cpp/downloads/)）
+
+### 便携版（备选）
+
+将 `dist\PaperWB` 整个目录压缩为 zip 绿色版（不含预置模型）：
 
 ```powershell
-Compress-Archive -Path dist\PaperWB\* -DestinationPath build\PaperWB.zip
+Compress-Archive -Path dist\PaperWB\* -DestinationPath build\PaperWB-portable.zip
 ```
 
 
@@ -148,7 +237,7 @@ Compress-Archive -Path dist\PaperWB\* -DestinationPath build\PaperWB.zip
 1. 左侧 **论文库** 拖拽或导入 PDF
 2. PDF 导入后自动触发 **Stage 1** 逐页解析（状态栏显示进度）
 3. 解析完成后点击论文，自动 **Stage 2** 跨页整合为结构化阅读视图
-4. 英文段落卡片点击 **翻译** 查看中文对照
+4. 英文段落卡片（标题/摘要/章节标题/图表注均可）点击 **翻译** 查看中文对照
 5. 右侧聊天面板输入问题，`Ctrl+Enter` 发送
 
 右键菜单支持**重跑逐页解析** 和 **重跑跨页整合**。
@@ -164,6 +253,13 @@ Compress-Archive -Path dist\PaperWB\* -DestinationPath build\PaperWB.zip
    - **✨ AI 润色与核查** → 内联 diff 展示修改 + 引文核查结果
    - **🔍 仅核查引文** → 不修改文字，仅验证引用准确性
    - **🔍 文献补充** → LLM 推荐已知文献 + PubMed 检索
+
+### 文献工作台
+
+1. 切换到 **"文献工作台"** 标签页（三栏：检索方向 / 库内问答 / 文献推荐流）
+2. **库内问答**：底部输入框对全库提问，答案中的 `[n]` 角标即来源文献；点击参考资料卡片直接打开该 PDF 阅读
+3. **定向巡视**：左侧「+ 新建方向」填写方向名与英文检索式（可限定某个 Zotero 集合），周期到点自动检索 PubMed 新文献，也可点「立即巡视」手动触发
+4. 推荐流中的卡片可导出 RIS/CSV 或复制引文再导入你的 Zotero 库
 
 ### 润色对话框操作
 
@@ -202,7 +298,9 @@ Compress-Archive -Path dist\PaperWB\* -DestinationPath build\PaperWB.zip
     │       ├── personal_papers/    # 写作范文文本
     │       └── journal_papers/     # 期刊范文文本
     ├── drafts/                     # 编辑器草稿自动保存（每 30 秒）
-    └── polish_history/             # 润色结果历史（最多 20 条）
+    ├── polish_history/             # 润色结果历史（最多 20 条）
+    ├── lib_index/                  # 文献工作台全库全文索引（键=Zotero 条目 key，PDF mtime 失效）
+    └── scout/                      # 文献巡视: topics.json（方向）/ seen.json（去重记忆）/ feed.json（推荐流）
 ```
 
 ---
@@ -213,17 +311,29 @@ Compress-Archive -Path dist\PaperWB\* -DestinationPath build\PaperWB.zip
 PaperWB/
 ├── main.py                      # 入口: QApplication + MainWindow（自动 UTF-8 重启 + --selftest 无头自检）
 ├── requirements.txt             # 依赖清单（PySide6/openai/PyMuPDF/docling 等）
+├── PaperWB.spec                 # PyInstaller onedir 打包配置（含图标）
+├── LICENSE                      # MIT
+├── assets/                      # 应用图标（make_icon.py 生成）
+├── installer/                   # 安装向导构建
+│   ├── PaperWB.iss              # Inno Setup 向导脚本（组件/快捷方式/完成页自检）
+│   ├── build_installer.ps1      # 一条龙构建：PyInstaller → 模型 staging → 自检 → ISCC 出包
+│   ├── stage_models.py          # Docling 模型 staging（HF 缓存 → 安装包预置目录）
+│   ├── make_icon.py             # 图标生成
+│   └── lang/ChineseSimplified.isl  # 向导简体中文语言文件
 ├── src/
 │   ├── app.py                   # MainWindow — 首次启动弹窗 + 信号枢纽 + 三套 LLMClient + Zotero watcher
 │   ├── core/
 │   │   ├── pdf_parser.py        # PDF 底层工具: 文本提取/渲染 (PyMuPDF)
 │   │   ├── pdf_processor.py     # 两阶段管线: Docling 本地布局 (Stage 1) + 本地规则跨页整合 (Stage 2)
 │   │   ├── docling_parser.py    # Docling 本地解析器: PDF → 逐页元素（HF 镜像/禁用 torch 编译）
-│   │   ├── llm_client.py        # OpenAI 兼容 API 客户端 + 5 个提供商预设
+│   │   ├── llm_client.py        # OpenAI 兼容 API 客户端 + 7 个提供商预设（DeepSeek/GLM/Mimo/OpenCode/Ollama/自定义）
 │   │   ├── context_manager.py   # Token 预算管理: 长文档 BM25 检索增强（只发相关段落）
 │   │   ├── retriever.py         # 轻量本地检索器: Retriever 接口 + Bm25Retriever
 │   │   ├── zotero_parser.py     # Zotero SQLite 解析器: 集合层级/文献/附件 + reload()
 │   │   ├── zotero_watcher.py    # Zotero 周期同步: 每 30 分钟后台重载 + 手动刷新
+│   │   ├── library_qa.py        # 文献工作台·库内 RAG: 元数据+全文混合检索 + LLM 消息组装
+│   │   ├── literature_scout.py  # 文献工作台·定向巡视: 方向 CRUD + 定时 PubMed 检索 + 两级滤重
+│   │   ├── reference_match.py   # 文献匹配公共口径: DOI/标题归一化 + 库内查重 + 可选 LLM 模糊比对
 │   │   ├── unified_writer.py    # 统一润色+引文核查: 证据检索化 + JSON 多层容错
 │   │   ├── draft_reviewer.py    # 草稿评审
 │   │   ├── writing_coach.py     # 写作教练: 知识库/风格分析/引用密度
@@ -231,9 +341,10 @@ PaperWB/
 │   │   ├── pubmed_searcher.py   # PubMed E-utilities 检索客户端
 │   │   └── ai_words.py / json_utils.py  # AI 词汇库 / JSON 容错工具
 │   ├── ui/
-│   │   ├── pdf_viewer.py        # 结构化阅读面板: ParagraphCard 按 element_type 渲染 + 翻译
+│   │   ├── pdf_viewer.py        # 结构化阅读面板: ParagraphCard 按 element_type 渲染 + 中英翻译（标题/摘要/图表注可译）+ I 形光标
 │   │   ├── pdf_list_panel.py    # 左侧面板: Tab1 Zotero 文献库 + Tab2 其它文献
 │   │   ├── zotero_panel.py      # Zotero 树形视图: 集合树+文献+PDF 附件，watcher 实时刷新
+│   │   ├── workbench_panel.py   # 文献工作台(三栏): 检索方向 / 库内问答 / 文献推荐流
 │   │   ├── chat_panel.py        # 聊天面板: Markdown 气泡/流式渲染
 │   │   ├── writing_panel.py     # 写作面板: 编辑器+知识库+Zotero+AI辅助+自动保存+字数统计
 │   │   ├── diff_dialog.py       # 润色对比对话框: 内联 diff + 导航 + 逐项接受/拒绝 + AI 对话
@@ -254,15 +365,17 @@ PaperWB/
 
 ## 常见问题
 
-**支持哪些模型？** 所有 OpenAI 兼容接口。内置 DeepSeek、Mimo、OpenCode Go、OpenCode Zen 四种预设 + 自定义，共 5 个预设。阅读-解析无需多模态，普通强文本模型即可。
+**支持哪些模型？** 所有 OpenAI 兼容接口。内置 DeepSeek、GLM（智谱）、Mimo、OpenCode Go、OpenCode Zen、Ollama 六类预设 + 自定义，共 7 个预设（GLM 与 OpenCode Zen 含免费模型；Ollama 为云端服务，需 API Key）。普通论文问答无需多模态；仅图表内容解读需选择支持视觉的模型。
 
 **支持多长的论文？** DeepSeek V4 支持 1M token 上下文，几百页论文可以一次性处理。
 
 **Stage 1 解析太慢？** Stage 1 固定为 **Docling 本地解析**（快、免费、离线，无 API 限流），速度取决于 CPU；首次使用前需先自动下载模型（一次性）。可在右键菜单对单篇「重新逐页解析」。
 
-**Docling 首次使用要下载模型？** 是，约数百 MB，一次性缓存在用户目录（版式模型走 Hugging Face，RapidOCR 模型走 ModelScope）。镜像默认开启无需设置；下载失败时解析会提示错误，可设置环境变量 `PAPERWB_HF_MIRROR=0` 回退官方源重试。
+**Docling 首次使用要下载模型？** 安装向导默认已**预置离线模型**（约 500 MB 装入安装目录 `models\hub`），解析全程离线、无下载。仅绿色版/源码运行才需首次下载（一次性，版式模型走 Hugging Face 国内镜像，RapidOCR 模型已随程序内置）；下载失败时可设置环境变量 `PAPERWB_HF_MIRROR=0` 回退官方源重试。
 
 **Zotero 文献怎么同步到软件？** 左侧面板切换到「📚 Zotero」标签页，启动时自动加载，此后每 30 分钟后台自动同步一次（增删改自动反映），也可点面板「刷新」按钮立即手动同步；点击带 📄 的文献直接用两阶段管线阅读（只读，不会改动你的 Zotero 库）。
+
+**文献工作台和阅读工作台有什么区别？** 阅读工作台针对单篇论文的结构化阅读与问答；文献工作台面向**整个 Zotero 库**——支持库内跨文献问答（答案带 `[n]` 来源角标，点击直接打开对应 PDF 阅读）和按方向定时巡视 PubMed 的文献推荐（导出 RIS 可导入 Zotero）。
 
 **引文核查匹配不上文献？** 确保 Zotero 中该文献已附加 PDF 附件。引文年份带字母后缀（如 `2025a`）会被自动去后缀匹配。支持 Author-Year 和 [1] 编号两种引用格式。
 

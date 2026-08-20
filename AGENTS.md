@@ -2,10 +2,11 @@
 
 ## 运行环境
 
-- Python 环境: `D:\Science\miniforge\envs\PaperWB`（conda env，Python 3.11）
+- Python 环境: `D:\science\miniforge3\envs\PaperWB`（conda env，Python 3.11）
 - 所有 Python 命令前需激活: `conda activate PaperWB`
 - 包管理: pip + `requirements.txt`
 - 依赖（requirements.txt）: `PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3` `docling==2.118.0` `rank_bm25==0.2.2` `hf_transfer==0.1.9`
+- 构建：`PyInstaller`（已装入该环境）+ Inno Setup 6（系统级，`winget install -e --id JRSoftware.InnoSetup`）
 
 ## 项目入口
 
@@ -19,6 +20,16 @@ python main.py
 ```
 main.py                    # 入口: QApplication + MainWindow（自动 UTF-8 重启；打包版: DLL 路径/解压等待/重库预加载 + --selftest 无头自检）
 requirements.txt
+PaperWB.spec               # PyInstaller onedir 打包配置（图标 assets/PaperWB.ico）
+LICENSE                    # MIT
+assets/                    # 应用图标（installer/make_icon.py 生成，exe/安装向导/窗口共用）
+installer/                 # 安装向导构建
+├── PaperWB.iss            # Inno Setup 脚本: 许可/组件(可选预置模型)/目录/完成页自检/卸载询问配置清理
+├── build_installer.ps1    # 一条龙: 补装 PyInstaller → pyinstaller → 模型 staging → dist selftest 验收门 → ISCC 出包
+├── stage_models.py        # Docling 模型 staging: 本机 HF 缓存 → installer/models_cache/hub（约 505 MB）
+├── make_icon.py           # 生成 assets/PaperWB.ico
+├── lang/ChineseSimplified.isl  # 向导简体中文语言文件（官方非官方翻译库）
+└── Output/                # 产物 PaperWB-Setup-<版本>.exe（gitignore）
 src/
 ├── app.py                 # MainWindow — 首次启动弹窗(FirstLaunchDialog) + 信号枢纽 + 三套 LLMClient + Zotero watcher + 三工作台切换(阅读/写作/文献)
 ├── core/
@@ -26,8 +37,8 @@ src/
 │   ├── pdf_processor.py   # 核心！两阶段管线:
 │   │                      #   Stage 1: Docling 本地布局解析 → JSON → 缓存
 │   │                      #   Stage 2: 读缓存 → 本地规则组装 → StructuredDocument → UI（跨页接缝合并可调 LLM，失败自动规则兜底）
-│   ├── docling_parser.py  # Docling 本地解析器: PDF → 与视觉管线兼容的逐页元素（设置 HF 镜像/禁用编译）
-│   ├── llm_client.py      # OpenAI 兼容 API 客户端 + json_mode(response_format) + 5 个提供商预设
+│   ├── docling_parser.py  # Docling 本地解析器: PDF → 与视觉管线兼容的逐页元素（设置 HF 镜像/禁用编译；检测 <安装目录>/models/hub 预置模型 → 重定向 HF_HUB_CACHE+离线模式）
+│   ├── llm_client.py      # OpenAI 兼容 API 客户端 + json_mode(response_format) + 7 个提供商预设（DeepSeek/GLM智谱/Mimo/OpenCode Go/Zen/Ollama/自定义；GLM 与 Zen 含免费模型）
 │   ├── context_manager.py # Token 预算管理: 长文档走 BM25 检索增强（只发相关段落），短文档用"前70%+后30%"
 │   ├── retriever.py       # 轻量本地检索器: Retriever 接口 + Bm25Retriever（预留向量升级；小语料 IDF 退化时按词面重叠兜底）
 │   ├── zotero_parser.py   # Zotero SQLite 解析器: 集合层级/文献(含摘要 abstractNote)/附件 + reload()（临时副本只读，支持指定路径不全局探测）
@@ -40,7 +51,7 @@ src/
 │   ├── writing_prompts.py # 四种写作类型的系统提示词（综述/论文/专利/软著）
 │   └── pubmed_searcher.py # PubMed E-utilities 检索客户端（esearch + efetch）
 ├── ui/
-│   ├── pdf_viewer.py      # 结构化阅读面板: ParagraphCard 按 element_type 渲染+中英文翻译(多并发+滚动自动翻译)；Stage1 完成后自动跨页整合
+│   ├── pdf_viewer.py      # 结构化阅读面板: ParagraphCard 按 element_type 渲染+中英文翻译(标题/摘要/正文/关键词/图表注可译, 多并发+滚动自动翻译)+文字区 I 形光标；Stage1 完成后自动跨页整合
 │   ├── pdf_list_panel.py  # 左侧面板: Tab1 Zotero 只读文献库 + Tab2 其它文献
 │   ├── zotero_panel.py    # Zotero 树形视图: 集合树+文献+PDF附件标记，周期同步/手动刷新驱动刷新
 │   ├── chat_panel.py      # 聊天面板: Markdown 气泡/流式渲染
@@ -136,6 +147,14 @@ src/
 - 各对话框使用非模态 (`show()` + `accepted_signal`) 以支持并行操作
 - 对话框设置 `WindowMaximizeButtonHint | WindowMinimizeButtonHint | Window` 以支持任务栏独立分组
 - 无 max_tokens 硬限制（依赖模型自身容量）
+
+### 安装包分发与预置离线模型
+
+- 正式分发物 = Inno Setup 安装向导（`installer/PaperWB.iss`）：许可(MIT)/组件选择（「预置离线解析模型」默认勾选）/目录（默认 `%LOCALAPPDATA%\Programs\PaperWB`，免管理员，PrivilegesRequiredOverridesAllowed 可改全局）/完成页可选「安装自检」（[Code] Exec `--selftest` 按退出码弹窗）
+- **预置模型原理**：安装包把两个 HF 模型缓存目录（`models--docling-project--docling-layout-heron` 版式 + `models--docling-project--docling-models` TableFormer，共约 505 MB）装入 `<安装目录>\models\hub\`；`docling_parser.py` 导入时检测两目录齐全 → `HF_HUB_CACHE`/`HF_HUB_OFFLINE=1` 重定向（setdefault，用户显式设置优先）→ 首次解析完全离线；不齐全则回退在线下载（hf-mirror）。**不用** docling `artifacts_path`（会强制要求 RapidOcr 目录，否则扫描版 PDF 解析抛错）；RapidOCR 小模型已随 rapidocr wheel 收进主程序
+- 模型 staging（`stage_models.py`）从本机 `~/.cache/huggingface/hub` 复制：copytree 解引用符号链接、剔除 blobs/.lock，保留 refs+snapshots 标准 HF 缓存布局；本机无缓存时先运行应用解析一次预热
+- 构建入口 `installer/build_installer.ps1`：PyInstaller(onedir) → staging → **dist selftest 验收门**（任一 FAIL 中止出包）→ ISCC（版本号从 main.py `setApplicationVersion` 抓取）→ `installer/Output/PaperWB-Setup-<版本>.exe`
+- 远程排查日志：`%TEMP%\paperwb_selftest.log`（自检，含 bundled-models 项）+ `%APPDATA%\PaperWB\error.log`（excepthook）+ `faulthandler.log` + Inno `%TEMP%\Setup Log*.txt`；SmartScreen 拦截见 README「下载与安装」
 
 ## 测试
 

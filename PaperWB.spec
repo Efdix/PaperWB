@@ -45,6 +45,12 @@ _hiddenimports += [
     'PySide6.QtGui',
 ]
 
+# 应用图标：exe 资源图标 + Qt 窗口图标（main.py 从 _MEIPASS/assets 加载）
+# 缺文件时（未运行 installer/make_icon.py）跳过并退回默认图标，不阻塞构建
+_icon_src = _os.path.join('assets', 'PaperWB.ico')
+if _os.path.isfile(_icon_src):
+    _datas += [(_icon_src, 'assets')]
+
 a = Analysis(
     ['main.py'],
     pathex=[],
@@ -74,6 +80,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    icon=_icon_src if _os.path.isfile(_icon_src) else None,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

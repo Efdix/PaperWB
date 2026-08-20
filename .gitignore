@@ -7,6 +7,13 @@ __pycache__/
 dist/
 build/
 
+# 安装包构建产物（installer/build_installer.ps1 生成）
+installer/Output/
+installer/models_cache/
+
+# 本地预置模型联调目录（约 505 MB，勿提交；安装包由 iss 打入）
+models/
+
 # PyInstaller spec（保留 PaperWB.spec）
 *.spec
 !PaperWB.spec
@@ -20,6 +27,9 @@ env/
 # IDE
 .vscode/
 .idea/
+
+# ZCode 工具产物（会话计划等，非项目文件）
+.zcode/
 
 # 运行时数据（含 API Key，切勿提交！）
 .paperwb/

@@ -3,6 +3,8 @@
 在 import docling 之前设置环境变量（本模块顶部自动完成）：
 - DOCLING_INFERENCE_COMPILE_TORCH_MODELS=0  禁用 torch.compile（避免要求 MSVC cl.exe）
 - HF_ENDPOINT / HF_HUB_DISABLE_XET           模型下载走国内镜像（可被 PAPERWB_HF_MIRROR=0 关闭）
+- HF_HUB_CACHE / HF_HUB_OFFLINE              安装包预置模型目录 <安装目录>/models/hub 存在时
+                                             自动重定向并离线加载（见 bundled_models_hub_dir）
 - 需要 UTF-8 模式（PYTHONUTF8），由 main.py 启动引导保证
 
 输出格式与 pdf_processor._normalize_page_result 兼容（元素键名为 id/type/text/bbox/caption/
@@ -12,6 +14,7 @@ is_meaningful/description/section_name/font_size/is_bold，另附 level 供规�
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from typing import TYPE_CHECKING
 
@@ -23,6 +26,42 @@ _hf_mirror = os.environ.get(
 if _hf_mirror == "1":
     os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
+# 安装包预置的模型仓库名（HF 缓存目录命名：把 repo_id 的 / 换成 --）
+_BUNDLED_REQUIRED_REPOS = (
+    "models--docling-project--docling-layout-heron",   # 版式识别模型
+    "models--docling-project--docling-models",         # TableFormer 表格结构模型
+)
+
+
+def bundled_models_hub_dir() -> str:
+    """定位随安装包预置的 Docling 模型缓存目录，不可用返回 ""。
+
+    打包版在 exe 同级 models/hub 下；开发模式在仓库根 models/hub 下。
+    两个必需模型目录齐全才视为有效——半预置状态一律回退在线下载，
+    避免"重定向到了残缺缓存又禁了网"的死锁。结果在模块导入时缓存到
+    _BUNDLED_HUB，selftest 用它报告预置状态。
+    """
+    try:
+        if getattr(sys, "frozen", False):
+            base = os.path.dirname(os.path.abspath(sys.executable))
+        else:
+            # src/core/docling_parser.py → 仓库根
+            base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        hub = os.path.join(base, "models", "hub")
+        if all(os.path.isdir(os.path.join(hub, r)) for r in _BUNDLED_REQUIRED_REPOS):
+            return hub
+    except Exception:
+        pass
+    return ""
+
+
+_BUNDLED_HUB = bundled_models_hub_dir()
+if _BUNDLED_HUB:
+    # 预置模型齐全：重定向 HF 缓存并强制离线，首次解析无需联网等待。
+    # setdefault 语义：用户显式设置的 HF_HUB_CACHE / HF_HUB_OFFLINE 永远优先。
+    os.environ.setdefault("HF_HUB_CACHE", _BUNDLED_HUB)
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter

@@ -29,7 +29,7 @@ PLACEHOLDER_TEXT = (
     "• 导入后自动 AI 解析论文结构（逐页分析）\n"
     "• 解析完成后点击论文查看结构化阅读视图\n"
     "• 重要图片和表格自动截图展示\n"
-    "• 英文段落一键翻译为中文"
+    "• 标题/摘要/正文/图表注均可一键翻译为中文"
 )
 
 # 关键章节名（subtitle/abstract_heading 匹配到则突出显示）
@@ -206,7 +206,9 @@ class ParagraphCard(QFrame):
         self.text_label.setContentsMargins(0, 4, 0, 4)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.text_label.setCursor(Qt.CursorShape.IBeamCursor)
         layout.addWidget(self.text_label)
+        self._append_translation_row(layout)
 
     def _setup_key_subtitle_card(self, level: int):
         """关键章节标题（如 Introduction、Results）—— 醒目的暖金色。"""
@@ -225,7 +227,9 @@ class ParagraphCard(QFrame):
         self.text_label.setContentsMargins(14, 6, 0, 6)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.text_label.setCursor(Qt.CursorShape.IBeamCursor)
         layout.addWidget(self.text_label)
+        self._append_translation_row(layout)
 
     def _setup_subtitle_card(self, level: int):
         """普通小节标题。"""
@@ -246,7 +250,9 @@ class ParagraphCard(QFrame):
         self.text_label.setContentsMargins(10, 3, 0, 3)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.text_label.setCursor(Qt.CursorShape.IBeamCursor)
         layout.addWidget(self.text_label)
+        self._append_translation_row(layout)
 
     def _setup_key_abstract_heading_card(self):
         """关键摘要标签 —— 暖金色突出。"""
@@ -285,6 +291,7 @@ class ParagraphCard(QFrame):
         self.text_label.setContentsMargins(0, 2, 0, 2)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.text_label.setCursor(Qt.CursorShape.IBeamCursor)
         layout.addWidget(self.text_label)
 
     def _setup_abstract_card(self):
@@ -302,7 +309,9 @@ class ParagraphCard(QFrame):
         self.text_label.setContentsMargins(12, 4, 0, 4)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.text_label.setCursor(Qt.CursorShape.IBeamCursor)
         layout.addWidget(self.text_label)
+        self._append_translation_row(layout)
 
     def _setup_special_card(self, etype: str):
         self._make_card_base("#fffdfa", "#e5e1d9")
@@ -319,7 +328,10 @@ class ParagraphCard(QFrame):
         self.text_label.setContentsMargins(0, 4, 0, 4)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.text_label.setCursor(Qt.CursorShape.IBeamCursor)
         layout.addWidget(self.text_label)
+        if etype == "keywords":
+            self._append_translation_row(layout, min_len=8)
 
     def _setup_caption_card(self):
         self._make_card_base("#fffdfa", "#e5e1d9")
@@ -332,7 +344,9 @@ class ParagraphCard(QFrame):
         self.text_label.setContentsMargins(0, 2, 0, 2)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.text_label.setCursor(Qt.CursorShape.IBeamCursor)
         layout.addWidget(self.text_label)
+        self._append_translation_row(layout, min_len=8)
 
     def _setup_reference_card(self):
         self._make_card_base("#fafaf8", "#e7e7e1")
@@ -345,6 +359,7 @@ class ParagraphCard(QFrame):
         self.text_label.setContentsMargins(0, 2, 0, 2)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.text_label.setCursor(Qt.CursorShape.IBeamCursor)
         layout.addWidget(self.text_label)
 
     def _setup_collapsed_card(self):
@@ -371,6 +386,7 @@ class ParagraphCard(QFrame):
         self.text_label.setContentsMargins(0, 2, 0, 2)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.text_label.setCursor(Qt.CursorShape.IBeamCursor)
         self.text_label.setVisible(False)
         layout.addWidget(self.text_label)
         self._collapsed = True
@@ -434,6 +450,54 @@ class ParagraphCard(QFrame):
         self._qa_edit.setVisible(False)  # 回车后自动关闭
         self._qa_edit.clear()
 
+    def _append_translation_row(self, layout: QVBoxLayout, with_qa: bool = False,
+                                min_len: int = 4) -> None:
+        """为卡片追加译文行与翻译按钮 —— 标题/摘要/正文/关键词/图表注均可翻译。
+
+        Args:
+            with_qa: 是否附带「问答」按钮（正文卡片用）。
+            min_len: 原文去空白后至少这么长才提供翻译（过滤过短的碎片）。
+        """
+        if len(self._text.strip()) <= min_len:
+            return
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background-color: #e5e1d9;")
+        layout.addWidget(sep)
+        self.zh_label = QLabel()
+        self.zh_label.setWordWrap(True)
+        self.zh_label.setFont(QFont("Microsoft YaHei UI", 12))
+        self.zh_label.setStyleSheet("color: #278273; line-height: 1.7;")
+        self.zh_label.setContentsMargins(0, 4, 0, 4)
+        self.zh_label.setVisible(False)
+        self.zh_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.zh_label.setCursor(Qt.CursorShape.IBeamCursor)
+        layout.addWidget(self.zh_label)
+
+        btn_row = QHBoxLayout()
+        self.trans_btn = QPushButton("🌐 翻译")
+        self.trans_btn.setFixedWidth(90)
+        self.trans_btn.clicked.connect(self._request_translate)
+        btn_row.addWidget(self.trans_btn)
+        if with_qa:
+            self.qa_btn = QPushButton("🤖 问答")
+            self.qa_btn.setFixedWidth(80)
+            self.qa_btn.clicked.connect(self._toggle_qa_edit)
+            btn_row.addWidget(self.qa_btn)
+        self.re_trans_btn = QPushButton("🔄 重新翻译")
+        self.re_trans_btn.setFixedWidth(100)
+        self.re_trans_btn.clicked.connect(self._on_re_translate)
+        self.re_trans_btn.setVisible(False)
+        self.re_trans_btn.setStyleSheet(
+            "QPushButton { background-color: #fff4df; color: #a76d2b; border: 1px solid #efd4a4; "
+            "border-radius: 6px; padding: 4px 10px; font-size: 12px; }"
+            "QPushButton:hover { background-color: #ffebc6; }"
+        )
+        btn_row.addWidget(self.re_trans_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
     def _setup_body_card(self):
         """正文段落 —— 保持原样，不做特殊区分。"""
         self._make_card_base("#fffdfa", "#e5e1d9")
@@ -449,44 +513,9 @@ class ParagraphCard(QFrame):
         self.text_label.setContentsMargins(0, 4, 0, 4)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.text_label.setCursor(Qt.CursorShape.IBeamCursor)
         layout.addWidget(self.text_label)
-
-        if len(self._text.strip()) > 20:
-            sep = QFrame()
-            sep.setFrameShape(QFrame.Shape.HLine)
-            sep.setFixedHeight(1)
-            sep.setStyleSheet("background-color: #e5e1d9;")
-            layout.addWidget(sep)
-            self.zh_label = QLabel()
-            self.zh_label.setWordWrap(True)
-            self.zh_label.setFont(QFont("Microsoft YaHei UI", 12))
-            self.zh_label.setStyleSheet("color: #278273; line-height: 1.7;")
-            self.zh_label.setContentsMargins(0, 4, 0, 4)
-            self.zh_label.setVisible(False)
-            self.zh_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            layout.addWidget(self.zh_label)
-
-            btn_row = QHBoxLayout()
-            self.trans_btn = QPushButton("🌐 翻译")
-            self.trans_btn.setFixedWidth(90)
-            self.trans_btn.clicked.connect(self._request_translate)
-            btn_row.addWidget(self.trans_btn)
-            self.qa_btn = QPushButton("🤖 问答")
-            self.qa_btn.setFixedWidth(80)
-            self.qa_btn.clicked.connect(self._toggle_qa_edit)
-            btn_row.addWidget(self.qa_btn)
-            self.re_trans_btn = QPushButton("🔄 重新翻译")
-            self.re_trans_btn.setFixedWidth(100)
-            self.re_trans_btn.clicked.connect(self._on_re_translate)
-            self.re_trans_btn.setVisible(False)
-            self.re_trans_btn.setStyleSheet(
-                "QPushButton { background-color: #fff4df; color: #a76d2b; border: 1px solid #efd4a4; "
-                "border-radius: 6px; padding: 4px 10px; font-size: 12px; }"
-                "QPushButton:hover { background-color: #ffebc6; }"
-            )
-            btn_row.addWidget(self.re_trans_btn)
-            btn_row.addStretch()
-            layout.addLayout(btn_row)
+        self._append_translation_row(layout, with_qa=True, min_len=20)
 
     def _request_translate(self):
         if not self._translated and hasattr(self, 'trans_btn'):
@@ -521,10 +550,6 @@ class ParagraphCard(QFrame):
         if hasattr(self, 'trans_btn'):
             self.trans_btn.setVisible(True)
         self._request_translate()
-
-    @property
-    def is_body(self) -> bool:
-        return self._elem.element_type in ("body", "abstract_body")
 
 
 class ImageCard(QFrame):
@@ -604,6 +629,7 @@ class ImageCard(QFrame):
             cap.setStyleSheet("color: #718180; font-style: italic;")
             cap.setContentsMargins(0, 4, 0, 4)
             cap.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            cap.setCursor(Qt.CursorShape.IBeamCursor)
             layout.addWidget(cap)
             self._caption_label = cap
         if self._description:
@@ -613,6 +639,7 @@ class ImageCard(QFrame):
             desc.setStyleSheet("color: #147c7c;")
             desc.setContentsMargins(0, 4, 0, 4)
             desc.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            desc.setCursor(Qt.CursorShape.IBeamCursor)
             layout.addWidget(desc)
             self._desc_label = desc
 
@@ -1286,7 +1313,7 @@ class PDFViewerPanel(QWidget):
         for card in self._cards:
             if not isinstance(card, ParagraphCard):
                 continue
-            if not card.is_body or not card._is_english or card._translated:
+            if not card._is_english or card._translated:
                 continue
             if not hasattr(card, 'trans_btn') or card.trans_btn is None or not card.trans_btn.isVisible():
                 continue

@@ -99,12 +99,32 @@ PROVIDERS: dict[str, dict] = {
     "DeepSeek": {
         "base_url": "https://api.deepseek.com",
         "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
-        "description": "DeepSeek V4 系列（1M 上下文 | Flash 实惠 / Pro 最强）",
+        "description": "DeepSeek V4 系列（1M 上下文，默认思考模式 | Flash 实惠 / Pro 最强）",
+    },
+    "GLM（智谱）": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "models": [
+            # 文本（GLM-5 系列 → GLM-4 系列）
+            "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "glm-5-turbo",
+            "glm-4.7", "glm-4.7-flashx", "glm-4.6",
+            "glm-4.5-air", "glm-4.5-airx", "glm-4-long", "glm-4-flashx-250414",
+            # 免费文本模型
+            "glm-4.7-flash", "glm-4.5-flash", "glm-4-flash-250414",
+            # 视觉模型（可用于图表解读）
+            "glm-5v-turbo", "glm-4.6v",
+            # 免费视觉模型
+            "glm-4.6v-flash", "glm-4.1v-thinking-flash", "glm-4v-flash",
+        ],
+        "description": (
+            "智谱 GLM 全系列（含 GLM-5）。免费模型：glm-4.7-flash / glm-4.5-flash / "
+            "glm-4-flash-250414 / glm-4.6v-flash / glm-4.1v-thinking-flash / glm-4v-flash；"
+            "带 V 的为视觉模型，可用于图表解读。"
+        ),
     },
     "Mimo": {
         "base_url": "https://api.xiaomimimo.com/v1",
         "models": ["mimo-v2.5", "mimo-v2.5-pro"],
-        "description": "Mimo 大模型系列",
+        "description": "小米 MiMo V2.5 系列（1M 上下文；Pro 为深度思考旗舰，V2 旧系列已下线）",
     },
     "OpenCode Go": {
         "base_url": "https://opencode.ai/zen/go/v1",
@@ -114,23 +134,36 @@ PROVIDERS: dict[str, dict] = {
             "deepseek-v4-pro", "deepseek-v4-flash",
             "mimo-v2.5", "mimo-v2.5-pro",
         ],
-        "description": "OpenCode Go — GLM / Kimi / DeepSeek / MiMo",
+        "description": "OpenCode Go 订阅 — GLM / Kimi / DeepSeek / MiMo",
     },
     "OpenCode Zen": {
         "base_url": "https://opencode.ai/zen/v1",
         "models": [
             "glm-5.2", "glm-5.1", "glm-5",
-            "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
+            "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
             "deepseek-v4-pro", "deepseek-v4-flash",
-            "deepseek-v4-flash-free",
-            "mimo-v2.5-free",
-            "north-mini-code-free",
-            "nemotron-3-ultra-free",
             "minimax-m3", "minimax-m2.7", "minimax-m2.5",
-            "grok-build-0.1",
+            # 免费模型（/chat/completions 可直接调用）
             "big-pickle",
+            "mimo-v2.5-free",
+            "hy3-free",
+            "nemotron-3-ultra-free",
+            "nemotron-3.5-lightning-free",
         ],
-        "description": "OpenCode Zen — 含免费模型（/chat/completions）",
+        "description": "OpenCode Zen — GLM / Kimi / DeepSeek / MiniMax，含多个免费模型（/chat/completions）",
+    },
+    "Ollama": {
+        "base_url": "https://ollama.com/v1",
+        "models": [
+            "deepseek-v4-flash:0731-cloud",
+            "gemma4:cloud",
+            "gpt-oss:120b-cloud",
+        ],
+        "description": (
+            "Ollama 云端（https://ollama.com/v1，需 API Key）。模型名遵循 name:tag 格式，"
+            "云端变体标签以 -cloud 结尾；目录还提供 deepseek-v4-pro / kimi-k3 / glm-5.x / "
+            "minimax-m3 等，可在模型框手动输入对应标签。"
+        ),
     },
     "自定义": {
         "base_url": "",
