@@ -224,7 +224,7 @@ _bb2.set_thinking(False)
 check("占位文本首次切换清除", _bb2.get_content() == "", _bb2.get_content())
 
 panel = WorkbenchPanel()
-panel.set_parse_client(None)
+panel.set_text_client(None)
 panel.set_zotero_library(None)
 check("空库状态文案", "Zotero" in panel._qa_status.text(), panel._qa_status.text())
 check("未配置时提问禁用", not panel._ask_btn.isEnabled())
@@ -309,7 +309,7 @@ try:
     from src.ui.workbench_panel import ReferenceListCard, WorkbenchPanel as WB
 
     panel2 = WB()
-    panel2.set_parse_client(FakeStreamClient())
+    panel2.set_text_client(FakeStreamClient())
     panel2._engine = eng3
     panel2._engine_ready = True
     panel2._apply_ask_state()
@@ -340,11 +340,14 @@ try:
     check("引用跳转信号", opened == [os.path.join(tmp3, "s.pdf")], repr(opened))
     panel2.shutdown()
 
-    # ---------- 9. Scout 全链路（假 PubMed，无网络） ----------
+    # ---------- 9. Scout 全链路（假多源检索器，无网络） ----------
+    from src.core.literature_search import MultiSourceSearcher
     from src.core.literature_scout import ScoutManager
 
-    class FakePubMed:
-        def search(self, queries, limit=10):
+    class FakeMultiSource:
+        """假多源检索器：按 plan 返回 PubMed + arXiv 混合结果。"""
+
+        def search(self, plan, limit=10):
             return [
                 PubMedPaper(pmid="90002", title="Feather color development in birds",
                             authors="Old A", year="2020", journal="J2", doi="",
@@ -352,12 +355,15 @@ try:
                 PubMedPaper(pmid="90001", title="Brand new paper on wings",
                             authors="Nova R", year="2026", journal="J", doi="10.9/new",
                             abstract="abs", url="u"),
+                PubMedPaper(pmid="", title="Preprint on wing morphogenesis",
+                            authors="Pre A", year="2025", journal="",
+                            doi="", abstract="", url="https://arxiv.org/abs/2501.1",
+                            source="arxiv", arxiv_id="2501.1"),
             ]
 
-    orig_searcher = scout_mod.PubMedSearcher
-    scout_mod.PubMedSearcher = FakePubMed
+    mgr = ScoutManager(scout_dir=tmp3)
+    mgr.set_searcher(FakeMultiSource())
     try:
-        mgr = ScoutManager(scout_dir=tmp3)
         mgr.set_match_pool([
             {"key": "K1", "title": "Feather color development in birds",
              "doi": "10.1002/abc.123", "authors": "Smith", "year": "2020",
@@ -376,12 +382,15 @@ try:
             _time.sleep(0.02)
         check("巡视产出结果", len(got) == 1, repr(got))
         entries = got[0][1] if got else []
-        check("过滤库内已有", [e["paper"]["pmid"] for e in entries] == ["90001"],
+        # 90002 已在库内被滤掉；90001 与 arXiv 预印本都应进入 feed
+        check("过滤库内已有", sorted(e["paper"]["pmid"] or e["paper"]["arxiv_id"]
+                                    for e in entries) == ["2501.1", "90001"],
               repr(entries))
-        check("feed 持久化", [e["paper"]["pmid"] for e in load_feed(tmp3)] == ["90001"])
-        check("seen 去重记忆", "90001" in load_seen(tmp3))
+        check("feed 持久化", sorted(e["paper"]["pmid"] or e["paper"]["arxiv_id"]
+                                    for e in load_feed(tmp3)) == ["2501.1", "90001"])
+        check("seen 去重记忆", "90001" in load_seen(tmp3) and "2501.1" in load_seen(tmp3))
         t = mgr.get_topic("s1")
-        check("last_run/last_new 更新", bool(t.last_run) and t.last_new == 1, repr(t))
+        check("last_run/last_new 更新", bool(t.last_run) and t.last_new == 2, repr(t))
 
         # 再次巡视：seen 过滤后无新结果
         got.clear()
@@ -392,11 +401,85 @@ try:
             _time.sleep(0.02)
         check("去重记忆生效", got == [], repr(got))
 
-        mgr.ignore_feed_item(load_feed(tmp3)[0]["id"])
+        for entry in load_feed(tmp3):
+            mgr.ignore_feed_item(entry["id"])
         check("忽略后 feed 为空", mgr.feed_items() == [])
         mgr.shutdown()
     finally:
-        scout_mod.PubMedSearcher = orig_searcher
+        pass  # 假检索器无全局替换，无需恢复
+
+    # ---------- 9c. AI 检索链路（统一核心：检索式生成 → 多源 → 库内过滤） ----------
+    from src.core.literature_search import (
+        generate_search_plan, merge_papers, run_paper_search,
+    )
+
+    class PlanLLM:
+        """假 LLM：返回多源检索方案。"""
+
+        def chat_sync(self, messages, **kw):
+            return ('{"queries": [{"source": "pubmed", "query": "wing paper"},'
+                    '{"source": "arxiv", "query": "wing morphogenesis"}]}')
+
+    plan = generate_search_plan(PlanLLM(), "找翅膀相关的论文")
+    check("检索式生成", plan == [{"source": "pubmed", "query": "wing paper"},
+                               {"source": "arxiv", "query": "wing morphogenesis"}],
+          repr(plan))
+    check("检索式生成失败降级", generate_search_plan(BadLLM(), "x") is None)
+    check("检索式生成无客户端", generate_search_plan(None, "x") is None)
+
+    merged = merge_papers([
+        PubMedPaper(pmid="1", title="Dup Title", doi="10.1/dup", source="pubmed"),
+        PubMedPaper(pmid="", title="Dup Title 2", doi="10.1/dup", source="arxiv"),
+    ])
+    check("跨源合并去重", len(merged) == 1, repr(merged))
+
+    logs = []
+    papers = run_paper_search(
+        "wing paper", client=None,  # 无 LLM → 原文检索降级
+        pool=[{"title": "Brand new paper on wings", "doi": "10.9/new"}],
+        limit=10, searcher=FakeMultiSource(), log_cb=logs.append,
+    )
+    check("统一检索降级路径", "未配置 LLM" in " ".join(logs), repr(logs))
+    # 库内过滤：90001 的 DOI 10.9/new 在库内被滤掉，arXiv 预印本保留
+    ids = sorted(p.get("pmid") or p.get("arxiv_id") for p in papers)
+    check("统一检索库内过滤", ids == ["2501.1", "90002"], repr(ids))
+    check("统一检索来源标注", {p.get("source") for p in papers} == {"pubmed", "arxiv"},
+          repr(papers))
+
+    # 面板 AI 检索页签（假 LLM + 假检索器，无网络）
+    from src.ui.workbench_panel import WorkbenchPanel as WB2
+    panel3 = WB2()
+    panel3._ai_search_btn.setEnabled(True)
+    panel3.set_ai_searcher(FakeMultiSource())
+    panel3.set_text_client(PlanLLM())
+    panel3._ai_input.setPlainText("翅膀形态发生预印本")
+    panel3._on_ai_search()
+    deadline = _time.time() + 10
+    while _time.time() < deadline and panel3._ai_worker is not None:
+        app.processEvents()
+        _time.sleep(0.02)
+    check("AI 检索无崩溃", panel3._ai_worker is None)
+    panel3.shutdown()
+    panel2.shutdown()
+    # ---------- 9b. push_to_feed 外部推送（文献补充/主动检索共用） ----------
+    mgr2 = ScoutManager(scout_dir=tmp3)
+    got2 = []
+    mgr2.results_ready.connect(lambda name, entries: got2.append((name, entries)))
+    pushed = mgr2.push_to_feed([
+        {"pmid": "91001", "title": "External pushed paper", "authors": "X",
+         "year": "2024", "doi": "10.9/ext", "source": "pubmed"},
+        {"pmid": "91002", "title": "Another pushed paper", "authors": "Y",
+         "year": "2023", "doi": "10.9/ext2", "source": "arxiv"},
+    ], "文献补充")
+    check("push_to_feed 推送条数", pushed == 2, repr(pushed))
+    check("push_to_feed 信号", len(got2) == 1 and got2[0][0] == "文献补充", repr(got2))
+    # 重复推送同一篇 → 去重为 0
+    pushed_dup = mgr2.push_to_feed([
+        {"pmid": "91001", "title": "External pushed paper", "authors": "X",
+         "year": "2024", "doi": "10.9/extra", "source": "pubmed"},
+    ], "文献补充")
+    check("push_to_feed 去重", pushed_dup == 0, repr(pushed_dup))
+    mgr2.shutdown()
 finally:
     shutil.rmtree(tmp3, ignore_errors=True)
 

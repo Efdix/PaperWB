@@ -113,7 +113,19 @@ def _count(text):
 
 check("引文计数", _count("(Smith et al., 2020) and (Wang & Li, 2021) plus [1,2] and [3-5]") >= 5)
 
-# ---------- 8. 接缝检测 + 规则组装冒烟 ----------
+# ---------- 8. 后台跨页合并更新文档但保留当前对话 ----------
+from src.core.context_manager import ContextManager
+from types import SimpleNamespace
+
+ctx = ContextManager()
+ctx.load_pdf_text("旧文档")
+ctx.add_to_history("user", "我的问题")
+fake_doc = SimpleNamespace(display_elements=[], metadata_pool=[], figures=[], references=[])
+ctx.update_document("合并后的文档", fake_doc)
+check("合并文档更新", ctx.has_pdf and "合并后的文档" in ctx.get_full_context_for_estimation())
+check("合并更新保留对话", ctx.get_history() == [{"role": "user", "content": "我的问题"}], repr(ctx.get_history()))
+
+# ---------- 9. 接缝检测 + 规则组装冒烟 ----------
 from src.core.pdf_processor import build_document_fast, find_cross_page_seams
 
 page_data = [

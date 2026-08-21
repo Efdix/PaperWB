@@ -25,9 +25,9 @@ from .ui.writing_panel import WritingPanel
 from .ui.settings_dialog import DirectorySettingDialog, SettingsDialog
 from .ui.styles import STYLESHEET
 from .utils.config import (
-    delete_chat_history, get_parse_api, get_translate_api, get_write_api,
+    delete_chat_history, get_text_api, get_vision_api,
     has_data_root, load_chat_history, load_config, save_chat_history,
-    save_config, save_draft,
+    save_config,
 )
 from .utils.threads import track
 
@@ -174,9 +174,8 @@ class MainWindow(QMainWindow):
                 pass  # 用户关闭了对话框，使用默认路径
 
         self._config = load_config()
-        self._llm_parse: LLMClient | None = None
-        self._llm_translate: LLMClient | None = None
-        self._llm_write: LLMClient | None = None
+        self._llm_vision: LLMClient | None = None
+        self._llm_text: LLMClient | None = None
         self._context_manager = ContextManager(
             max_tokens=self._config.get("max_tokens", 1_000_000)
         )
@@ -188,6 +187,7 @@ class MainWindow(QMainWindow):
         self._app_progress_connected: set[int] = set()
         self._zotero: ZoteroLibrary | None = None
         self._zotero_watcher: ZoteroWatcher | None = None
+        self._feed_bridge_connected = False
 
         self._setup_ui()
         self._apply_styles()
@@ -198,7 +198,7 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self):
         self.setWindowTitle("PaperWB · AI 论文研究工作台")
-        self.setMinimumSize(1180, 760)
+        self.setMinimumSize(1024, 680)
         self.resize(1440, 900)
 
         menubar = self.menuBar()
@@ -254,6 +254,8 @@ class MainWindow(QMainWindow):
         self.pdf_viewer.setMinimumWidth(300)
         self.pdf_viewer.pdf_loaded.connect(self._on_pdf_loaded)
         self.pdf_viewer.pdf_path_changed.connect(self._on_pdf_path_changed)
+        self.pdf_viewer.structured_document_updated.connect(
+            self._on_structured_document_updated)
         self.pdf_viewer.follow_up_question.connect(self._on_follow_up_from_reader)
 
         self.chat_panel = ChatPanel()
@@ -266,14 +268,47 @@ class MainWindow(QMainWindow):
         inner_splitter.setSizes([550, 450])
         inner_splitter.setStretchFactor(0, 2)
         inner_splitter.setStretchFactor(1, 1)
+        inner_splitter.setCollapsible(0, False)
+        inner_splitter.setCollapsible(1, True)
+        self._reader_inner_splitter = inner_splitter
 
         outer_splitter.addWidget(self.pdf_list)
         outer_splitter.addWidget(inner_splitter)
         outer_splitter.setSizes([285, 1000])
         outer_splitter.setStretchFactor(0, 0)
         outer_splitter.setStretchFactor(1, 1)
+        outer_splitter.setCollapsible(0, True)
+        outer_splitter.setCollapsible(1, False)
+        self._reader_outer_splitter = outer_splitter
+        self.pdf_viewer.toggle_library_requested.connect(self._set_reader_library_visible)
+        self.pdf_viewer.toggle_chat_requested.connect(self._set_reader_chat_visible)
 
-        self._main_tabs.addTab(outer_splitter, "阅读工作台")
+        reader_surface = QWidget()
+        reader_surface.setObjectName("workspaceSurface")
+        reader_layout = QVBoxLayout(reader_surface)
+        reader_layout.setContentsMargins(0, 0, 0, 0)
+        reader_layout.setSpacing(10)
+        reader_header = QFrame()
+        reader_header.setObjectName("workspaceHeader")
+        reader_header_layout = QHBoxLayout(reader_header)
+        reader_header_layout.setContentsMargins(16, 10, 16, 10)
+        reader_header_layout.setSpacing(8)
+        reader_title_box = QVBoxLayout()
+        reader_title_box.setSpacing(1)
+        reader_eyebrow = QLabel("阅读与理解")
+        reader_eyebrow.setObjectName("eyebrowLabel")
+        reader_title_box.addWidget(reader_eyebrow)
+        reader_title = QLabel("阅读工作台")
+        reader_title.setObjectName("titleLabel")
+        reader_title_box.addWidget(reader_title)
+        reader_header_layout.addLayout(reader_title_box)
+        reader_subtitle = QLabel("结构化阅读、段落翻译与单篇论文问答")
+        reader_subtitle.setObjectName("subtitleLabel")
+        reader_header_layout.addWidget(reader_subtitle)
+        reader_header_layout.addStretch()
+        reader_layout.addWidget(reader_header)
+        reader_layout.addWidget(outer_splitter, 1)
+        self._main_tabs.addTab(reader_surface, "阅读工作台")
 
         # Tab 1: 写作
         self._writing_panel = WritingPanel()
@@ -288,18 +323,24 @@ class MainWindow(QMainWindow):
         shell = QWidget()
         shell.setObjectName("appShell")
         shell_layout = QVBoxLayout(shell)
-        shell_layout.setContentsMargins(18, 14, 18, 8)
-        shell_layout.setSpacing(12)
+        shell_layout.setContentsMargins(16, 12, 16, 8)
+        shell_layout.setSpacing(10)
 
         app_header = QFrame()
         app_header.setObjectName("appHeader")
         header_layout = QHBoxLayout(app_header)
-        header_layout.setContentsMargins(16, 12, 16, 12)
-        header_layout.setSpacing(10)
+        header_layout.setContentsMargins(14, 10, 14, 10)
+        header_layout.setSpacing(8)
 
         brand_mark = QLabel("研")
         brand_mark.setObjectName("brandMark")
         brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        app_icon = QApplication.windowIcon()
+        if not app_icon.isNull():
+            brand_mark.setText("")
+            brand_mark.setPixmap(app_icon.pixmap(32, 32))
+            brand_mark.setScaledContents(True)
+            brand_mark.setFixedSize(38, 38)
         header_layout.addWidget(brand_mark)
 
         brand_text = QVBoxLayout()
@@ -314,7 +355,7 @@ class MainWindow(QMainWindow):
 
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.VLine)
-        divider.setStyleSheet("background-color: #3e686d; max-width: 1px;")
+        divider.setStyleSheet("background-color: #e5e5ea; max-width: 1px;")
         header_layout.addSpacing(10)
         header_layout.addWidget(divider)
         header_layout.addSpacing(4)
@@ -351,15 +392,12 @@ class MainWindow(QMainWindow):
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self._status_parse_label = QLabel("解析：未配置")
-        self._status_parse_label.setObjectName("statusChip")
-        self.status_bar.addPermanentWidget(self._status_parse_label)
-        self._status_translate_label = QLabel("翻译：未配置")
-        self._status_translate_label.setObjectName("statusChip")
-        self.status_bar.addPermanentWidget(self._status_translate_label)
-        self._status_write_label = QLabel("写作与引用：未配置")
-        self._status_write_label.setObjectName("statusChip")
-        self.status_bar.addPermanentWidget(self._status_write_label)
+        self._status_vision_label = QLabel("多模态：未配置")
+        self._status_vision_label.setObjectName("statusChip")
+        self.status_bar.addPermanentWidget(self._status_vision_label)
+        self._status_text_label = QLabel("纯文本：未配置")
+        self._status_text_label.setObjectName("statusChip")
+        self.status_bar.addPermanentWidget(self._status_text_label)
 
     def _switch_workspace(self, index: int) -> None:
         """切换阅读/写作/文献工作区，并同步顶部导航状态。"""
@@ -371,6 +409,22 @@ class MainWindow(QMainWindow):
         if 0 <= index < len(names):
             self.status_bar.showMessage(f"已切换到{names[index]}")
 
+    def _set_reader_library_visible(self, visible: bool) -> None:
+        """阅读工作台左侧文献列表可收起，给正文腾出空间。"""
+        self.pdf_list.setVisible(bool(visible))
+        if visible:
+            self._reader_outer_splitter.setSizes([285, max(500, self.width() - 330)])
+        else:
+            self._reader_outer_splitter.setSizes([0, max(500, self.width() - 30)])
+
+    def _set_reader_chat_visible(self, visible: bool) -> None:
+        """阅读工作台问答栏可收起，避免三栏同时挤压正文。"""
+        self.chat_panel.setVisible(bool(visible))
+        if visible:
+            self._reader_inner_splitter.setSizes([max(500, self.width() - 470), 420])
+        else:
+            self._reader_inner_splitter.setSizes([max(500, self.width() - 80), 0])
+
     def _apply_styles(self) -> None:
         self.setStyleSheet(STYLESHEET)
 
@@ -380,9 +434,6 @@ class MainWindow(QMainWindow):
             return
         self._docling_warmup = DoclingWarmupWorker(self)
         self._docling_warmup.start()
-
-    def _on_open_pdf(self) -> None:
-        self.pdf_viewer._open_pdf()
 
     def _on_pdf_loaded(self, text: str):
         if self._current_pdf_path:
@@ -410,8 +461,18 @@ class MainWindow(QMainWindow):
             f"文献已加载 | 约 {token_est:,} 个令牌 | 历史 {len(history)} 条对话"
         )
         self.chat_panel.set_input_enabled(
-            self._llm_parse is not None and self._context_manager.has_pdf
+            self._llm_text is not None and self._context_manager.has_pdf
         )
+
+    def _on_structured_document_updated(self, path: str) -> None:
+        """跨页合并后只更新检索文档，不重置当前对话。"""
+        if path != self._current_pdf_path:
+            return
+        doc = self.pdf_viewer.structured_document
+        if doc is None:
+            return
+        text = "\n\n".join(e.text for e in doc.display_elements if e.text)
+        self._context_manager.update_document(text, doc)
 
     def _save_current_chat(self):
         if self._current_pdf_path:
@@ -421,6 +482,7 @@ class MainWindow(QMainWindow):
         """切换文献前立即清空当前会话，避免上一篇论文的问答残留。"""
         if self._current_pdf_path:
             self._save_current_chat()
+        self._cancel_llm_worker()
         self._current_pdf_path = ""
         self._context_manager.load_pdf_text("")
         self.chat_panel.clear_messages()
@@ -441,10 +503,10 @@ class MainWindow(QMainWindow):
             self.chat_panel.clear_messages()
             self.chat_panel.set_token_count(0)
             self.chat_panel.set_input_enabled(False)
-            self.pdf_viewer._reset_view()
+            self.pdf_viewer.clear_pdf()
             self.setWindowTitle("PaperWB · AI 论文研究工作台")
         elif self.pdf_viewer.get_current_path() == path:
-            self.pdf_viewer._reset_view()
+            self.pdf_viewer.clear_pdf()
 
         self._cancel_processor(path)
 
@@ -497,13 +559,22 @@ class MainWindow(QMainWindow):
         不再取消其它论文的后台处理器：切换文献后，后台解析/整合继续运行并自动落盘。
         """
         existing = self._processors.get(path)
+        if existing is not None:
+            try:
+                manifest = existing.manifest
+                current_mtime = os.path.getmtime(path)
+                if manifest is None or abs(manifest.pdf_mtime - current_mtime) > 1.0:
+                    self._cancel_processor(path)
+                    existing = None
+            except (OSError, AttributeError, TypeError, ValueError):
+                self._cancel_processor(path)
+                existing = None
         old_proc = getattr(self.pdf_viewer, '_processor', None)
-        self.pdf_viewer.set_parse_client(self._llm_parse)
-        self.pdf_viewer.set_translate_client(self._llm_translate)
+        self.pdf_viewer.set_text_client(self._llm_text)
         self.pdf_viewer.load_pdf(path, existing_processor=existing)
         proc = getattr(self.pdf_viewer, '_processor', None)
         if proc is not None:
-            proc.set_llm_client(self._llm_parse)  # 后台处理器也同步最新解析接口
+            proc.set_llm_client(self._llm_text)  # 后台处理器也同步最新纯文本接口
             self._processors[path] = proc
             # viewer.load_pdf 每次都先 detach（断开全部连接）再 attach，
             # 故旧处理器（含同路径重载）的连接已被清除，这里按 id 幂等重连
@@ -523,10 +594,15 @@ class MainWindow(QMainWindow):
 
     # ---- 右键菜单：分开重跑 ----
     def _on_restage1(self, path: str):
-        """重新逐页解析 —— 清除 page_cache 与旧处理器，保留整合结果。"""
-        from .utils.config import delete_page_cache
+        """重新逐页解析 —— 清除页缓存和旧整合结果后重新进入 Stage 1。"""
+        from .utils.config import delete_page_cache, load_doc_state, save_doc_state
         self._cancel_processor(path)
         delete_page_cache(path)
+        state = load_doc_state(path)
+        state.pop("structured_document", None)
+        state.pop("merged_seams", None)
+        state.pop("pdf_mtime", None)
+        save_doc_state(path, state)
         self._begin_pdf_switch(path)
         self._load_pdf_into_viewer(path)
 
@@ -556,6 +632,8 @@ class MainWindow(QMainWindow):
         self._load_pdf_into_viewer(path)
 
     def _on_processor_progress(self, pdf_path: str, current: int, total: int):
+        if self.sender() is not self._processors.get(pdf_path):
+            return
         self.pdf_list.update_pdf_progress(pdf_path, current, total)
 
     def _cancel_llm_worker(self) -> None:
@@ -566,9 +644,15 @@ class MainWindow(QMainWindow):
         self._llm_worker = None
 
     def _on_follow_up_from_reader(self, question: str, image_path: str = ""):
-        if not self._llm_parse:
-            QMessageBox.warning(self, "未配置解析接口", "请先在设置中配置解析接口。")
-            return
+        client = self._llm_vision if image_path else self._llm_text
+        if not client:
+            if image_path and self._llm_text:
+                # 多模态接口未配置：降级为纯文本提问（不带图），仅提示一次
+                client = self._llm_text
+                self.status_bar.showMessage("多模态接口未配置，图表问答已降级为纯文本提问")
+            else:
+                QMessageBox.warning(self, "未配置接口", "请先在设置中配置接口。")
+                return
         if self._llm_worker and self._llm_worker.isRunning():
             self.status_bar.showMessage("已有问题正在回答，请等待当前回答完成")
             return
@@ -576,11 +660,11 @@ class MainWindow(QMainWindow):
         self.chat_panel.add_user_message(question)
         self._context_manager.add_to_history("user", question)
         messages = self._context_manager.build_messages(question)
-        if image_path:
+        if image_path and client is self._llm_vision:
             messages = self._attach_vision_message(messages, question, image_path)
         self.chat_panel.start_ai_response()
         self._cancel_llm_worker()
-        self._llm_worker = LLMWorker(self._llm_parse, messages)
+        self._llm_worker = LLMWorker(client, messages)
         track(self._llm_worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._llm_worker.chunk_received.connect(self._on_ai_chunk)
         self._llm_worker.finished.connect(self._on_ai_finished)
@@ -617,8 +701,8 @@ class MainWindow(QMainWindow):
         return msgs
 
     def _on_user_message(self, text: str):
-        if not self._llm_parse:
-            QMessageBox.warning(self, "未配置解析接口", "请先在设置中配置解析接口。")
+        if not self._llm_text:
+            QMessageBox.warning(self, "未配置纯文本接口", "请先在设置中配置纯文本接口。")
             self.chat_panel.set_input_enabled(False)
             return
         if not self._context_manager.has_pdf:
@@ -635,7 +719,7 @@ class MainWindow(QMainWindow):
         self.chat_panel.start_ai_response()
         self.status_bar.showMessage("AI 正在思考...")
         self._cancel_llm_worker()
-        self._llm_worker = LLMWorker(self._llm_parse, messages)
+        self._llm_worker = LLMWorker(self._llm_text, messages)
         track(self._llm_worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._llm_worker.chunk_received.connect(self._on_ai_chunk)
         self._llm_worker.finished.connect(self._on_ai_finished)
@@ -672,6 +756,7 @@ class MainWindow(QMainWindow):
         self._llm_worker = None
 
     def _on_clear_chat(self):
+        self._cancel_llm_worker()
         self._context_manager.clear_history()
         self.chat_panel.clear_messages()
         self.chat_panel.set_token_count(0)
@@ -688,6 +773,8 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("API 接口设置已更新")
 
     def _open_directory_setting(self, config_key: str) -> bool:
+        if config_key == "data_root" and not self._writing_panel.prepare_storage_switch():
+            return False
         dialog = DirectorySettingDialog(config_key, self)
         if not dialog.exec():
             return False
@@ -696,8 +783,24 @@ class MainWindow(QMainWindow):
             self._init_write()
             self.status_bar.showMessage("Zotero 文献库路径已更新")
         else:
+            self._cancel_llm_worker()
+            for path in list(self._processors):
+                self._cancel_processor(path)
+            self._app_progress_connected.clear()
+            self.pdf_viewer.clear_pdf()
+            self._current_pdf_path = ""
+            self._context_manager.load_pdf_text("")
+            self.chat_panel.clear_messages()
+            self.chat_panel.set_token_count(0)
+            self.chat_panel.set_input_enabled(False)
             self.pdf_list._refresh()
-            self.status_bar.showMessage("缓存文件存储路径已更新")
+            self._writing_panel.reload_storage()
+            workbench_reloaded = self._workbench_panel.reload_storage()
+            self.setWindowTitle("PaperWB · AI 论文研究工作台")
+            if workbench_reloaded:
+                self.status_bar.showMessage("缓存文件存储路径已更新")
+            else:
+                self.status_bar.showMessage("缓存路径已更新，文献巡视任务退出后再刷新工作台")
         return True
 
     def _on_change_zotero_dir(self):
@@ -714,23 +817,16 @@ class MainWindow(QMainWindow):
             "<h3>PaperWB</h3>"
             "<p>AI 论文解读助手 v1.0.0</p>"
             "<p>支持 DeepSeek、Mimo、OpenCode 及所有 OpenAI 兼容接口。</p>"
-             "<p>三套接口：解析、翻译、写作（引文核查+风格分析+文献推荐）</p>"
+             "<p>两套接口：多模态（图表问答）+ 纯文本（论文问答/翻译/写作/文献工作台）</p>"
              "<p>本地版式解析 · 结构化阅读视图 · 知识库驱动写作辅助 · Zotero 引文核查 · PubMed 文献检索</p>"
              "<p>文献工作台：库内跨文献综合问答（BM25 全库索引）+ 定向文献巡视（定时检索 PubMed，自动过滤库内已有）</p>"
         )
 
     def closeEvent(self, event) -> None:
+        if not self._writing_panel.shutdown():
+            event.ignore()
+            return
         self._save_current_chat()
-        # 保存写作编辑器草稿
-        try:
-            coach = self._writing_panel._coach
-            if coach and coach.current_profile:
-                text = self._writing_panel.get_editor_text()
-                if text.strip():
-                    save_draft(coach.current_profile.name, text)
-        except Exception:
-            pass
-        self._writing_panel.shutdown()
         self._workbench_panel.shutdown()
         if self._zotero_watcher is not None:
             self._zotero_watcher.stop()
@@ -764,18 +860,15 @@ class MainWindow(QMainWindow):
                 return LLMClient(cfg["api_key"], cfg["base_url"], cfg["model"])
             return None
 
-        parse_cfg = get_parse_api(self._config)
-        translate_cfg = get_translate_api(self._config)
-        write_cfg = get_write_api(self._config)
+        vision_cfg = get_vision_api(self._config)
+        text_cfg = get_text_api(self._config)
 
-        self._llm_parse = _make_client(parse_cfg)
-        self._llm_translate = _make_client(translate_cfg)
-        self._llm_write = _make_client(write_cfg)
+        self._llm_vision = _make_client(vision_cfg)
+        self._llm_text = _make_client(text_cfg)
 
-        self.pdf_viewer.set_parse_client(self._llm_parse)
-        self.pdf_viewer.set_translate_client(self._llm_translate)
-        self.chat_panel.set_input_enabled(self._llm_parse is not None)
-        self._workbench_panel.set_parse_client(self._llm_parse)
+        self.pdf_viewer.set_text_client(self._llm_text)
+        self.chat_panel.set_input_enabled(self._llm_text is not None)
+        self._workbench_panel.set_text_client(self._llm_text)
 
         def _label(client, prefix):
             if client:
@@ -788,9 +881,8 @@ class MainWindow(QMainWindow):
             label.style().unpolish(label)
             label.style().polish(label)
 
-        _set_chip(self._status_parse_label, self._llm_parse, _label(self._llm_parse, "解析"))
-        _set_chip(self._status_translate_label, self._llm_translate, _label(self._llm_translate, "翻译"))
-        _set_chip(self._status_write_label, self._llm_write, _label(self._llm_write, "写作与引用"))
+        _set_chip(self._status_vision_label, self._llm_vision, _label(self._llm_vision, "多模态"))
+        _set_chip(self._status_text_label, self._llm_text, _label(self._llm_text, "纯文本"))
 
     def _init_write(self, zotero_path: str = "") -> None:
         # 优先使用信号传来的路径，其次重新从磁盘读 config
@@ -817,8 +909,13 @@ class MainWindow(QMainWindow):
                 self, "Zotero 加载失败",
                 f"未能从指定目录加载到文献：\n{zotero_dir}\n\n请检查该目录是否包含 zotero.sqlite 和 storage/ 子目录。"
             )
-        self._writing_panel.set_write_client(self._llm_write)
+        self._writing_panel.set_text_client(self._llm_text)
         self._writing_panel.set_zotero_library(self._zotero)
+        # 写作「文献补充」的检索结果统一推送到文献工作台推荐流
+        if not self._feed_bridge_connected:
+            self._writing_panel.feed_requested.connect(
+                lambda papers, label: self._workbench_panel.add_to_feed(papers, label))
+            self._feed_bridge_connected = True
 
         # 周期同步 watcher
         self._zotero_watcher = ZoteroWatcher(self._zotero, parent=self)

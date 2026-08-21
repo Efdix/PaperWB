@@ -24,8 +24,8 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QScrollArea, QSpinBox, QSplitter, QTextEdit, QVBoxLayout,
-    QWidget,
+    QPushButton, QScrollArea, QSpinBox, QSplitter, QTabWidget, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 
 from ..core.library_qa import LibraryQAEngine
@@ -465,7 +465,7 @@ class WorkbenchPanel(QWidget):
         super().__init__(parent)
         self.setObjectName("workbenchPanel")
         self._library: "ZoteroLibrary | None" = None
-        self._parse_client: "LLMClient | None" = None
+        self._text_client: "LLMClient | None" = None
         self._engine = LibraryQAEngine()
         self._engine_ready = False
         self._items_snapshot: list = []
@@ -473,6 +473,7 @@ class WorkbenchPanel(QWidget):
 
         self._qa_worker: LibraryQAWorker | None = None
         self._index_worker: IndexBuildWorker | None = None
+        self._ai_worker: "PaperSearchWorker | None" = None
         self._qa_busy = False
         self._qa_history: list[dict] = []
         self._current_ai_bubble: ChatBubble | None = None
@@ -484,6 +485,7 @@ class WorkbenchPanel(QWidget):
         self._manager.topics_changed.connect(self._render_topics)
         self._manager.topic_running.connect(self._on_topic_running)
         self._manager.results_ready.connect(self._on_scout_results)
+        self._ai_searcher = None  # 测试可注入假多源检索器
 
         self._setup_ui()
         self._manager.status_msg.connect(self._feed_status.setText)
@@ -494,20 +496,70 @@ class WorkbenchPanel(QWidget):
     # ================= UI 构建 =================
 
     def _setup_ui(self) -> None:
+        header = QFrame()
+        header.setObjectName("workspaceHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(16, 10, 16, 10)
+        header_layout.setSpacing(8)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(1)
+        eyebrow = QLabel("文献发现与综合")
+        eyebrow.setObjectName("eyebrowLabel")
+        title_box.addWidget(eyebrow)
+        title = QLabel("文献工作台")
+        title.setObjectName("titleLabel")
+        title_box.addWidget(title)
+        header_layout.addLayout(title_box)
+        subtitle = QLabel("跨文献问答、AI 检索与定向巡视集中在同一工作区")
+        subtitle.setObjectName("subtitleLabel")
+        header_layout.addWidget(subtitle)
+        header_layout.addStretch()
+
+        self._topic_toggle = QPushButton("检索方向")
+        self._topic_toggle.setObjectName("paneToggle")
+        self._topic_toggle.setCheckable(True)
+        self._topic_toggle.setChecked(True)
+        header_layout.addWidget(self._topic_toggle)
+        self._feed_toggle = QPushButton("推荐流")
+        self._feed_toggle.setObjectName("paneToggle")
+        self._feed_toggle.setCheckable(True)
+        self._feed_toggle.setChecked(True)
+        header_layout.addWidget(self._feed_toggle)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(3)
         splitter.setOpaqueResize(False)
-        splitter.addWidget(self._build_topic_panel())
-        splitter.addWidget(self._build_qa_panel())
-        splitter.addWidget(self._build_feed_panel())
+        self._topic_panel = self._build_topic_panel()
+        splitter.addWidget(self._topic_panel)
+
+        center = QWidget()
+        center_layout = QVBoxLayout(center)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        self._center_tabs = QTabWidget()
+        self._center_tabs.setDocumentMode(True)
+        self._center_tabs.addTab(self._build_qa_panel(), "库内问答")
+        self._center_tabs.addTab(self._build_ai_search_panel(), "AI 检索")
+        center_layout.addWidget(self._center_tabs)
+        splitter.addWidget(center)
+
+        self._feed_panel = self._build_feed_panel()
+        splitter.addWidget(self._feed_panel)
         splitter.setSizes([280, 640, 400])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
+        splitter.setCollapsible(0, True)
+        splitter.setCollapsible(1, False)
+        splitter.setCollapsible(2, True)
+        self._workbench_splitter = splitter
+        self._topic_toggle.toggled.connect(self._set_topic_visible)
+        self._feed_toggle.toggled.connect(self._set_feed_visible)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(splitter)
+        layout.setSpacing(10)
+        layout.addWidget(header)
+        layout.addWidget(splitter, 1)
 
     def _build_topic_panel(self) -> QFrame:
         panel = QFrame()
@@ -629,6 +681,83 @@ class WorkbenchPanel(QWidget):
         v.addWidget(input_frame)
         return panel
 
+    def _build_ai_search_panel(self) -> QFrame:
+        """AI 检索页签：自然语言描述需求 → 自动生成检索式 → 多源检索。"""
+        panel = QFrame()
+        panel.setObjectName("aiSearchPanel")
+        panel.setMinimumWidth(360)
+        v = QVBoxLayout(panel)
+        v.setContentsMargins(16, 14, 14, 12)
+        v.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(1)
+        title = QLabel("AI 检索")
+        title.setObjectName("titleLabel")
+        title_box.addWidget(title)
+        subtitle = QLabel("自然语言描述需求，自动检索 PubMed + arXiv 并滤除库内已有")
+        subtitle.setObjectName("subtitleLabel")
+        subtitle.setWordWrap(True)
+        title_box.addWidget(subtitle)
+        header.addLayout(title_box)
+        header.addStretch()
+        v.addLayout(header)
+
+        self._ai_input = QTextEdit()
+        self._ai_input.setPlaceholderText(
+            "描述你想找的文献，例如：\n"
+            "· 近三年鸟类羽色发育中黑色素细胞分化的单细胞研究\n"
+            "· 2024 年以来关于羽毛图案形成的机制综述\n\n"
+            "按 Ctrl+Enter 检索")
+        self._ai_input.setMaximumHeight(110)
+        self._ai_input.setMinimumHeight(56)
+        self._ai_input.installEventFilter(self)
+        v.addWidget(self._ai_input)
+
+        ctrl = QHBoxLayout()
+        ctrl.setSpacing(8)
+        ctrl.addStretch()
+        self._ai_search_btn = QPushButton("开始检索 ✈")
+        self._ai_search_btn.setObjectName("primaryBtn")
+        self._ai_search_btn.setEnabled(False)
+        self._ai_search_btn.clicked.connect(self._on_ai_search)
+        ctrl.addWidget(self._ai_search_btn)
+        v.addLayout(ctrl)
+
+        self._ai_log = QLabel("")
+        self._ai_log.setObjectName("subtitleLabel")
+        self._ai_log.setWordWrap(True)
+        self._ai_log.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        v.addWidget(self._ai_log)
+
+        self._ai_scroll = QScrollArea()
+        self._ai_scroll.setWidgetResizable(True)
+        host = QWidget()
+        self._ai_results_layout = QVBoxLayout(host)
+        self._ai_results_layout.setContentsMargins(0, 4, 2, 0)
+        self._ai_results_layout.setSpacing(8)
+        self._ai_results_layout.addStretch()
+        self._ai_scroll.setWidget(host)
+        v.addWidget(self._ai_scroll, 1)
+
+        return panel
+
+    def _set_topic_visible(self, visible: bool) -> None:
+        self._topic_panel.setVisible(bool(visible))
+        if visible:
+            self._workbench_splitter.setSizes([280, max(420, self.width() - 700), 360])
+        else:
+            self._workbench_splitter.setSizes([0, max(600, self.width() - 390), 360])
+
+    def _set_feed_visible(self, visible: bool) -> None:
+        self._feed_panel.setVisible(bool(visible))
+        if visible:
+            self._workbench_splitter.setSizes([280, max(420, self.width() - 700), 360])
+        else:
+            self._workbench_splitter.setSizes([280, max(600, self.width() - 330), 0])
+
     def _build_feed_panel(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("feedPanel")
@@ -676,10 +805,15 @@ class WorkbenchPanel(QWidget):
 
     # ================= 依赖注入 =================
 
-    def set_parse_client(self, client: "LLMClient | None") -> None:
-        self._parse_client = client
+    def set_text_client(self, client: "LLMClient | None") -> None:
+        self._text_client = client
         self._manager.set_llm_client(client)
         self._apply_ask_state()
+        self._ai_search_btn.setEnabled(client is not None)
+
+    def set_ai_searcher(self, searcher) -> None:
+        """注入自定义多源检索器（测试用；None = 运行时默认）。"""
+        self._ai_searcher = searcher
 
     def set_zotero_library(self, library: "ZoteroLibrary | None") -> None:
         self._library = library
@@ -701,17 +835,43 @@ class WorkbenchPanel(QWidget):
         """Zotero 周期同步发现变化后：重建比对池 + 增量刷新索引。"""
         self.set_zotero_library(self._library)
 
+    def reload_storage(self) -> bool:
+        """数据根目录切换后重新绑定索引、巡视和推荐流。"""
+        for attr in ("_index_worker", "_qa_worker", "_ai_worker"):
+            worker = getattr(self, attr)
+            if worker is not None and worker.isRunning():
+                worker.requestInterruption()
+                if not worker.wait(3_000):
+                    self._feed_status.setText("已有文献任务正在退出，稍后再切换数据目录")
+                    return False
+            setattr(self, attr, None)
+        self._qa_busy = False
+        if not self._manager.reload_storage():
+            self._feed_status.setText("已有巡视任务正在退出，稍后再切换数据目录")
+            return False
+        self._engine = LibraryQAEngine()
+        self._engine_ready = False
+        self._on_clear_chat()
+        self._render_topics()
+        self._render_feed()
+        if self._library is not None:
+            self._manager.set_match_pool(self._build_pool())
+            self._manager.start()
+            self._start_index_build()
+        return True
+
     def shutdown(self) -> None:
         """停止巡视定时器并请求中断后台线程（关窗时调用）。"""
         self._manager.shutdown()
-        for w in (self._index_worker, self._qa_worker):
+        for w in (self._index_worker, self._qa_worker, self._ai_worker):
             if w is not None and w.isRunning():
                 w.requestInterruption()
 
     def has_busy_workers(self) -> bool:
         qa = self._qa_worker is not None and self._qa_worker.isRunning()
         idx = self._index_worker is not None and self._index_worker.isRunning()
-        return qa or idx or self._manager.has_busy_workers()
+        ai = self._ai_worker is not None and self._ai_worker.isRunning()
+        return qa or idx or ai or self._manager.has_busy_workers()
 
     # ================= 库快照工具 =================
 
@@ -822,15 +982,21 @@ class WorkbenchPanel(QWidget):
     # ================= 库内问答 =================
 
     def _apply_ask_state(self) -> None:
-        base = self._parse_client is not None and self._engine_ready
+        base = self._text_client is not None and self._engine_ready
         self._ask_input.setEnabled(base)
         self._ask_btn.setEnabled(base and not self._qa_busy)
 
     def eventFilter(self, obj, event) -> bool:
-        if obj == self._ask_input and event.type() == QEvent.Type.KeyPress:
+        # 构建顺序问题：eventFilter 可能在 _ai_input 创建前被调用，用 getattr 守卫
+        if (obj is getattr(self, "_ask_input", None)
+                or obj is getattr(self, "_ai_input", None)) \
+                and event.type() == QEvent.Type.KeyPress:
             if (event.key() == Qt.Key.Key_Return
                     and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-                self._on_ask()
+                if obj is getattr(self, "_ai_input", None):
+                    self._on_ai_search()
+                else:
+                    self._on_ask()
                 return True
         return super().eventFilter(obj, event)
 
@@ -867,7 +1033,7 @@ class WorkbenchPanel(QWidget):
         text = self._ask_input.toPlainText().strip()
         if not text:
             return
-        if self._parse_client is None:
+        if self._text_client is None:
             QMessageBox.warning(self, "未配置解析接口",
                                 "请先在「设置 → API 接口设置」中配置解析接口。")
             return
@@ -888,7 +1054,7 @@ class WorkbenchPanel(QWidget):
         self._current_ai_bubble = ai_bubble
 
         worker = LibraryQAWorker(
-            self._parse_client, self._engine, text,
+            self._text_client, self._engine, text,
             metadata_only=self._lib_only_cb.isChecked(),
             history=list(self._qa_history[:-1]))
         track(worker)
@@ -1039,7 +1205,90 @@ class WorkbenchPanel(QWidget):
                + urllib.parse.quote(term))
         QDesktopServices.openUrl(QUrl(url))
 
+    # ================= AI 检索 =================
+
+    def _on_ai_search(self) -> None:
+        if self._ai_worker is not None and self._ai_worker.isRunning():
+            return
+        text = self._ai_input.toPlainText().strip()
+        if not text:
+            return
+        if self._text_client is None:
+            QMessageBox.warning(self, "未配置纯文本接口",
+                                "请先在「设置 → API 接口设置」中配置纯文本接口。")
+            return
+
+        self._ai_search_btn.setEnabled(False)
+        self._ai_search_btn.setText("检索中...")
+        self._ai_log.setText("正在生成检索方案...")
+
+        from ..core.literature_search import PaperSearchWorker
+        worker = PaperSearchWorker(
+            text, client=self._text_client, pool=self._build_pool(), limit=10,
+            searcher=self._ai_searcher)
+        track(worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
+        self._ai_worker = worker
+        worker.log.connect(self._on_ai_log)
+        worker.results_ready.connect(self._on_ai_results)
+        worker.error.connect(self._on_ai_error)
+        worker.done.connect(self._on_ai_done)
+        worker.start()
+
+    def _on_ai_log(self, msg: str) -> None:
+        self._ai_log.setText(msg)
+
+    def _on_ai_results(self, papers: list) -> None:
+        if self.sender() is not self._ai_worker:
+            return
+        self._clear_ai_results()
+        if not papers:
+            empty = QLabel("未检索到符合条件的文献，可换一种描述再试。")
+            empty.setObjectName("subtitleLabel")
+            empty.setWordWrap(True)
+            empty.setStyleSheet(
+                "color: #718180; background-color: #f5f8f6; "
+                "border: 1px solid #e1ebe7; border-radius: 12px; padding: 14px;")
+            self._ai_results_layout.insertWidget(
+                self._ai_results_layout.count() - 1, empty)
+            return
+        for p in papers:
+            entry = {
+                "id": f"{p.get('pmid') or p.get('arxiv_id') or p.get('doi') or ''}@AI检索",
+                "topic": "AI 检索",
+                "added_at": datetime.now().isoformat(timespec="seconds"),
+                "paper": p,
+            }
+            card = ScoutCard(entry)
+            card.ignore_requested.connect(self._on_ignore_feed)
+            self._ai_results_layout.insertWidget(
+                self._ai_results_layout.count() - 1, card)
+
+    def _on_ai_error(self, err: str) -> None:
+        if self.sender() is not self._ai_worker:
+            return
+        self._ai_log.setText(f"检索失败：{err}")
+
+    def _on_ai_done(self) -> None:
+        if self.sender() is not self._ai_worker:
+            return
+        self._ai_worker = None
+        self._ai_search_btn.setEnabled(self._text_client is not None)
+        self._ai_search_btn.setText("开始检索 ✈")
+
+    def _clear_ai_results(self) -> None:
+        while self._ai_results_layout.count() > 1:  # 保留末尾 stretch
+            item = self._ai_results_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.hide()
+                w.setParent(None)
+                w.deleteLater()
+
     # ================= 推荐流 =================
+
+    def add_to_feed(self, papers: list[dict], label: str) -> int:
+        """把任意检索结果推入推荐流（文献补充对话框等外部调用）。"""
+        return self._manager.push_to_feed(papers, label)
 
     def _render_feed(self) -> None:
         while self._feed_layout.count() > 1:  # 保留末尾 stretch

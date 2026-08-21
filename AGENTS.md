@@ -5,7 +5,7 @@
 - Python 环境: `D:\science\miniforge3\envs\PaperWB`（conda env，Python 3.11）
 - 所有 Python 命令前需激活: `conda activate PaperWB`
 - 包管理: pip + `requirements.txt`
-- 依赖（requirements.txt）: `PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3` `docling==2.118.0` `rank_bm25==0.2.2` `hf_transfer==0.1.9`
+- 依赖（requirements.txt）: `PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3` `docling==2.118.0` `rank_bm25==0.2.2` `hf_transfer==0.1.9` `python-docx==1.2.0` `Pillow==12.3.0`
 - 构建：`PyInstaller`（已装入该环境）+ Inno Setup 6（系统级，`winget install -e --id JRSoftware.InnoSetup`）
 
 ## 项目入口
@@ -22,16 +22,17 @@ main.py                    # 入口: QApplication + MainWindow（自动 UTF-8 �
 requirements.txt
 PaperWB.spec               # PyInstaller onedir 打包配置（图标 assets/PaperWB.ico）
 LICENSE                    # MIT
+PaperWB.jpg               # 应用图标源图（make_icon.py 自动裁切图形主体）
 assets/                    # 应用图标（installer/make_icon.py 生成，exe/安装向导/窗口共用）
 installer/                 # 安装向导构建
 ├── PaperWB.iss            # Inno Setup 脚本: 许可/组件(可选预置模型)/目录/完成页自检/卸载询问配置清理
 ├── build_installer.ps1    # 一条龙: 补装 PyInstaller → pyinstaller → 模型 staging → dist selftest 验收门 → ISCC 出包
 ├── stage_models.py        # Docling 模型 staging: 本机 HF 缓存 → installer/models_cache/hub（约 505 MB）
-├── make_icon.py           # 生成 assets/PaperWB.ico
+├── make_icon.py           # 从项目根目录 PaperWB.jpg 生成 assets/PaperWB.ico/png
 ├── lang/ChineseSimplified.isl  # 向导简体中文语言文件（官方非官方翻译库）
 └── Output/                # 产物 PaperWB-Setup-<版本>.exe（gitignore）
 src/
-├── app.py                 # MainWindow — 首次启动弹窗(FirstLaunchDialog) + 信号枢纽 + 三套 LLMClient + Zotero watcher + 三工作台切换(阅读/写作/文献)
+├── app.py                 # MainWindow — 首次启动弹窗(FirstLaunchDialog) + 信号枢纽 + 多模态/纯文本 LLMClient + Zotero watcher + 三工作台切换(阅读/写作/文献)
 ├── core/
 │   ├── pdf_parser.py      # PDF 底层工具（PyMuPDF）: 文本提取/渲染
 │   ├── pdf_processor.py   # 核心！两阶段管线:
@@ -44,23 +45,24 @@ src/
 │   ├── zotero_parser.py   # Zotero SQLite 解析器: 集合层级/文献(含摘要 abstractNote)/附件 + reload()（临时副本只读，支持指定路径不全局探测）
 │   ├── zotero_watcher.py  # Zotero 周期同步: 启动加载后每 30 分钟自动重载（不做文件事件监听）+ 手动刷新
 │   ├── library_qa.py      # 文献工作台·库内 RAG: 元数据轻索引 + PDF 全文索引(条目 key 缓存/mtime 失效/增量刷新) + 混合检索 + LLM 消息组装
-│   ├── literature_scout.py # 文献工作台·定向巡视: 方向 CRUD(topics.json) + 每方向 QTimer 定时 PubMed 检索 + 库内比对滤重(seen.json) + feed.json/RIS/CSV
+│   ├── literature_search.py # 统一文献检索核心: PaperRecord 统一模型 + ArxivSearcher + MultiSourceSearcher(跨源去重) + LLM 检索式生成 + PaperSearchWorker/run_paper_search（巡视/文献补充/AI 检索三处共用）
+│   ├── literature_scout.py # 文献工作台·定向巡视: 方向 CRUD(topics.json) + 每方向 QTimer 定时多源检索 + 库内比对滤重(seen.json) + feed.json/RIS/CSV + push_to_feed 外部推送
 │   ├── reference_match.py # 文献匹配公共口径: DOI/标题归一化 + 库内查重 + 可选 LLM 批量模糊比对（写作文献补充与巡视共用）
 │   ├── unified_writer.py  # 统一润色+引文核查: 证据检索化(按声明检索相关段落) + json_mode + 多层容错 JSON
 │   ├── writing_coach.py   # 写作教练: 知识库管理/写作习惯分析/期刊格式分析/引用密度分析
 │   ├── writing_prompts.py # 四种写作类型的系统提示词（综述/论文/专利/软著）
-│   └── pubmed_searcher.py # PubMed E-utilities 检索客户端（esearch + efetch）
+│   └── pubmed_searcher.py # PubMed E-utilities 检索客户端（esearch + efetch）；PubMedPaper 统一文献模型(含 source/arxiv_id)
 ├── ui/
 │   ├── pdf_viewer.py      # 结构化阅读面板: ParagraphCard 按 element_type 渲染+中英文翻译(标题/摘要/正文/关键词/图表注可译, 多并发+滚动自动翻译)+文字区 I 形光标；Stage1 完成后自动跨页整合
 │   ├── pdf_list_panel.py  # 左侧面板: Tab1 Zotero 只读文献库 + Tab2 其它文献
 │   ├── zotero_panel.py    # Zotero 树形视图: 集合树+文献+PDF附件标记，周期同步/手动刷新驱动刷新
 │   ├── chat_panel.py      # 聊天面板: Markdown 气泡/流式渲染
-│   ├── workbench_panel.py # 文献工作台(三栏): 左·检索方向卡片+定时巡视 / 中·库内问答(流式+[n]角标+参考文献跳转阅读) / 右·文献推荐流(卡片+忽略/RIS/CSV)
-│   ├── writing_panel.py   # 写作面板: 编辑器+知识库管理+Zotero+AI辅助(润色/仅核查/文献补充)+自动保存+字数统计
+│   ├── workbench_panel.py # 文献工作台(三栏): 左·检索方向卡片+定时巡视 / 中·库内问答(流式+[n]角标+参考文献跳转阅读)+AI 检索页签(自然语言→多源) / 右·文献推荐流(卡片+忽略/RIS/CSV)
+│   ├── writing_panel.py   # 写作面板: 编辑器优先+可收起工具检查器(知识库/Zotero/批注/AI)+自动保存+字数统计
 │   ├── diff_dialog.py     # 润色对比对话框: 内联 diff(单编辑框)+导航栏(上一处/下一处/接受/拒绝)+AI 对话+引用高亮
-│   ├── lit_search_dialog.py # 文献补充对话框: LLM 双轨推荐(已知文献+搜索词)→PubMed 检索→导出 CSV（非模态）
-│   ├── settings_dialog.py # 设置对话框: API接口设置(解析/翻译/写作)+连接测试（Zotero/缓存路径在独立 DirectorySettingDialog，与 API 设置平级菜单）
-│   └── styles.py          # 暖白研究工作台主题 QSS
+│   ├── lit_search_dialog.py # 文献补充对话框: LLM 双轨推荐(已知文献+搜索词)→多源检索(带来源标注)→导出 CSV/加入推荐流（非模态）
+│   ├── settings_dialog.py # 设置对话框: API接口设置(多模态/纯文本)+连接测试（Zotero/缓存路径在独立 DirectorySettingDialog，与 API 设置平级菜单）
+│   └── styles.py          # 轻量浅灰/白色研究工作台主题 QSS
 └── utils/
     ├── config.py          # 持久化层: 配置(含多接口/数据根目录/Zotero)+图书馆+聊天+缓存+草稿+润色历史+lib_index/scout 目录
     ├── layout.py          # 递归布局高度计算（heightForWidth）
@@ -86,11 +88,10 @@ src/
 - 长文档问答走 BM25 检索增强（`context_manager` + `retriever`），只发相关段落而非全量截断
 - 列表已整合文献以浅绿背景标记
 
-### 三套独立 API
+### 两套独立 API
 
-- **解析** (`parse_api`): 论文问答（长文档 BM25 检索增强）+ 图表内容问答（图问答把渲染图 base64 附加为多模态消息，见 `MainWindow._attach_vision_message`）+ **文献工作台库内问答与巡视二级比对**；逐页解析与跨页段落整合由本地完成，不耗 LLM
-- **翻译** (`translate_api`): 段落中英对照翻译（可用便宜/免费模型）
-- **写作** (`write_api`): 引文核查 + 风格分析 + 润色 + 文献推荐（需强推理模型）
+- **多模态**: 图表内容问答（图问答把渲染图 base64 附加为多模态消息，见 `MainWindow._attach_vision_message`）；逐页解析与跨页段落整合由本地完成，不耗 LLM
+- **纯文本**: 论文问答（长文档 BM25 检索增强）、段落翻译、写作引文核查/风格分析/润色/文献推荐，以及文献工作台库内问答与巡视二级比对
 
 ### 文献工作台（第三工作台：库内跨文献问答 + 定向巡视）
 
@@ -105,17 +106,26 @@ src/
 
 **定向巡视（literature_scout.py）**：
 - 方向（Topic）持久化到 `{data_root}/.paperwb/scout/topics.json`：{name, keywords(英文检索式), collection_key(可选限定集合), interval_hours, limit, enabled, use_llm_match}
-- 每个启用方向独立 QTimer（不做文件监听），到点 `ScoutWorker` 后台检索 PubMed；启动 20 秒后补跑到期方向；卡片「立即巡视」手动触发
+- 每个启用方向独立 QTimer（不做文件监听），到点 `ScoutWorker` 后台多源检索；启动 20 秒后补跑到期方向；卡片「立即巡视」手动触发
 - 滤重两级：本地零成本（规范化 DOI + 标题归一精确匹配，`reference_match.py`，与写作文献补充共用口径）→ 可选 LLM 批量模糊比对（应对 DOI 缺失/标题改写，json_mode）
-- 已推送 PMID 存 `seen.json` 不重复推送；推荐流存 `feed.json`（最近 200 条，跨启动保留）
+- 已推送标识（pmid/arxiv_id/doi 统一口径）存 `seen.json` 不重复推送；推荐流存 `feed.json`（最近 200 条，跨启动保留）
 - 结果落地三条路（Zotero 只读不能直写）：导出 RIS（Zotero 可导入）/ 导出 CSV / 复制引文 / 「🔍」生成检索式打开 PubMed 网页
+
+### 统一文献检索核心（literature_search.py）
+
+- **数据模型统一**：`PubMedPaper`（pubmed_searcher.py）新增 `source`（pubmed/arxiv）与 `arxiv_id` 字段，全项目文献记录共用此模型
+- **多源检索**：`MultiSourceSearcher` 按检索方案（plan: [{source, query}]）路由 PubMed（E-utilities）+ arXiv（Atom API），跨源按 DOI/标题归一合并去重（`merge_papers`），年份降序
+- **检索式生成**：`generate_search_plan` 让 LLM 把自然语言需求拆解为多源检索式（json_mode，每源 ≤4 条）；无 LLM/失败自动降级为原文直接检索
+- **统一后台任务**：`PaperSearchWorker(QThread)`（LLM 生成式 → 多源检索 → 库内过滤，log/results/error/done 信号）与纯函数 `run_paper_search`（供同步调用复用）
+- **三个调用点全部接入**：① 定时巡视 ScoutWorker（关键词自动 PubMed+arXiv 双源并行）；② 写作「文献补充」对话框（结果带 [PubMed]/[arXiv] 来源标注，新增「加入推荐流」）；③ 文献工作台「AI 检索」页签（自然语言描述 → 自动检索）
+- **推荐流统一归口**：`ScoutManager.push_to_feed(papers, label)` 供外部推送（文献补充/主动检索），按统一标识去重；写作面板 `feed_requested` 信号 → MainWindow → 文献工作台 `add_to_feed`
 
 ### 写作系统
 
 - **WritingCoach**: 知识库(CRUD)→风格分析(六维度+引用密度)→AI辅助(润色/核查/文献补充)
 - **UnifiedWriter**: 统一润色+引文核查，支持常规模式和仅核查模式(verify_only)；引文证据按声明检索相关段落，不再整篇塞全文
 - **DiffDialog**: 内联 diff 展示 + 导航工具栏 + 逐项接受/拒绝 + 可编辑 diff + AI 对话（非模态）
-- **LitSearchDialog**: 双轨文献推荐——LLM 已知文献 + PubMed 检索词（非模态）
+- **LitSearchDialog**: 双轨文献推荐——LLM 已知文献 + 多源检索词（非模态），结果可推入推荐流
 - 支持 4 种写作类型: 综述/研究型论文/专利/软著
 - 编辑器自动保存（每30秒）到 `{data_root}/.paperwb/drafts/`
 - 润色历史保存（最近20条）到 `{data_root}/.paperwb/polish_history/`

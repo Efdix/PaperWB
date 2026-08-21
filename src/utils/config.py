@@ -62,26 +62,19 @@ def _default_data_root() -> Path:
 # ---- 默认配置 ----
 
 DEFAULT_CONFIG: dict = {
-    "parse_api": {
-        "provider": "DeepSeek",
+    "vision_api": {
+        "provider": "GLM（智谱）",
         "api_key": "",
-        "base_url": "https://api.deepseek.com",
-        "model": "deepseek-v4-flash",
-        "description": "解析接口 — 用于跨页段落整合和论文问答（含图片解读）；逐页版式解析由本地模型完成",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-4.6v-flash",
+        "description": "多模态接口 — 仅用于图表问答（图片+文字）；建议使用视觉模型",
     },
-    "translate_api": {
+    "text_api": {
         "provider": "DeepSeek",
         "api_key": "",
         "base_url": "https://api.deepseek.com",
         "model": "deepseek-v4-flash",
-        "description": "翻译接口 — 用于段落中英对照翻译（可用便宜快速的模型）",
-    },
-    "write_api": {
-        "provider": "DeepSeek",
-        "api_key": "",
-        "base_url": "https://api.deepseek.com",
-        "model": "deepseek-v4-flash",
-        "description": "写作 API — 用于综述引文核查、综述优化（需强推理能力）",
+        "description": "纯文本接口 — 论文问答、翻译、写作、文献检索、跨页整合共用",
     },
     "max_tokens": 1_000_000,
     "data_root": "",          # 空字符串 = 未设置，需首次启动弹窗
@@ -241,6 +234,28 @@ def load_config() -> dict:
     if "translate_api" not in saved and "parse_api" in saved:
         saved["translate_api"] = dict(saved["parse_api"])
 
+    # ---- 三套旧接口 → 两套新接口（多模态 + 纯文本）----
+    if "text_api" not in saved:
+        # 纯文本接口优先继承写作接口（写作对模型要求最高），其次翻译，最后解析
+        for old_key in ("write_api", "translate_api", "parse_api"):
+            if old_key in saved:
+                saved["text_api"] = dict(saved[old_key])
+                break
+    if "vision_api" not in saved:
+        # 多模态接口继承解析接口；但解析模型非视觉模型时置空（图问答自动降级为纯文本提问）
+        parse_cfg = saved.get("parse_api")
+        if parse_cfg and _is_vision_model(parse_cfg.get("model", "")):
+            saved["vision_api"] = dict(parse_cfg)
+        else:
+            saved["vision_api"] = dict(DEFAULT_CONFIG["vision_api"])
+            saved["vision_api"]["api_key"] = ""
+            saved["vision_api"]["base_url"] = ""
+            saved["vision_api"]["model"] = ""
+
+    # 旧三键不再使用
+    for legacy_key in ("parse_api", "translate_api", "write_api"):
+        saved.pop(legacy_key, None)
+
     config.update(saved)
     # 旧版本的 Stage 1 引擎/并发选项已移除，统一固定为本地版式解析。
     for legacy_key in ("stage1_mode", "stage1_concurrency", "stage1_parser"):
@@ -290,16 +305,18 @@ def has_data_root() -> bool:
     return bool(config.get("data_root", ""))
 
 
-def get_parse_api(config: dict) -> dict:
-    return config.get("parse_api", DEFAULT_CONFIG["parse_api"])
+def get_vision_api(config: dict) -> dict:
+    return config.get("vision_api", DEFAULT_CONFIG["vision_api"])
 
 
-def get_translate_api(config: dict) -> dict:
-    return config.get("translate_api", DEFAULT_CONFIG["translate_api"])
+def get_text_api(config: dict) -> dict:
+    return config.get("text_api", DEFAULT_CONFIG["text_api"])
 
 
-def get_write_api(config: dict) -> dict:
-    return config.get("write_api", DEFAULT_CONFIG["write_api"])
+def _is_vision_model(model: str) -> bool:
+    """判断模型名是否属于已知视觉模型（用于旧配置迁移时决定多模态接口是否可用）。"""
+    from ..core.llm_client import VISION_MODELS
+    return model.strip().lower() in VISION_MODELS
 
 
 # ========== PDF 图书馆 ==========
@@ -349,7 +366,8 @@ def load_chat_history(file_path: str) -> list[dict]:
     f = get_chats_dir() / f"{_doc_id(file_path)}.json"
     if f.exists():
         try:
-            return json.loads(f.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8"))
+            return data if isinstance(data, list) else []
         except (json.JSONDecodeError, OSError):
             pass
     return []
@@ -372,7 +390,8 @@ def load_doc_state(file_path: str) -> dict:
     f = get_states_dir() / f"{_doc_id(file_path)}.json"
     if f.exists():
         try:
-            return json.loads(f.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
         except (json.JSONDecodeError, OSError):
             pass
     return {}

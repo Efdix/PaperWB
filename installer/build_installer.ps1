@@ -53,6 +53,14 @@ try {
         if ($LASTEXITCODE -ne 0) { Die "pip install pyinstaller failed" }
     }
 
+    # ---------- 0.5. application icon ----------
+    Step "Generate application icon from PaperWB.jpg"
+    & $PythonExe installer\make_icon.py
+    if ($LASTEXITCODE -ne 0) { Die "icon generation failed" }
+    if (-not (Test-Path "assets\PaperWB.ico")) {
+        Die "assets\PaperWB.ico missing after icon generation"
+    }
+
     # ---------- 1. pyinstaller build ----------
     if (-not $SkipBuild) {
         Step "PyInstaller build (onedir, 15-40 min for torch-sized app)"

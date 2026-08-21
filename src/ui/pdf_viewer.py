@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QPushButton,
-    QLabel, QFrame, QFileDialog, QProgressBar, QLineEdit,
+    QLabel, QFrame, QProgressBar, QLineEdit,
     QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal, QThread, QSize, QPoint, QTimer
@@ -187,14 +187,14 @@ class ParagraphCard(QFrame):
             self._setup_body_card()
         self._sync_card_height(640)
 
-    def _make_card_base(self, bg: str = "#fffdfa", border: str = "#e5e1d9"):
+    def _make_card_base(self, bg: str = "#ffffff", border: str = "#e5e5ea"):
         self.setStyleSheet(
             f"ParagraphCard {{ background-color: {bg}; border: 1px solid {border}; "
             f"border-radius: 10px; margin: 4px 8px; }}"
         )
 
     def _setup_title_card(self):
-        self._make_card_base("#fffdfa", "#79b9af")
+        self._make_card_base("#ffffff", "#a8c5ff")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 16)
         layout.setSpacing(8)
@@ -202,7 +202,7 @@ class ParagraphCard(QFrame):
         f.setBold(True)
         self.text_label = QLabel(self._text)
         self.text_label.setFont(f)
-        self.text_label.setStyleSheet("color: #147c7c; letter-spacing: 0.5px;")
+        self.text_label.setStyleSheet("color: #2463c5; letter-spacing: 0.5px;")
         self.text_label.setContentsMargins(0, 4, 0, 4)
         self.text_label.setWordWrap(True)
         self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -233,12 +233,12 @@ class ParagraphCard(QFrame):
 
     def _setup_subtitle_card(self, level: int):
         """普通小节标题。"""
-        self._make_card_base("#fffdfa", "#e1e7e3")
+        self._make_card_base("#ffffff", "#e5e5ea")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 12, 20, 8)
         layout.setSpacing(4)
         sizes = {1: 16, 2: 14, 3: 13}
-        colors = {1: "#147c7c", 2: "#3e8e78", 3: "#718180"}
+        colors = {1: "#2463c5", 2: "#3478f6", 3: "#6e6e73"}
         f = QFont("Microsoft YaHei UI", sizes.get(level, 14))
         f.setBold(True)
         self.text_label = QLabel(self._text)
@@ -314,7 +314,7 @@ class ParagraphCard(QFrame):
         self._append_translation_row(layout)
 
     def _setup_special_card(self, etype: str):
-        self._make_card_base("#fffdfa", "#e5e1d9")
+        self._make_card_base("#ffffff", "#e5e5ea")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 10, 20, 10)
         layout.setSpacing(6)
@@ -742,13 +742,15 @@ class PDFViewerPanel(QWidget):
     pdf_loaded = Signal(str)
     pdf_path_changed = Signal(str)
     follow_up_question = Signal(str, str)  # (question, image_path 或 "")
+    structured_document_updated = Signal(str)
+    toggle_library_requested = Signal(bool)
+    toggle_chat_requested = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("readerPanel")
         self._current_path: str = ""
-        self._parse_client: LLMClient | None = None
-        self._translate_client: LLMClient | None = None
+        self._text_client: LLMClient | None = None
         self._processor: PDFProcessor | None = None
         self._structured_doc: StructuredDocument | None = None
         self._cards: list[ParagraphCard | ImageCard] = []
@@ -763,16 +765,14 @@ class PDFViewerPanel(QWidget):
         self._stage2_start_time: float = 0.0
         self._setup_ui()
 
-    def set_parse_client(self, client: "LLMClient | None"):
-        self._parse_client = client
+    def set_text_client(self, client: "LLMClient | None"):
+        """设置纯文本接口客户端（跨页接缝合并与段落翻译共用）。"""
+        self._text_client = client
         # 兼容旧状态：如果此前等待过整合，配置变更后继续触发。
         if (self._pending_integrate and self._stage1_complete
                 and self._current_path and self._structured_doc is None
                 ):
             self._auto_start_stage2()
-
-    def set_translate_client(self, client: "LLMClient | None"):
-        self._translate_client = client
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -784,6 +784,21 @@ class PDFViewerPanel(QWidget):
         title = QLabel("结构化阅读")
         title.setObjectName("titleLabel")
         toolbar.addWidget(title)
+        self._library_toggle_btn = QPushButton("文献列表")
+        self._library_toggle_btn.setObjectName("paneToggle")
+        self._library_toggle_btn.setCheckable(True)
+        self._library_toggle_btn.setChecked(True)
+        self._library_toggle_btn.setToolTip("显示或隐藏左侧文献列表")
+        self._library_toggle_btn.toggled.connect(self.toggle_library_requested.emit)
+        toolbar.addWidget(self._library_toggle_btn)
+
+        self._chat_toggle_btn = QPushButton("论文问答")
+        self._chat_toggle_btn.setObjectName("paneToggle")
+        self._chat_toggle_btn.setCheckable(True)
+        self._chat_toggle_btn.setChecked(True)
+        self._chat_toggle_btn.setToolTip("显示或隐藏右侧论文问答")
+        self._chat_toggle_btn.toggled.connect(self.toggle_chat_requested.emit)
+        toolbar.addWidget(self._chat_toggle_btn)
         toolbar.addStretch()
 
         self.auto_trans_btn = QPushButton("自动翻译：关")
@@ -839,11 +854,6 @@ class PDFViewerPanel(QWidget):
 
     def get_current_path(self) -> str:
         return self._current_path
-
-    def _open_pdf(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择 PDF", "", "PDF (*.pdf);;All (*.*)")
-        if path:
-            self.load_pdf(path)
 
     def load_pdf(self, file_path: str, existing_processor: "PDFProcessor | None" = None):
         """加载 PDF —— 检查缓存 → Stage1 → Stage2。
@@ -909,7 +919,7 @@ class PDFViewerPanel(QWidget):
                 # 后台任务复用：仅接管信号，不重复创建处理器
                 self._processor = existing_processor
             else:
-                self._processor = PDFProcessor(file_path, self._parse_client)
+                self._processor = PDFProcessor(file_path, self._text_client)
             self._attach_processor_signals()
             manifest = self._processor.manifest
 
@@ -1207,6 +1217,7 @@ class PDFViewerPanel(QWidget):
         ]
         self._render_document(doc)
         self._restore_translation_state()
+        self.structured_document_updated.emit(pdf_path)
 
     @staticmethod
     def _translation_key(card: ParagraphCard) -> str:
@@ -1257,12 +1268,12 @@ class PDFViewerPanel(QWidget):
         return ""
 
     def _on_translate_request(self, idx: int, text: str):
-        if not self._translate_client:
+        if not self._text_client:
             return
         worker = self._trans_workers.get(idx)
         if worker and worker.isRunning():
             return
-        worker = TranslationWorker(self._translate_client, idx, text)
+        worker = TranslationWorker(self._text_client, idx, text)
         worker._gen = self._doc_generation
         track(worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         worker.finished.connect(self._on_translation_done)
@@ -1305,7 +1316,7 @@ class PDFViewerPanel(QWidget):
             self._on_scroll()
 
     def _on_scroll(self):
-        if not self._auto_translate or not self._translate_client:
+        if not self._auto_translate or not self._text_client:
             return
         viewport = self.scroll_area.viewport()
         view_top = self.scroll_area.verticalScrollBar().value()
@@ -1330,6 +1341,13 @@ class PDFViewerPanel(QWidget):
         return self._structured_doc
 
     # ---- 生命周期 ----
+
+    def clear_pdf(self) -> None:
+        """清空当前文献并断开处理器，避免删除文件后迟到信号继续更新界面。"""
+        self._detach_processor()
+        self._reset_view()
+        self._current_path = ""
+        self.pdf_path_changed.emit("")
 
     def _detach_processor(self):
         """切换文献时只断开与旧处理器的信号连接，不取消后台任务。

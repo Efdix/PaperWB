@@ -1381,6 +1381,8 @@ class DoclingParseWorker(QThread):
     def run(self) -> None:
         try:
             self._run()
+        except Exception as e:  # noqa: BLE001
+            self.error.emit(f"Stage 1 缓存写入失败：{e}")
         finally:
             self.done.emit()  # 无论成功/失败/中断，线程退出时必然触发
 

@@ -26,11 +26,11 @@ from src.core.pdf_processor import (
     find_cross_page_seams,
 )
 from src.core.zotero_parser import ZoteroItem, ZoteroLibrary
-from src.utils.config import get_parse_api, load_config, load_doc_state
+from src.utils.config import get_text_api, load_config, load_doc_state
 
 
 def _make_parse_client(config: dict):
-    api = get_parse_api(config)
+    api = get_text_api(config)
     if not all(api.get(key) for key in ("api_key", "base_url", "model")):
         return None
     from src.core.llm_client import LLMClient

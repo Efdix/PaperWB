@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class PubMedPaper:
-    """单条 PubMed 文献。"""
+    """单条文献记录（PubMed 或 arXiv 等来源）。"""
     pmid: str = ""
     title: str = ""
     authors: str = ""
@@ -22,6 +22,8 @@ class PubMedPaper:
     doi: str = ""
     abstract: str = ""
     url: str = ""
+    source: str = "pubmed"   # 来源标注: pubmed / arxiv
+    arxiv_id: str = ""       # arXiv 条目的 arxiv id（PubMed 为空）
 
     @property
     def citation_count(self) -> int:

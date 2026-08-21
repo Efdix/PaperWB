@@ -24,7 +24,8 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
-from .pubmed_searcher import PubMedPaper, PubMedSearcher
+from .literature_search import MultiSourceSearcher
+from .pubmed_searcher import PubMedPaper
 from .reference_match import find_library_match, llm_match_titles
 from ..utils.config import get_scout_dir
 from ..utils.threads import track
@@ -190,11 +191,9 @@ def save_feed(feed: list[dict], scout_dir: str | Path | None = None) -> None:
 # ============================================================
 
 def paper_to_dict(p: PubMedPaper) -> dict:
-    return {
-        "pmid": p.pmid, "title": p.title, "authors": p.authors,
-        "year": p.year, "journal": p.journal, "doi": p.doi,
-        "abstract": p.abstract, "url": p.url,
-    }
+    """统一文献 dict 格式（与 literature_search.paper_to_dict 同口径）。"""
+    from .literature_search import paper_to_dict as _to_dict
+    return _to_dict(p)
 
 
 def _ris_authors(authors: str) -> list[str]:
@@ -257,7 +256,7 @@ def save_csv(path: str, papers: list[dict]) -> None:
 # ============================================================
 
 class ScoutWorker(QThread):
-    """单次巡视：PubMed 检索 → 库内比对 → 去重记忆过滤。
+    """单次巡视：多源检索 → 库内比对 → 去重记忆过滤。
 
     信号:
         found(list): 新文献 dict 列表（paper_to_dict 格式）。
@@ -270,26 +269,34 @@ class ScoutWorker(QThread):
     done = Signal()
 
     def __init__(self, topic: ScoutTopic, pool: list[dict], seen: set[str],
-                 client=None, parent=None):
+                 client=None, searcher: MultiSourceSearcher | None = None,
+                 parent=None):
         super().__init__(parent)
         self._topic = topic
         self._pool = pool or []
         self._seen = seen or set()
         self._client = client  # LLMClient | None（二级模糊比对用）
+        self._searcher = searcher  # 测试可注入假多源检索器
 
     def run(self) -> None:
         try:
             queries = [q.strip() for q in (self._topic.keywords or []) if q.strip()][:12]
             papers: list[PubMedPaper] = []
             if queries:
-                searcher = PubMedSearcher()
-                papers = searcher.search(queries, limit=int(self._topic.limit or 15))
+                searcher = self._searcher if self._searcher is not None else MultiSourceSearcher()
+                # 方向关键词面向 PubMed 检索式语法，统一按 PubMed 源路由；
+                # 同时并行查 arXiv 同名关键词以补充预印本覆盖。
+                plan: list[dict] = [{"source": "pubmed", "query": q} for q in queries]
+                if len(queries) <= 6:  # 控制总量，避免 arXiv 侧请求过多
+                    plan += [{"source": "arxiv", "query": q} for q in queries]
+                papers = searcher.search(plan, limit=int(self._topic.limit or 15))
             if self.isInterruptionRequested():
                 return
 
             new_papers: list[PubMedPaper] = []
             for p in papers:
-                if p.pmid and p.pmid in self._seen:
+                pid = p.pmid or p.arxiv_id or p.doi  # 统一去重记忆标识
+                if pid and pid in self._seen:
                     continue
                 if find_library_match(p.title, p.doi, self._pool):
                     continue
@@ -344,6 +351,7 @@ class ScoutManager(QObject):
         self._topics: list[ScoutTopic] = load_topics(scout_dir)
         self._pool: list[dict] = []       # Zotero 条目快照（比对池）
         self._client = None               # 解析接口（二级比对可选）
+        self._searcher: MultiSourceSearcher | None = None  # 测试注入用
         self._timers: dict[str, QTimer] = {}
         self._workers: dict[str, ScoutWorker] = {}
         self._feed: list[dict] = load_feed(scout_dir)
@@ -357,6 +365,10 @@ class ScoutManager(QObject):
 
     def set_llm_client(self, client) -> None:
         self._client = client
+
+    def set_searcher(self, searcher: MultiSourceSearcher | None) -> None:
+        """注入自定义多源检索器（测试用；None = 运行时默认）。"""
+        self._searcher = searcher
 
     # ---- 方向 CRUD ----
 
@@ -416,6 +428,23 @@ class ScoutManager(QObject):
 
     def shutdown(self) -> None:
         self.stop()
+        for worker in self._workers.values():
+            if worker.isRunning():
+                worker.requestInterruption()
+
+    def reload_storage(self) -> bool:
+        """数据根目录切换后重新加载巡视方向和推荐流。"""
+        self.shutdown()
+        for worker in list(self._workers.values()):
+            if worker.isRunning() and not worker.wait(3_000):
+                self._started = False
+                return False
+        self._workers.clear()
+        self._dir = get_scout_dir()
+        self._topics = load_topics(self._dir)
+        self._feed = load_feed(self._dir)
+        self._started = False
+        return True
 
     def has_busy_workers(self) -> bool:
         return any(w.isRunning() for w in self._workers.values())
@@ -460,7 +489,8 @@ class ScoutManager(QObject):
         if topic.collection_key:
             pool = [e for e in pool
                     if topic.collection_key in (e.get("collections") or [])]
-        worker = ScoutWorker(topic, pool, set(load_seen(self._dir).keys()), self._client)
+        worker = ScoutWorker(topic, pool, set(load_seen(self._dir).keys()),
+                             self._client, searcher=self._searcher)
         track(worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._workers[topic_id] = worker
         worker.found.connect(
@@ -484,12 +514,13 @@ class ScoutManager(QObject):
         topic.last_new = len(papers)
         save_topics(self._topics, self._dir)
 
-        pmids = [p.get("pmid") for p in papers if p.get("pmid")]
+        pmids = [p.get("pmid") or p.get("arxiv_id") or p.get("doi")
+                 for p in papers if (p.get("pmid") or p.get("arxiv_id") or p.get("doi"))]
         if pmids:
             mark_seen(pmids, self._dir)
 
         entries = [{
-            "id": f"{p.get('pmid') or p.get('doi') or ''}@{topic.name}",
+            "id": f"{p.get('pmid') or p.get('arxiv_id') or p.get('doi') or ''}@{topic.name}",
             "topic": topic.name,
             "added_at": now_iso,
             "paper": p,
@@ -533,3 +564,47 @@ class ScoutManager(QObject):
     def clear_feed(self) -> None:
         self._feed = []
         save_feed(self._feed, self._dir)
+
+    def push_to_feed(self, papers: list[dict], label: str) -> int:
+        """把任意检索结果推入推荐流（AI 检索 / 文献补充共用），返回新增条数。
+
+        Args:
+            papers: 文献 dict 列表（paper_to_dict 格式）。
+            label: 来源标签（如「AI 检索」或检索方向名），显示在卡片 chip 上。
+        """
+        if not papers:
+            return 0
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        # 与现有 feed 条目按统一标识去重，避免重复推送
+        seen: set[str] = set()
+        for e in self._feed:
+            ep = e.get("paper", {}) or {}
+            pid = ep.get("pmid") or ep.get("arxiv_id") or ep.get("doi") or ""
+            if pid:
+                seen.add(pid)
+        entries = []
+        for p in papers:
+            pid = p.get("pmid") or p.get("arxiv_id") or p.get("doi") or ""
+            if pid and pid in seen:
+                continue
+            if pid:
+                seen.add(pid)
+            entries.append({
+                "id": f"{pid}@{label}",
+                "topic": label,
+                "added_at": now_iso,
+                "paper": p,
+            })
+        if entries:
+            self._feed = entries + self._feed
+            self._feed = self._feed[:MAX_FEED_ITEMS]
+            save_feed(self._feed, self._dir)
+            pushed_ids = [
+                p.get("pmid") or p.get("arxiv_id") or p.get("doi")
+                for p in papers
+                if p.get("pmid") or p.get("arxiv_id") or p.get("doi")
+            ]
+            if pushed_ids:
+                mark_seen(pushed_ids, self._dir)
+            self.results_ready.emit(label, entries)
+        return len(entries)

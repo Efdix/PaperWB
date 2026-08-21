@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """生成 PaperWB 应用图标（assets/PaperWB.ico）。
 
-用 Pillow 绘制：暖白纸张 + 靛蓝底的翻开书本 + 琥珀色书签，呼应
-「暖白研究工作台」主题。以 1024x1024 超采样绘制后缩放出多尺寸 ICO，
-供 PaperWB.exe / 安装向导 / Qt 窗口共用。
+从 repo 根目录的 PaperWB.jpg 读取源图，裁出图形主体后缩放出多尺寸
+ICO，供 PaperWB.exe / 安装向导 / Qt 窗口共用。
 
 用法（任意装有 Pillow 的 Python 环境）:
     python installer/make_icon.py
@@ -14,68 +13,92 @@ from __future__ import annotations
 import os
 import sys
 
-from PIL import Image, ImageDraw
+try:
+    from PIL import Image, ImageChops
+except ImportError:
+    sys.exit(
+        "错误: 需要安装 Pillow (pip install Pillow) 来生成图标。\n"
+        "提示: conda activate PaperWB 后执行。"
+    )
 
-# 主题色（与 src/ui/styles.py 的暖白研究工作台呼应）
-_BG = (47, 58, 122, 255)        # 靛蓝底
-_PAGE = (250, 246, 235, 255)    # 暖白纸页
-_PAGE_SHADE = (232, 224, 205, 255)  # 右页阴影
-_BOOKMARK = (232, 160, 66, 255)  # 琥珀书签
-_SPINE = (250, 246, 235, 255)
-
-SIZE = 1024
+ICO_SIZES = [(256, 256), (64, 64), (48, 48), (32, 32), (16, 16)]
+PNG_PREVIEW_SIZE = (256, 256)
 
 
-def _draw_icon(size: int) -> Image.Image:
-    """在 size x size 画布上绘制图标（先按 1024 绘制再缩放以保证小尺寸平滑）。"""
-    img = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
+def _crop_icon_subject(img: Image.Image) -> Image.Image:
+    """裁出 PaperWB 图形主体，避免宽幅源图生成过多空白。"""
+    rgb = img.convert("RGB")
+    white = Image.new("RGB", rgb.size, "white")
+    difference = ImageChops.difference(rgb, white)
+    # JPEG 的背景噪声很轻，阈值 20 可以保留图形阴影并排除纯白画布。
+    mask = difference.point(lambda value: 255 if value > 20 else 0)
+    bbox = mask.getbbox()
+    if bbox is None:
+        w, h = rgb.size
+        side = min(w, h)
+        left = (w - side) // 2
+        top = (h - side) // 2
+        return rgb.crop((left, top, left + side, top + side))
 
-    # 圆角方形底
-    radius = int(SIZE * 0.22)
-    d.rounded_rectangle([0, 0, SIZE - 1, SIZE - 1], radius=radius, fill=_BG)
+    left, top, right, bottom = bbox
+    width = right - left
+    height = bottom - top
+    padding = max(24, int(max(width, height) * 0.12))
+    left -= padding
+    top -= padding
+    right += padding
+    bottom += padding
 
-    # 翻开的书：左右两页（梯形），中缝相接
-    left_page = [(0.26, 0.32), (0.48, 0.40), (0.48, 0.72), (0.26, 0.64)]
-    right_page = [(0.74, 0.32), (0.52, 0.40), (0.52, 0.72), (0.74, 0.64)]
-    d.polygon([(x * SIZE, y * SIZE) for x, y in left_page], fill=_PAGE)
-    d.polygon([(x * SIZE, y * SIZE) for x, y in right_page], fill=_PAGE_SHADE)
+    side = max(right - left, bottom - top)
+    center_x = (left + right) // 2
+    center_y = (top + bottom) // 2
+    left = center_x - side // 2
+    top = center_y - side // 2
+    right = left + side
+    bottom = top + side
 
-    # 中缝
-    d.line([(0.50 * SIZE, 0.40 * SIZE), (0.50 * SIZE, 0.72 * SIZE)],
-           fill=_SPINE, width=int(SIZE * 0.012))
-
-    # 左页两条文字线
-    for i, y in enumerate((0.46, 0.53, 0.60)):
-        x0 = 0.305 if i < 2 else 0.305
-        x1 = 0.435 if i < 2 else 0.40
-        d.line([(x0 * SIZE, y * SIZE), (x1 * SIZE, y * SIZE)],
-               fill=_BG, width=int(SIZE * 0.014))
-
-    # 琥珀书签：从右上斜插进右页
-    bookmark = [(0.615, 0.20), (0.685, 0.20), (0.685, 0.335),
-                (0.65, 0.30), (0.615, 0.335)]
-    d.polygon([(x * SIZE, y * SIZE) for x, y in bookmark], fill=_BOOKMARK)
-
-    if size == SIZE:
-        return img
-    return img.resize((size, size), Image.LANCZOS)
+    # 超出边界时平移裁剪框，而不是缩小主体。
+    if left < 0:
+        right -= left
+        left = 0
+    if top < 0:
+        bottom -= top
+        top = 0
+    if right > rgb.width:
+        left -= right - rgb.width
+        right = rgb.width
+    if bottom > rgb.height:
+        top -= bottom - rgb.height
+        bottom = rgb.height
+    return rgb.crop((max(0, left), max(0, top), right, bottom))
 
 
 def main() -> int:
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src_path = os.path.join(repo, "PaperWB.jpg")
+    if not os.path.isfile(src_path):
+        sys.exit(f"错误: 源图不存在 {src_path}")
+
+    img = Image.open(src_path)
+    if img.mode == "RGBA":
+        pass  # 已有 alpha
+    elif img.mode == "P":
+        img = img.convert("RGBA")
+    else:
+        img = img.convert("RGB")
+
+    square = _crop_icon_subject(img)
+
     out_dir = os.path.join(repo, "assets")
     os.makedirs(out_dir, exist_ok=True)
 
-    base = _draw_icon(SIZE)
     ico_path = os.path.join(out_dir, "PaperWB.ico")
-    base.save(
-        ico_path,
-        sizes=[(256, 256), (64, 64), (48, 48), (32, 32), (16, 16)],
-    )
-    # 便于预览/README 引用的 PNG
-    base.resize((256, 256), Image.LANCZOS).save(os.path.join(out_dir, "PaperWB.png"))
-    print(f"OK: {ico_path}")
+    square.save(ico_path, sizes=ICO_SIZES)
+
+    png_path = os.path.join(out_dir, "PaperWB.png")
+    square.resize(PNG_PREVIEW_SIZE, Image.LANCZOS).save(png_path)
+
+    print(f"OK: {ico_path} (source: {src_path})")
     return 0
 
 

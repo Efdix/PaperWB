@@ -36,6 +36,13 @@ class ContextManager:
         self._structured_doc = doc
         self._invalidate_retriever()
 
+    def update_document(self, text: str, doc: object | None = None) -> None:
+        """更新当前文档内容但保留对话历史，用于后台跨页合并完成。"""
+        self._pdf_text = text
+        if doc is not None:
+            self._structured_doc = doc
+        self._invalidate_retriever()
+
     def load_history(self, history: list[dict]) -> None:
         """从持久化存储恢复对话历史。"""
         self._chat_history = history.copy()

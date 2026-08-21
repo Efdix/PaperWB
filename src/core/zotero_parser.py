@@ -105,6 +105,7 @@ class ZoteroLibrary:
         self._collections_by_id: dict[int, ZoteroCollection] = {}
         self._item_collections: dict[int, list[int]] = {}
         self._loaded = False
+        self._last_reload_ok = False
 
         if zotero_data_dir:
             # 用户显式指定路径时，仅在该目录下查找，不做全局探测
@@ -360,11 +361,13 @@ class ZoteroLibrary:
         避免出现「集合已重建、条目为空」的半新半旧状态。
         """
         if not self.is_available:
+            self._last_reload_ok = False
             return 0
 
         # 必须有 sqlite 数据库
         if not self._sqlite_path or not os.path.isfile(self._sqlite_path):
             print(f"[ZoteroLibrary] 未找到 zotero.sqlite，无法加载")
+            self._last_reload_ok = False
             return 0
 
         return self._load_from_sqlite()
@@ -509,10 +512,12 @@ class ZoteroLibrary:
             self._collections_by_id = collections_by_id
             self._item_collections = item_collections
             self._loaded = True
+            self._last_reload_ok = True
 
         except (sqlite3.Error, OSError) as e:
             # OSError：数据库复制失败（独占锁/权限/磁盘满），保留旧数据不清空
             print(f"[ZoteroLibrary] 加载失败: {e}")
+            self._last_reload_ok = False
             return 0
         finally:
             if db_conn:
@@ -524,6 +529,11 @@ class ZoteroLibrary:
 
         print(f"[ZoteroLibrary] 共加载 {len(self._items)} 条文献（从 SQLite）")
         return len(self._items)
+
+    @property
+    def last_reload_ok(self) -> bool:
+        """最近一次 reload 是否成功完成。"""
+        return self._last_reload_ok
 
     def _fill_metadata(self, cursor, item: ZoteroItem):
         """填充标题、作者、年份、期刊、DOI"""

@@ -8,10 +8,7 @@
 
 from __future__ import annotations
 
-import os
-import time
-
-from PySide6.QtCore import QObject, QThread, QTimer, QFileSystemWatcher, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
 from ..utils.threads import track
 
@@ -31,6 +28,9 @@ class ZoteroReloadWorker(QThread):
     def run(self) -> None:
         try:
             self._library.reload()
+            if not getattr(self._library, "last_reload_ok", True):
+                self.error_signal.emit("Zotero 数据库不可用或复制失败")
+                return
             self.finished_signal.emit(True)
         except Exception as e:  # noqa: BLE001
             self.error_signal.emit(str(e))
@@ -51,20 +51,11 @@ class ZoteroWatcher(QObject):
     error = Signal(str)
     status = Signal(str)
 
-    DEBOUNCE_MS = 1000     # 文件变化防抖（保留给旧的事件监听路径，默认不激活）
     SYNC_INTERVAL_MS = 30 * 60 * 1000  # 周期自动同步间隔：30 分钟
 
     def __init__(self, library, parent=None):
         super().__init__(parent)
         self._library = library
-        self._fs = QFileSystemWatcher(self)
-        self._fs.directoryChanged.connect(self._on_fs_change)
-        self._fs.fileChanged.connect(self._on_fs_change)
-
-        self._debounce = QTimer(self)
-        self._debounce.setSingleShot(True)
-        self._debounce.timeout.connect(self._trigger_reload)
-
         self._sync_timer = QTimer(self)
         self._sync_timer.timeout.connect(
             lambda: self.request_reload(show_status=False)
@@ -73,7 +64,6 @@ class ZoteroWatcher(QObject):
         self._worker: ZoteroReloadWorker | None = None
         self._last_snapshot: dict | None = None
         self._running = False
-        self._dirty = False
 
     # ---- 公共 API ----
 
@@ -90,9 +80,7 @@ class ZoteroWatcher(QObject):
     def stop(self) -> None:
         """停止周期同步并清理。"""
         self._running = False
-        self._debounce.stop()
         self._sync_timer.stop()
-        self._remove_all_watched()
         if self._worker is not None:
             worker = self._worker
             self._worker = None
@@ -121,52 +109,6 @@ class ZoteroWatcher(QObject):
 
     # ---- 内部 ----
 
-    def _remove_all_watched(self) -> None:
-        """移除所有已注册的监听路径（列表为空时跳过，避免 Qt 空列表警告）。"""
-        try:
-            watched = self._fs.directories() + self._fs.files()
-            if watched:
-                self._fs.removePaths(watched)
-        except Exception:
-            pass
-
-    def _watch_paths(self) -> None:
-        """注册需要监听的文件/目录（数据库 + storage + 附件父目录）。"""
-        self._remove_all_watched()
-        paths: set[str] = set()
-        db = self._library.sqlite_path
-        if db:
-            for p in (db, db + "-wal", db + "-shm"):
-                if os.path.isfile(p):
-                    paths.add(p)
-        storage = self._library.storage_dir
-        if storage and os.path.isdir(storage):
-            paths.add(storage)
-            # 每个附件 PDF 的父目录（受条目数限制，几千条内可接受）
-            for item in self._library.get_all_items():
-                if item.pdf_path:
-                    parent = os.path.dirname(item.pdf_path)
-                    if parent and os.path.isdir(parent):
-                        paths.add(parent)
-        for p in paths:
-            try:
-                self._fs.addPath(p)
-            except Exception:
-                pass
-
-    def _on_fs_change(self, *_args) -> None:
-        if not self._running:
-            return
-        self._debounce.start(self.DEBOUNCE_MS)
-
-    def _trigger_reload(self) -> None:
-        if not self._running:
-            return
-        if self._worker is not None and self._worker.isRunning():
-            self._dirty = True
-            return
-        self._start_reload()
-
     def _start_reload(self, show_status: bool = True) -> None:
         if show_status:
             self.status.emit("正在重新同步 Zotero 文献库...")
@@ -186,10 +128,6 @@ class ZoteroWatcher(QObject):
         else:
             # 无实质变化也发一次状态，收掉「正在同步」提示
             self.status.emit(f"已连接 · {self._library.item_count} 篇文献 · 无变化")
-        if self._dirty:
-            self._dirty = False
-            self._start_reload()
-
     def _on_reload_error(self, err: str) -> None:
         self._worker = None
         self.error.emit(f"Zotero 同步失败：{err}")

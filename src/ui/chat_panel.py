@@ -38,7 +38,7 @@ class ChatBubble(QFrame):
         role_font.setBold(True)
         role_label.setFont(role_font)
         role_label.setStyleSheet(
-            "color: #147c7c; padding: 2px 0;" if role == "assistant"
+            "color: #3478f6; padding: 2px 0;" if role == "assistant"
             else "color: #b45d4a; padding: 2px 0;"
         )
         layout.addWidget(role_label)
@@ -55,7 +55,7 @@ class ChatBubble(QFrame):
         content_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.2)
         content_label.setFont(content_font)
         content_label.setStyleSheet(
-            "color: #29434a; line-height: 1.8; padding: 4px 0; font-size: 13px;"
+            "color: #1d1d1f; line-height: 1.8; padding: 4px 0; font-size: 13px;"
         )
         layout.addWidget(content_label)
         self._content_label = content_label  # 保存引用，方便流式更新
@@ -76,7 +76,7 @@ class ChatBubble(QFrame):
         # 分隔线
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #e5e1d9; max-height: 1px; margin-top: 4px;")
+        sep.setStyleSheet("background-color: #e5e5ea; max-height: 1px; margin-top: 4px;")
         layout.addWidget(sep)
 
     def hasHeightForWidth(self) -> bool:
@@ -180,7 +180,7 @@ class ChatPanel(QWidget):
         # 分隔线
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #e4e0d8; max-height: 1px;")
+        sep.setStyleSheet("background-color: #e5e5ea; max-height: 1px;")
         layout.addWidget(sep)
 
         # 消息滚动区域
@@ -202,7 +202,7 @@ class ChatPanel(QWidget):
         )
         welcome.setWordWrap(True)
         welcome.setStyleSheet(
-            "color: #718180; background-color: #f5f8f6; border: 1px solid #e1ebe7; "
+            "color: #6e6e73; background-color: #f5f8ff; border: 1px solid #d9e5ff; "
             "border-radius: 12px; padding: 18px; font-size: 13px; line-height: 1.8;"
         )
         self.msg_layout.insertWidget(0, welcome)

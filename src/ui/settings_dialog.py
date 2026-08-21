@@ -8,8 +8,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QThread, Signal as QtSignal
 
-from ..core.llm_client import PROVIDERS
-from ..utils.config import load_config, save_config
+from ..core.llm_client import PROVIDERS, VISION_MODELS
+from ..utils.config import load_config, save_config, get_vision_api, get_text_api
+from ..utils.threads import track
 
 
 class _TestConnectionWorker(QThread):
@@ -22,6 +23,8 @@ class _TestConnectionWorker(QThread):
         self._cfg = cfg
 
     def run(self):
+        if self.isInterruptionRequested():
+            return
         try:
             from ..core.llm_client import LLMClient
             client = LLMClient(self._cfg["api_key"], self._cfg["base_url"], self._cfg["model"])
@@ -29,17 +32,22 @@ class _TestConnectionWorker(QThread):
                 [{"role": "user", "content": "请回复：连接测试成功"}],
                 timeout=15, max_tokens=50,
             )
+            if self.isInterruptionRequested():
+                return
             self.finished_signal.emit(True, reply or "")
         except Exception as e:
-            self.finished_signal.emit(False, str(e))
+            if not self.isInterruptionRequested():
+                self.finished_signal.emit(False, str(e))
 
 
 class APIConfigTab(QWidget):
     """单个 API 配置标签页。"""
 
-    def __init__(self, tab_name: str, description: str, parent=None):
+    def __init__(self, tab_name: str, description: str, mark_vision: bool = False,
+                 parent=None):
         super().__init__(parent)
         self._tab_name = tab_name
+        self._mark_vision = mark_vision
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
@@ -52,7 +60,7 @@ class APIConfigTab(QWidget):
         pg = QVBoxLayout(provider_group)
         self.provider_combo = QComboBox()
         self.provider_combo.setEditable(True)
-        self.provider_combo.addItems(list(PROVIDERS.keys()))
+        self.provider_combo.addItems(sorted(PROVIDERS.keys()))
         self.provider_combo.currentTextChanged.connect(self._on_provider)
         pg.addWidget(self.provider_combo)
         self.provider_desc = QLabel()
@@ -98,30 +106,40 @@ class APIConfigTab(QWidget):
         self._populate_models()
         m = api_cfg.get("model", "")
         if m:
-            idx = self.model.findText(m)
+            display = f"{m}（视觉）" if self._mark_vision and m.lower() in VISION_MODELS else m
+            idx = self.model.findText(display)
             if idx >= 0:
                 self.model.setCurrentIndex(idx)
             else:
-                self.model.setCurrentText(m)
+                self.model.setCurrentText(display)
 
     def _populate_models(self):
         name = self.provider_combo.currentText()
         info = PROVIDERS.get(name, {})
         self.provider_desc.setText(info.get("description", ""))
-        models = info.get("models", [])
+        models = sorted(info.get("models", []))
         self.model.clear()
         if models:
-            self.model.addItems(models)
+            if self._mark_vision:
+                self.model.addItems(
+                    f"{m}（视觉）" if m.lower() in VISION_MODELS else m
+                    for m in models
+                )
+            else:
+                self.model.addItems(models)
             self.model.setCurrentIndex(0)
         else:
             self.model.setCurrentText("")
 
     def get(self) -> dict:
+        model = self.model.currentText().strip()
+        if self._mark_vision:
+            model = model.removesuffix("（视觉）").strip()
         return {
             "provider": self.provider_combo.currentText(),
             "api_key": self.api_key.text().strip(),
             "base_url": self.base_url.text().strip(),
-            "model": self.model.currentText().strip(),
+            "model": model,
         }
 
 
@@ -217,7 +235,7 @@ class DirectorySettingDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    """API 接口设置对话框（解析、翻译、写作）。"""
+    """API 接口设置对话框（多模态、纯文本）。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -239,22 +257,21 @@ class SettingsDialog(QDialog):
 
         self.tabs = QTabWidget()
 
-        self._parse_tab = APIConfigTab(
-            "parse",
-            "解析接口：负责跨页段落整合和论文问答（含图片解读）。逐页版式解析由本地模型完成。",
+        self._vision_tab = APIConfigTab(
+            "vision",
+            "多模态接口：仅用于图表问答（把图表图片连同问题一起发送给模型）。"
+            "建议使用视觉模型（下拉中标注「（视觉）」）；不配置时图表问答自动降级为纯文本提问。",
+            mark_vision=True,
         )
-        self._translate_tab = APIConfigTab(
-            "translate",
-            "翻译接口：将英文段落翻译为中文，可使用轻量快速的模型。",
+        self._text_tab = APIConfigTab(
+            "text",
+            "纯文本接口：论文问答、段落翻译、写作（润色/引文核查/风格分析/文献补充）、"
+            "文献工作台问答与巡视、跨页段落整合等全部文本功能共用此接口。",
         )
-        self._write_tab = APIConfigTab(
-            "write",
-            "写作接口：负责引文核查、风格分析、润色和文献补充，建议使用推理能力较强的模型。",
-        )
-        self.tabs.addTab(self._parse_tab, "解析")
-        self.tabs.addTab(self._translate_tab, "翻译")
-        self.tabs.addTab(self._write_tab, "写作与引用")
+        self.tabs.addTab(self._vision_tab, "多模态")
+        self.tabs.addTab(self._text_tab, "纯文本")
         layout.addWidget(self.tabs)
+        self._test_worker: _TestConnectionWorker | None = None
 
         btn = QHBoxLayout()
         btn.addStretch()
@@ -272,14 +289,12 @@ class SettingsDialog(QDialog):
         layout.addLayout(btn)
 
     def _load(self):
-        self._parse_tab.load(self._config.get("parse_api", {}))
-        self._translate_tab.load(self._config.get("translate_api", {}))
-        self._write_tab.load(self._config.get("write_api", {}))
+        self._vision_tab.load(get_vision_api(self._config))
+        self._text_tab.load(get_text_api(self._config))
 
     def _save(self):
-        self._config["parse_api"] = self._parse_tab.get()
-        self._config["translate_api"] = self._translate_tab.get()
-        self._config["write_api"] = self._write_tab.get()
+        self._config["vision_api"] = self._vision_tab.get()
+        self._config["text_api"] = self._text_tab.get()
         save_config(self._config)
         QMessageBox.information(
             self, "已保存",
@@ -300,14 +315,41 @@ class SettingsDialog(QDialog):
             return
         self._test_btn.setEnabled(False)
         self._test_btn.setText("测试中...")
-        self._test_worker = _TestConnectionWorker(cfg, self)
+        self._test_worker = _TestConnectionWorker(cfg)
+        track(self._test_worker)
         self._test_worker.finished_signal.connect(self._on_test_done)
         self._test_worker.start()
 
     def _on_test_done(self, ok: bool, msg: str):
+        if self.sender() is not self._test_worker:
+            return
+        self._test_worker = None
         self._test_btn.setEnabled(True)
         self._test_btn.setText("测试当前接口")
         if ok:
             QMessageBox.information(self, "测试成功", f"接口连接正常！\n回复：{msg[:200]}")
         else:
             QMessageBox.critical(self, "测试失败", f"连接失败：{msg}")
+
+    def _stop_test_worker(self) -> bool:
+        worker = self._test_worker
+        if worker is not None and worker.isRunning():
+            worker.requestInterruption()
+            if not worker.wait(3_000):
+                return False
+        self._test_worker = None
+        return True
+
+    def accept(self) -> None:
+        if self._stop_test_worker():
+            super().accept()
+
+    def reject(self) -> None:
+        if self._stop_test_worker():
+            super().reject()
+
+    def closeEvent(self, event) -> None:
+        if not self._stop_test_worker():
+            event.ignore()
+            return
+        super().closeEvent(event)

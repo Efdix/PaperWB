@@ -163,6 +163,14 @@ class WritingCoach:
             if name and name in self._profiles:
                 self._current_profile = self._profiles[name]
 
+    def reload_storage(self) -> None:
+        """数据根目录切换后重新绑定知识库目录。"""
+        self._kb_dir = self._resolve_kb_dir()
+        self._current_profile = None
+        self._profiles.clear()
+        self._load_profiles()
+        self._restore_last_profile()
+
     def _save_last_profile(self) -> None:
         """保存当前知识库名，供下次启动恢复。"""
         lp = self._last_profile_path()
@@ -893,7 +901,7 @@ class WritingCoach:
 以下为各篇论文的独立分析：
 {analyses}"""
 
-    def generate_writing_habits(self, parse_client: "LLMClient",
+    def generate_writing_habits(self, client: "LLMClient",
                                 on_progress=None) -> dict | None:
         """逐篇分析写作范文 → 综合写作习惯（批量+合成模式）。
 
@@ -930,7 +938,7 @@ class WritingCoach:
             ]
 
             try:
-                response = parse_client.chat_sync(messages, timeout=600.0, json_mode=True)
+                response = client.chat_sync(messages, timeout=600.0, json_mode=True)
                 analysis = self._parse_style_guide_response(response)
                 if analysis:
                     analysis["_source"] = filename
@@ -970,7 +978,7 @@ class WritingCoach:
         ]
 
         try:
-            response = parse_client.chat_sync(synth_messages, timeout=300.0, json_mode=True)
+            response = client.chat_sync(synth_messages, timeout=300.0, json_mode=True)
             habits = self._parse_style_guide_response(response)
             if habits:
                 # 附加计算性引用详略度指标（基于所有论文全文的纯统计）
@@ -1022,7 +1030,7 @@ class WritingCoach:
 以下是目标期刊的范文文本：
 {paper_texts}"""
 
-    def generate_journal_style(self, parse_client: "LLMClient") -> dict | None:
+    def generate_journal_style(self, client: "LLMClient") -> dict | None:
         """分析期刊范文的格式规范 —— 仅基于 journal_papers。
 
         Returns:
@@ -1044,7 +1052,7 @@ class WritingCoach:
         ]
 
         try:
-            response = parse_client.chat_sync(messages, timeout=180.0, json_mode=True)
+            response = client.chat_sync(messages, timeout=180.0, json_mode=True)
             style = self._parse_style_guide_response(response)
             if style:
                 self._current_profile.journal_style = style
@@ -1059,7 +1067,7 @@ class WritingCoach:
 
     # ---- 兼容旧 API：generate_style_guide（会调用两个新方法） ----
 
-    def generate_style_guide(self, parse_client: "LLMClient",
+    def generate_style_guide(self, client: "LLMClient",
                             on_progress=None) -> dict | None:
         """生成完整的风格指南 —— 同时运行写作习惯和期刊格式分析。
 
@@ -1079,10 +1087,10 @@ class WritingCoach:
         style = None
 
         if self._current_profile.personal_count > 0:
-            habits = self.generate_writing_habits(parse_client, on_progress=on_progress)
+            habits = self.generate_writing_habits(client, on_progress=on_progress)
         if self._current_profile.journal_count > 0:
             _emit("正在分析期刊格式...")
-            style = self.generate_journal_style(parse_client)
+            style = self.generate_journal_style(client)
 
         return style or habits
 

@@ -50,6 +50,26 @@ check("导航按钮三态", win._read_nav.isChecked() is False
       and win._scout_nav.isChecked() is True)
 check("面板已注入主窗口", win._workbench_panel is not None)
 
+# 三工作台的侧栏收起/恢复
+win._set_reader_library_visible(False)
+check("阅读文献列表可收起", win.pdf_list.isHidden())
+win._set_reader_library_visible(True)
+win._set_reader_chat_visible(False)
+check("阅读论文问答可收起", win.chat_panel.isHidden())
+win._set_reader_chat_visible(True)
+
+win._writing_panel._set_inspector_visible(False)
+check("写作工具检查器可隐藏", win._writing_panel._inspector_scroll.isHidden())
+win._writing_panel._set_inspector_visible(True)
+check("写作工具检查器可恢复", not win._writing_panel._inspector_scroll.isHidden())
+
+win._workbench_panel._set_topic_visible(False)
+check("文献检索方向可收起", not win._workbench_panel._topic_panel.isVisible())
+win._workbench_panel._set_topic_visible(True)
+win._workbench_panel._set_feed_visible(False)
+check("文献推荐流可收起", not win._workbench_panel._feed_panel.isVisible())
+win._workbench_panel._set_feed_visible(True)
+
 # Zotero → 面板注入
 items = win._workbench_panel._items_snapshot
 if win._zotero is not None and win._zotero.is_available:
@@ -71,7 +91,7 @@ if items:
               f"docs={n_docs} chunks={n_chunks}")
         check("提问按钮状态同步",
               win._workbench_panel._ask_input.isEnabled()
-              == (win._llm_parse is not None))
+              == (win._llm_text is not None))
         print(f"[INFO] 索引: {n_docs} 篇全文 / {n_chunks} 段 · "
               f"状态文案: {win._workbench_panel._qa_status.text()}")
     else:

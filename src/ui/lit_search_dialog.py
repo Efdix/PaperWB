@@ -85,21 +85,27 @@ class LitRefineWorker(QThread):
 
 
 class PubMedSearchWorker(QThread):
-    """后台 PubMed 检索。"""
+    """后台多源文献检索（PubMed + arXiv，经统一检索核心）。"""
     progress = Signal(str)
-    finished = Signal(list)
+    finished = Signal(list)   # 文献 dict 列表（paper_to_dict 格式，含 source）
     error = Signal(str)
 
-    def __init__(self, queries: list[str]):
+    def __init__(self, queries: list[str], client=None, pool: list[dict] | None = None):
         super().__init__()
         self._queries = queries
+        self._client = client   # LLMClient | None（检索式生成）
+        self._pool = pool or []
 
     def run(self):
-        from ..core.pubmed_searcher import PubMedSearcher
+        from ..core.literature_search import run_paper_search
         try:
-            self.progress.emit("正在检索 PubMed...")
-            searcher = PubMedSearcher()
-            papers = searcher.search(self._queries, limit=10)
+            # 统一检索核心：检索式生成 → 多源检索 → 库内过滤
+            papers = run_paper_search(
+                " ".join(self._queries),
+                client=self._client, pool=self._pool, limit=10,
+                log_cb=self.progress.emit,
+                interrupt_cb=self.isInterruptionRequested,
+            )
             self.finished.emit(papers)
         except Exception as e:
             self.error.emit(str(e))
@@ -121,6 +127,7 @@ class LitSearchDialog(QDialog):
     """
 
     insert_requested = Signal(str)
+    feed_requested = Signal(list, str)  # (文献 dict 列表, 来源标签)
 
     ANALYSIS_PROMPT = """你是学术文献检索专家。请分析以下综述草稿，找出可能遗漏的研究方向、列出你已知的相关文献、并生成 PubMed 检索关键词。
 
@@ -163,7 +170,7 @@ class LitSearchDialog(QDialog):
 
 请重新生成完整的 JSON 分析结果（格式不变，包含 covered_domains、known_papers、gaps）。特别注意用户指出的理解错误，务必修正。"""
 
-    def __init__(self, client, coach=None, parent=None):
+    def __init__(self, client, coach=None, pool: list[dict] | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("文献补充")
         self.resize(900, 680)
@@ -172,10 +179,12 @@ class LitSearchDialog(QDialog):
 
         self._client = client
         self._coach = coach
+        self._pool = pool or []   # 库内条目快照（检索结果过滤库内已有）
         self._draft_text = ""
         self._analysis_data: dict | None = None
         self._worker: LitAnalysisWorker | LitRefineWorker | PubMedSearchWorker | None = None
         self._search_keywords: list[str] = []
+        self._results_papers: list[dict] = []  # 最近一次检索结果（dict 格式）
 
         self._setup_ui()
 
@@ -265,7 +274,7 @@ class LitSearchDialog(QDialog):
         layout.addLayout(btn_row)
 
         # ---- 检索结果（初始隐藏） ----
-        results_header = QLabel("PubMed 检索结果")
+        results_header = QLabel("检索结果（PubMed + arXiv）")
         results_header.setStyleSheet("color: #1e3b42; font-weight: bold; font-size: 13px; padding: 2px 0;")
         layout.addWidget(results_header)
 
@@ -281,10 +290,16 @@ class LitSearchDialog(QDialog):
         bottom_row = QHBoxLayout()
         self._insert_btn = QPushButton("插入引用")
         self._insert_btn.setObjectName("primaryBtn")
-        self._insert_btn.setToolTip("将选中的 PubMed 文献以 (Author et al., Year) 格式插入到编辑器光标处")
+        self._insert_btn.setToolTip("将选中的文献以 (Author et al., Year) 格式插入到编辑器光标处")
         self._insert_btn.clicked.connect(self._on_insert_selected)
         self._insert_btn.setEnabled(False)
         bottom_row.addWidget(self._insert_btn)
+        self._feed_btn = QPushButton("加入推荐流")
+        self._feed_btn.setObjectName("secondaryBtn")
+        self._feed_btn.setToolTip("把检索结果推送到文献工作台推荐流（可导出 RIS/CSV）")
+        self._feed_btn.clicked.connect(self._on_send_feed)
+        self._feed_btn.setVisible(False)
+        bottom_row.addWidget(self._feed_btn)
         bottom_row.addStretch()
         self._export_btn = QPushButton("导出 CSV")
         self._export_btn.setObjectName("secondaryBtn")
@@ -457,12 +472,12 @@ class LitSearchDialog(QDialog):
             return
 
         self._search_keywords = queries
-        self._set_busy(True, "正在检索 PubMed...")
+        self._set_busy(True, "正在检索 PubMed + arXiv...")
         self._refine_btn.setEnabled(False)
         self._search_btn.setEnabled(False)
 
         from ..utils.threads import track
-        self._worker = PubMedSearchWorker(queries)
+        self._worker = PubMedSearchWorker(queries, client=self._client, pool=self._pool)
         track(self._worker)
         self._worker.progress.connect(lambda msg: self._progress.setFormat(msg))
         self._worker.finished.connect(self._on_search_done)
@@ -480,25 +495,32 @@ class LitSearchDialog(QDialog):
         # 检索完成后重新启用反馈和检索按钮，支持循环
         self._refine_btn.setEnabled(True)
         self._search_btn.setEnabled(True)
-        self._export_btn.setVisible(True)
+        self._export_btn.setVisible(bool(papers))
+        self._feed_btn.setVisible(bool(papers))
         self._insert_btn.setEnabled(bool(papers))
         self._results_list.clear()
+        self._results_papers = list(papers)
 
         kw_str = ", ".join(self._search_keywords[:6])
         self._results_list.addItem(f"检索关键词: {kw_str}")
 
         if not papers:
-            self._results_list.addItem("（PubMed 未返回结果，可修改反馈后重新分析再检索）")
+            self._results_list.addItem("（未返回结果，可修改反馈后重新分析再检索）")
             return
 
-        self._results_list.addItem(f"共找到 {len(papers)} 篇文献:")
+        src_counts: dict[str, int] = {}
+        for p in papers:
+            src_counts[p.get("source", "pubmed")] = src_counts.get(p.get("source", "pubmed"), 0) + 1
+        count_str = " · ".join(f"{s}: {c}" for s, c in sorted(src_counts.items()))
+        self._results_list.addItem(f"共找到 {len(papers)} 篇文献（{count_str}）:")
         for p in papers[:30]:
-            text = f"{p.authors} ({p.year})  {p.journal}\n{p.title}"
+            tag = "arXiv" if p.get("source") == "arxiv" else "PubMed"
+            text = f"[{tag}] {p.get('authors', '')} ({p.get('year', '')})  {p.get('journal', '')}\n{p.get('title', '')}"
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, p)
             self._results_list.addItem(item)
 
-        # 交叉验证：LLM 推断的 known_papers 能否在 PubMed 结果中匹配到
+        # 交叉验证：LLM 推断的 known_papers 能否在检索结果中匹配到
         known = getattr(self, '_known_papers', []) or []
         if known:
             verified = sum(
@@ -506,16 +528,16 @@ class LitSearchDialog(QDialog):
             )
             if verified >= len(known):
                 self._results_list.addItem(
-                    f"✅ 交叉验证：LLM 推断的 {len(known)} 篇文献全部能在 PubMed 检索结果中匹配到。"
+                    f"✅ 交叉验证：LLM 推断的 {len(known)} 篇文献全部能在检索结果中匹配到。"
                 )
             elif verified > 0:
                 self._results_list.addItem(
-                    f"🔍 交叉验证：LLM 推断的 {len(known)} 篇文献中，仅 {verified} 篇能在 PubMed 检索结果中匹配到，"
+                    f"🔍 交叉验证：LLM 推断的 {len(known)} 篇文献中，仅 {verified} 篇能在检索结果中匹配到，"
                     f"其余 {len(known) - verified} 篇未检索到，请人工核实。"
                 )
             else:
                 self._results_list.addItem(
-                    f"⚠️ 交叉验证：LLM 推断的 {len(known)} 篇文献均未在 PubMed 检索结果中匹配到，请警惕编造风险。"
+                    f"⚠️ 交叉验证：LLM 推断的 {len(known)} 篇文献均未在检索结果中匹配到，请警惕编造风险。"
                 )
 
         self._results_list.addItem("")
@@ -529,29 +551,40 @@ class LitSearchDialog(QDialog):
 
     @staticmethod
     def _title_match(title: str, papers: list) -> bool:
-        """按规范化标题判断某篇文献是否在 PubMed 结果中存在。"""
+        """按规范化标题判断某篇文献是否在检索结果中存在。"""
         n = LitSearchDialog._normalize_title(title)
         if not n:
             return False
         for p in papers:
-            if n == LitSearchDialog._normalize_title(p.title):
+            if n == LitSearchDialog._normalize_title(p.get("title", "")):
                 return True
         return False
 
     def _on_insert_selected(self):
-        """将选中的 PubMed 文献以 (Author et al., Year) 格式插入编辑器。"""
+        """将选中的文献以 (Author et al., Year) 格式插入编辑器。"""
         item = self._results_list.currentItem()
         if not item:
-            QMessageBox.information(self, "提示", "请先选中一条 PubMed 文献结果")
+            QMessageBox.information(self, "提示", "请先选中一条检索结果")
             return
         p = item.data(Qt.ItemDataRole.UserRole)
         if not p:
-            QMessageBox.information(self, "提示", "请选中一条 PubMed 文献结果")
+            QMessageBox.information(self, "提示", "请选中一条检索结果")
             return
-        first_author = (p.authors or "Unknown").split(" ")[0]
-        year = p.year or "?"
+        first_author = (p.get("authors", "") or "Unknown").split(" ")[0] or "Unknown"
+        year = p.get("year", "") or "?"
         marker = f"({first_author} et al., {year})"
         self.insert_requested.emit(marker)
+
+    def _on_send_feed(self):
+        """把检索结果推送到文献工作台推荐流。"""
+        if not self._results_papers:
+            QMessageBox.information(self, "提示", "当前没有可推送的检索结果。")
+            return
+        self.feed_requested.emit(list(self._results_papers), "文献补充")
+        QMessageBox.information(
+            self, "已推送",
+            f"已将 {len(self._results_papers)} 篇文献加入推荐流。\n"
+            "可在「文献工作台 → 文献推荐流」中导出 RIS/CSV 或查看详情。")
 
     def _on_search_error(self, err: str):
         self._set_busy(False)
@@ -580,11 +613,12 @@ class LitSearchDialog(QDialog):
 
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
-                writer.writerow(["title", "authors", "year", "journal", "doi", "pmid", "url"])
+                writer.writerow(["title", "authors", "year", "journal", "doi", "pmid", "url", "source"])
                 for p in papers:
                     writer.writerow([
-                        p.title, p.authors, p.year, p.journal,
-                        p.doi, p.pmid, p.url,
+                        p.get("title", ""), p.get("authors", ""), p.get("year", ""),
+                        p.get("journal", ""), p.get("doi", ""),
+                        p.get("pmid", ""), p.get("url", ""), p.get("source", ""),
                     ])
         except Exception as e:
             QMessageBox.warning(self, "导出失败", f"导出 CSV 时出错：{e}")

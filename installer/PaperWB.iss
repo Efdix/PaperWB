@@ -7,6 +7,7 @@
 ; 前置产物：
 ;   ..\dist\PaperWB\*            PyInstaller onedir 输出（build_installer.ps1 自动构建）
 ;   models_cache\hub\*           预置 Docling 模型（installer/stage_models.py 生成，约 505 MB）
+;   ..\PaperWB.jpg               应用图标源图（make_icon.py 自动裁切）
 ;   ..\assets\PaperWB.ico        应用图标（installer/make_icon.py 生成）
 ;   ..\LICENSE                   MIT 许可证
 ;

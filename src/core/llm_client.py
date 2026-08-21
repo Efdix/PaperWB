@@ -95,6 +95,14 @@ class LLMClient:
 
 # ---- 预设提供商 ----
 
+# 已知支持视觉（图片输入）的模型名（小写）。用于：
+# 1) 设置对话框多模态 tab 的模型下拉标注「（视觉）」；
+# 2) 旧配置迁移时判断解析接口模型是否可作多模态接口。
+VISION_MODELS: frozenset[str] = frozenset({
+    "glm-5v-turbo", "glm-4.6v", "glm-4.6v-flash",
+    "glm-4.1v-thinking-flash", "glm-4v-flash",
+})
+
 PROVIDERS: dict[str, dict] = {
     "DeepSeek": {
         "base_url": "https://api.deepseek.com",

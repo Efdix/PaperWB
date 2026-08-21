@@ -18,6 +18,8 @@ UNIFIED_PROMPT = """你是学术写作助手。请对以下文本进行润色和
 
 {review_findings}
 
+{custom_instruction}
+
 【待处理文本】
 {selected_text}
 
@@ -264,6 +266,7 @@ class UnifiedWriter:
         pre_citation_sources: str = "",
         review_findings: str = "",
         mode: str = "polish",
+        custom_instruction: str = "",
     ) -> dict:
         """执行统一润色+核查。
 
@@ -277,6 +280,7 @@ class UnifiedWriter:
             pre_citation_sources: 预构建的引文原文上下文。
             review_findings: 草稿整体评价的诊断结论（可选，作为润色指导）。
             mode: "polish"（润色+去AI化+红线检查+引文核查）| "cn2en"（中译英）。
+            custom_instruction: 用户自定义修改要求（选中即改场景）。
 
         Returns:
             {
@@ -342,9 +346,11 @@ class UnifiedWriter:
             system_prompt = "你是学术写作核查专家。只返回 JSON，不要修改原文。"
         else:
             review_section = f"【评价诊断】（以下问题来自草稿整体评价，请在润色时一并修正）\n{review_findings}" if review_findings else ""
+            custom_section = f"【用户要求】\n{custom_instruction}" if custom_instruction else ""
             prompt = (UNIFIED_PROMPT
                 .replace("{style_context}", style_context)
                 .replace("{review_findings}", review_section)
+                .replace("{custom_instruction}", custom_section)
                 .replace("{citation_sources}", citation_sources)
                 .replace("{selected_text}", selected_text))
 
@@ -539,25 +545,6 @@ class UnifiedWriter:
             if author:
                 result[num] = {"author": author, "year": year}
         return result
-
-    @staticmethod
-    def _extract_pdf_text(item) -> str:
-        """从 ZoteroItem 提取 PDF 全文。"""
-        if not item.pdf_path or not os.path.isfile(item.pdf_path):
-            return "(PDF 文件缺失)"
-
-        try:
-            import fitz
-            doc = fitz.open(item.pdf_path)
-            parts = []
-            for page in doc:
-                t = page.get_text()
-                if t.strip():
-                    parts.append(t.strip())
-            doc.close()
-            return "\n\n".join(parts)
-        except Exception:
-            return "(PDF 读取失败)"
 
     @staticmethod
     def extract_citations_via_llm(draft_text: str, citation_count: int, llm_client: "LLMClient") -> list[dict]:

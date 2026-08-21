@@ -46,10 +46,13 @@ _hiddenimports += [
 ]
 
 # 应用图标：exe 资源图标 + Qt 窗口图标（main.py 从 _MEIPASS/assets 加载）
-# 缺文件时（未运行 installer/make_icon.py）跳过并退回默认图标，不阻塞构建
+# 图标是正式分发物的一部分，缺失时直接失败，避免生成无图标安装包
 _icon_src = _os.path.join('assets', 'PaperWB.ico')
-if _os.path.isfile(_icon_src):
-    _datas += [(_icon_src, 'assets')]
+if not _os.path.isfile(_icon_src):
+    raise FileNotFoundError(
+        f"{_icon_src} missing; run installer/make_icon.py first"
+    )
+_datas += [(_icon_src, 'assets')]
 
 a = Analysis(
     ['main.py'],
@@ -80,7 +83,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    icon=_icon_src if _os.path.isfile(_icon_src) else None,
+    icon=_icon_src,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
