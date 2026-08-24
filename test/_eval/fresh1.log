@@ -1,0 +1,129 @@
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+[ZoteroLibrary] 解析路径: C:\Users\13984\Zotero
+[ZoteroLibrary] 找到数据库: C:\Users\13984\Zotero\zotero.sqlite
+[ZoteroLibrary] 找到 storage: C:\Users\13984\Zotero\storage
+[ZoteroLibrary] 从 SQLite 加载: C:\Users\13984\Zotero\zotero.sqlite
+[ZoteroLibrary] 已复制数据库到临时文件
+[ZoteroLibrary] 数据库条目类型: attachment(772), journalArticle(509), book(14), preprint(11), thesis(2), note(2), manuscript(1), computerProgram(1), bookSection(1)
+[ZoteroLibrary] 数据库共有 1313 个条目
+[ZoteroLibrary] 共加载 539 条文献（从 SQLite）
+选定 6 篇
+Loading weights:   0%|          | 0/770 [00:00<?, ?it/s]Loading weights:  88%|████████▊ | 680/770 [00:00<00:00, 6644.91it/s]Loading weights: 100%|██████████| 770/770 [00:00<00:00, 6725.43it/s]
+Usage of TableItem.export_to_dataframe() without `doc` argument is deprecated.
+Usage of TableItem.export_to_dataframe() without `doc` argument is deprecated.
+Usage of TableItem.export_to_dataframe() without `doc` argument is deprecated.
+Usage of TableItem.export_to_dataframe() without `doc` argument is deprecated.
+Usage of TableItem.export_to_dataframe() without `doc` argument is deprecated.
+[Docling] 第 21 页按位图区域补 1 个缺失图片
+[Docling] Stage 1 完成：23 页，共生成 8 张图表截图（含位图兜底）
+
+===== [1] Cui 等 - 2024 - scGPT toward building a foundation model for single-cell multi-omics using generative AI.pdf
+    标题: nature methods
+    卡片数: 231 | 类型分布: {'title': 1, 'subtitle': 26, 'authors': 1, 'body': 190, 'figure': 7, 'figure_caption': 6}
+    最大正文卡词数: 451 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e1      nature methods
+      [subtitle      ] p1_e4      scGPT: toward building a foundation model for single-cell mu
+      [authors       ] p1_e9      Haotian Cui 1,2,3,8 , Chloe Wang 1,2,3,8 , Hassaan Maan 1,3,
+      [body          ] p1_e10     Generative pretrained models have achieved remarkable succes
+      [body          ] p1_e12     Single-cell RNA sequencing (scRNA-seq), by enabling intricat
+      [body          ] p1_e13     One promising approach to address this challenge is the gene
+      [body          ] p1_e14     1 Peter Munk Cardiac Centre, University Health Network, Toro
+      [body          ] p2_e1      In this work, we present the single-cell foundation model sc
+      [body          ] p2_e2      Our model, scGPT, demonstrates the transformative potential 
+      [subtitle      ] p2_e3      Results
+  [耗时 1009.6s]
+[Docling] 第 1 页按位图区域补 2 个缺失图片
+[Docling] Stage 1 完成：14 页，共生成 10 张图表截图（含位图兜底）
+
+===== [2] Emms和Kelly - 2019 - OrthoFinder phylogenetic orthology inference for comparative genomics.pdf
+    标题: OrthoFinder: phylogenetic orthology inference for comparative genomics
+    卡片数: 150 | 类型分布: {'subtitle': 32, 'body': 109, 'abstract_heading': 1, 'abstract_body': 2, 'figure': 6}
+    最大正文卡词数: 283 | 混排大块: 无
+    目录污染: 无
+      [subtitle      ] p1_e1      SOFTWARE
+      [subtitle      ] p1_e2      OrthoFinder: phylogenetic orthology inference for comparativ
+      [body          ] p1_e3      David M. Emms and Steven Kelly *
+      [abstract_heading] p1_e4      Abstract
+      [abstract_body ] p1_e5      Here, we present a major advance of the OrthoFinder method. 
+      [abstract_body ] p1_e6      Keywords: Ortholog inference, Gene tree inference, Gene dupl
+      [subtitle      ] p1_e7      Background
+      [body          ] p1_e8      Determining the phylogenetic relationships between gene sequ
+      [body          ] p1_e11     Heuristic analysis of pairwise sequence similarity scores ha
+      [body          ] p1_e12     A number of tree-based online databases of orthologs have be
+  [耗时 18.1s]
+[Docling] Stage 1 完成：37 页，共生成 33 张图表截图（含位图兜底）
+
+===== [3] Stuart 等 - 2019 - Comprehensive Integration of Single-Cell Data.pdf
+    标题: Comprehensive Integration of Single-Cell Data
+    卡片数: 350 | 类型分布: {'title': 1, 'body': 281, 'subtitle': 57, 'figure': 10, 'table': 1}
+    最大正文卡词数: 353 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      Comprehensive Integration of Single-Cell Data
+      [body          ] p2_e2      Resource
+      [subtitle      ] p2_e3      Comprehensive Integration of Single-Cell Data
+      [body          ] p2_e4      Tim Stuart, 1,4 Andrew Butler, 1,2,4 Paul Hoffman, 1 Christo
+      [body          ] p2_e7      3 Technology Innovation Lab, New York Genome Center, New Yor
+      [body          ] p2_e12     SUMMARY
+      [body          ] p2_e13     Single-cell transcriptomics has transformed our ability to c
+      [body          ] p2_e14     INTRODUCTION
+      [body          ] p2_e15     Recent advances in molecular biology, microfluidics, and com
+      [body          ] p2_e16     The importance of data integration is particularly relevant 
+  [耗时 51.8s]
+[Docling] Stage 1 完成：9 页，共生成 8 张图表截图（含位图兜底）
+
+===== [4] Camacho 等 - 2009 - BLAST+ architecture and applications.pdf
+    标题: BMC Bioinformatics
+    卡片数: 105 | 类型分布: {'title': 1, 'subtitle': 22, 'authors': 1, 'body': 71, 'abstract_heading': 1, 'abstract_body': 3, 'figure': 5, 'table': 1}
+    最大正文卡词数: 324 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e1      BMC Bioinformatics
+      [subtitle      ] p1_e2      Software
+      [subtitle      ] p1_e3      BLAST+: architecture and applications
+      [authors       ] p1_e4      Christiam Camacho, George Coulouris, Vahram Avagyan, Ning Ma
+      [body          ] p1_e6      Email: Christiam Camacho-camacho@ncbi.nlm.nih.gov; George Co
+      [body          ] p1_e7      Vahram Avagyan-avagyanv@ncbi.nlm.nih.gov; Ning Ma-maning@ncb
+      [body          ] p1_e8      Kevin Bealer-kevinbealer@gmail.com; Thomas L Madden* - madde
+      [abstract_heading] p1_e17     Abstract
+      [abstract_body ] p1_e18     Background: Sequence similarity searching is a very importan
+      [abstract_body ] p1_e19     Results: We describe features and improvements of rewritten 
+  [耗时 11.7s]
+[Docling] 第 26 页按位图区域补 7 个缺失图片
+[Docling] Stage 1 完成：37 页，共生成 22 张图表截图（含位图兜底）
+
+===== [5] Han 等 - 2018 - Mapping the Mouse Cell Atlas by Microwell-Seq.pdf
+    标题: Mapping the Mouse Cell Atlas by Microwell-Seq
+    卡片数: 251 | 类型分布: {'title': 1, 'body': 196, 'subtitle': 38, 'figure': 14, 'table': 2}
+    最大正文卡词数: 530 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e3      Mapping the Mouse Cell Atlas by Microwell-Seq
+      [body          ] p2_e2      Resource
+      [subtitle      ] p2_e3      Mapping the Mouse Cell Atlas by Microwell-Seq
+      [body          ] p2_e4      Xiaoping Han, 1,12,13, * Renying Wang, 1,12,13 Yincong Zhou,
+      [body          ] p2_e17     13 These authors contributed equally 14 Lead Contact *Corres
+      [body          ] p2_e20     SUMMARY
+      [body          ] p2_e21     Single-cell RNA sequencing (scRNA-seq) technologies are pois
+      [body          ] p2_e22     INTRODUCTION
+      [body          ] p2_e23     Cellular identity is defined by a unique combination of expr
+      [body          ] p2_e25     Recent advances in single-cell gene expression analysis offe
+  [耗时 85.8s]
+[Docling] 第 4 页按位图区域补 1 个缺失图片
+[Docling] 第 5 页按位图区域补 1 个缺失图片
+[Docling] Stage 1 完成：25 页，共生成 29 张图表截图（含位图兜底）
+
+===== [6] La Manno 等 - 2018 - RNA velocity of single cells.pdf
+    标题: RNA velocity of single cells
+    卡片数: 100 | 类型分布: {'title': 1, 'authors': 1, 'abstract_body': 1, 'body': 73, 'figure': 10, 'subtitle': 14}
+    最大正文卡词数: 792 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      RNA velocity of single cells
+      [authors       ] p1_e3      Gioele La Manno 1,2 , Ruslan Soldatov 3 , Amit Zeisel 1,2 , 
+      [abstract_body ] p1_e4      RNA abundance is a powerful indicator of the state of indivi
+      [body          ] p1_e5      During development, differentiation occurs on a timescale of
+      [body          ] p1_e6      All common single-cell RNA-seq protocols rely on oligo-dT pr
+      [body          ] p1_e7      To quantify the time-dependent relationship between the abun
+      [body          ] p1_e8      During a dynamic process, an increase in the transcription r
+      [body          ] p1_e9      To demonstrate how this simple model can be used to extrapol
+      [body          ] p1_e10     Next, to demonstrate the ability to predict transcriptional 
+      [figure        ] p2_e5      
+  [耗时 47.3s]

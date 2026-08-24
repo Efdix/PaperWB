@@ -85,7 +85,7 @@ class LitRefineWorker(QThread):
 
 
 class PubMedSearchWorker(QThread):
-    """后台多源文献检索（PubMed + arXiv，经统一检索核心）。"""
+    """后台多源文献检索（OpenAlex / PubMed / arXiv，经统一检索核心）。"""
     progress = Signal(str)
     finished = Signal(list)   # 文献 dict 列表（paper_to_dict 格式，含 source）
     error = Signal(str)
@@ -128,6 +128,7 @@ class LitSearchDialog(QDialog):
 
     insert_requested = Signal(str)
     feed_requested = Signal(list, str)  # (文献 dict 列表, 来源标签)
+    search_done = Signal(int)  # 统计埋点：一次检索完成（结果数）
 
     ANALYSIS_PROMPT = """你是学术文献检索专家。请分析以下综述草稿，找出可能遗漏的研究方向、列出你已知的相关文献、并生成 PubMed 检索关键词。
 
@@ -274,7 +275,7 @@ class LitSearchDialog(QDialog):
         layout.addLayout(btn_row)
 
         # ---- 检索结果（初始隐藏） ----
-        results_header = QLabel("检索结果（PubMed + arXiv）")
+        results_header = QLabel("检索结果（OpenAlex / PubMed / arXiv）")
         results_header.setStyleSheet("color: #1e3b42; font-weight: bold; font-size: 13px; padding: 2px 0;")
         layout.addWidget(results_header)
 
@@ -296,7 +297,7 @@ class LitSearchDialog(QDialog):
         bottom_row.addWidget(self._insert_btn)
         self._feed_btn = QPushButton("加入推荐流")
         self._feed_btn.setObjectName("secondaryBtn")
-        self._feed_btn.setToolTip("把检索结果推送到文献工作台推荐流（可导出 RIS/CSV）")
+        self._feed_btn.setToolTip("把检索结果推送到检索工作台推荐流（可导出 RIS/CSV）")
         self._feed_btn.clicked.connect(self._on_send_feed)
         self._feed_btn.setVisible(False)
         bottom_row.addWidget(self._feed_btn)
@@ -472,7 +473,7 @@ class LitSearchDialog(QDialog):
             return
 
         self._search_keywords = queries
-        self._set_busy(True, "正在检索 PubMed + arXiv...")
+        self._set_busy(True, "正在多源检索（含 AI 缺口分析补充）...")
         self._refine_btn.setEnabled(False)
         self._search_btn.setEnabled(False)
 
@@ -492,6 +493,7 @@ class LitSearchDialog(QDialog):
 
     def _on_search_done(self, papers: list):
         self._set_busy(False)
+        self.search_done.emit(len(papers))
         # 检索完成后重新启用反馈和检索按钮，支持循环
         self._refine_btn.setEnabled(True)
         self._search_btn.setEnabled(True)
@@ -545,7 +547,7 @@ class LitSearchDialog(QDialog):
 
     @staticmethod
     def _normalize_title(title: str) -> str:
-        # 归一化实现抽至 core.reference_match，与文献工作台巡视共用同一口径
+        # 归一化实现抽至 core.reference_match，与检索工作台巡视共用同一口径
         from ..core.reference_match import normalize_title
         return normalize_title(title)
 
@@ -576,7 +578,7 @@ class LitSearchDialog(QDialog):
         self.insert_requested.emit(marker)
 
     def _on_send_feed(self):
-        """把检索结果推送到文献工作台推荐流。"""
+        """把检索结果推送到检索工作台推荐流。"""
         if not self._results_papers:
             QMessageBox.information(self, "提示", "当前没有可推送的检索结果。")
             return
@@ -584,7 +586,7 @@ class LitSearchDialog(QDialog):
         QMessageBox.information(
             self, "已推送",
             f"已将 {len(self._results_papers)} 篇文献加入推荐流。\n"
-            "可在「文献工作台 → 文献推荐流」中导出 RIS/CSV 或查看详情。")
+            "可在「检索工作台 → 巡视结果」中导出 RIS/CSV 或查看详情。")
 
     def _on_search_error(self, err: str):
         self._set_busy(False)

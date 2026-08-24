@@ -194,7 +194,7 @@ class ParagraphCard(QFrame):
         )
 
     def _setup_title_card(self):
-        self._make_card_base("#ffffff", "#a8c5ff")
+        self._make_card_base("#ffffff", "#e5e5ea")  # 标题卡
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 16)
         layout.setSpacing(8)
@@ -211,8 +211,8 @@ class ParagraphCard(QFrame):
         self._append_translation_row(layout)
 
     def _setup_key_subtitle_card(self, level: int):
-        """关键章节标题（如 Introduction、Results）—— 醒目的暖金色。"""
-        self._make_card_base("#fffaf1", "#e1b06a")
+        """关键章节标题（如 Introduction、Results）—— 醒目的暖金色文字。"""
+        self._make_card_base("#ffffff", "#e5e5ea")  # 关键章节标题卡
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 10)
         layout.setSpacing(6)
@@ -222,7 +222,7 @@ class ParagraphCard(QFrame):
         self.text_label = QLabel(self._text)
         self.text_label.setFont(f)
         self.text_label.setStyleSheet(
-            "color: #a76d2b; border-left: 4px solid #d99b54;"
+            "color: #a76d2b;"
         )
         self.text_label.setContentsMargins(14, 6, 0, 6)
         self.text_label.setWordWrap(True)
@@ -233,7 +233,7 @@ class ParagraphCard(QFrame):
 
     def _setup_subtitle_card(self, level: int):
         """普通小节标题。"""
-        self._make_card_base("#ffffff", "#e5e5ea")
+        self._make_card_base("#ffffff", "#e5e5ea")  # 普通小节标题卡
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 12, 20, 8)
         layout.setSpacing(4)
@@ -244,8 +244,7 @@ class ParagraphCard(QFrame):
         self.text_label = QLabel(self._text)
         self.text_label.setFont(f)
         self.text_label.setStyleSheet(
-            f"color: {colors.get(level, '#526b6c')}; "
-            f"border-left: 3px solid {colors.get(level, '#d2dfda')};"
+            f"color: {colors.get(level, '#526b6c')};"
         )
         self.text_label.setContentsMargins(10, 3, 0, 3)
         self.text_label.setWordWrap(True)
@@ -255,28 +254,28 @@ class ParagraphCard(QFrame):
         self._append_translation_row(layout)
 
     def _setup_key_abstract_heading_card(self):
-        """关键摘要标签 —— 暖金色突出。"""
-        self._make_card_base("#f4faf7", "#d9b16c")
+        """关键摘要标签 —— 暖金色文字（保留原文小节名，如 Abstract）。"""
+        self._make_card_base("#ffffff", "#e5e5ea")  # 关键摘要标签卡
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 10, 20, 6)
-        header = QLabel("📝 摘要")
+        header = QLabel(f"📝 {self._text or 'Abstract'}")
         header.setStyleSheet("color: #a76d2b; font-size: 16px; font-weight: bold;")
         layout.addWidget(header)
         self.text_label = QLabel("")
         layout.addWidget(self.text_label)
 
     def _setup_abstract_heading_card(self):
-        self._make_card_base("#f4faf7", "#dce8e3")
+        self._make_card_base("#ffffff", "#e5e5ea")  # 摘要标题卡
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 8, 20, 6)
-        header = QLabel("📝 摘要")
+        header = QLabel(f"📝 {self._text or 'Abstract'}")
         header.setStyleSheet("color: #3e8e78; font-size: 14px; font-weight: bold;")
         layout.addWidget(header)
         self.text_label = QLabel("")
         layout.addWidget(self.text_label)
 
     def _setup_meta_card(self):
-        self._make_card_base("#f7f9f7", "#e5e9e5")
+        self._make_card_base("#ffffff", "#e5e5ea")  # 作者/单位卡
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 8, 20, 8)
         layout.setSpacing(4)
@@ -284,8 +283,26 @@ class ParagraphCard(QFrame):
         header = QLabel(labels.get(self._elem.element_type, "📋 信息"))
         header.setStyleSheet("color: #82908d; font-size: 10px; font-weight: bold;")
         layout.addWidget(header)
+        # 单位/出版信息默认折叠（仅前 240 字符预览，点击展开全文），
+        # 避免作者名后 16 张单位卡片刷屏影响阅读。
+        preview = self._text
+        if self._elem.element_type in ("affiliations", "metadata") and len(self._text) > 240:
+            preview = self._text[:240].rstrip() + " …"
+            toggle = QPushButton("展开全部")
+            toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+            toggle.setStyleSheet(
+                "QPushButton{border:none;background:transparent;color:#5b6f8a;"
+                "font-size:11px;padding:2px 0;}QPushButton:hover{color:#2463c5;}"
+            )
+            toggle.clicked.connect(lambda: self._expand_meta_text(toggle))
+            self._meta_toggle = toggle
+            layout.addWidget(toggle)
+            self.text_label = QLabel(preview)
+            self._meta_collapsed = True
+        else:
+            self.text_label = QLabel(self._text)
+            self._meta_collapsed = False
         f = QFont("Microsoft YaHei UI", 11)
-        self.text_label = QLabel(self._text)
         self.text_label.setFont(f)
         self.text_label.setStyleSheet("color: #718180; line-height: 1.5;")
         self.text_label.setContentsMargins(0, 2, 0, 2)
@@ -294,8 +311,21 @@ class ParagraphCard(QFrame):
         self.text_label.setCursor(Qt.CursorShape.IBeamCursor)
         layout.addWidget(self.text_label)
 
+    def _expand_meta_text(self, btn: "QPushButton") -> None:
+        """点击「展开全部」：把折叠的全文填回 text_label。"""
+        self.text_label.setText(self._text)
+        btn.setText("收起")
+        btn.clicked.disconnect()
+        btn.clicked.connect(lambda: self._collapse_meta_text(btn))
+
+    def _collapse_meta_text(self, btn: "QPushButton") -> None:
+        self.text_label.setText(self._text[:240].rstrip() + " …")
+        btn.setText("展开全部")
+        btn.clicked.disconnect()
+        btn.clicked.connect(lambda: self._expand_meta_text(btn))
+
     def _setup_abstract_card(self):
-        self._make_card_base("#f4faf7", "#dce8e3")
+        self._make_card_base("#ffffff", "#e5e5ea")  # 摘要正文卡
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 12, 20, 12)
         layout.setSpacing(6)
@@ -303,8 +333,7 @@ class ParagraphCard(QFrame):
         self.text_label = QLabel(self._text)
         self.text_label.setFont(f)
         self.text_label.setStyleSheet(
-            "color: #29434a; line-height: 1.9; "
-            "border-left: 3px solid #86bdb2;"
+            "color: #29434a; line-height: 1.9;"
         )
         self.text_label.setContentsMargins(12, 4, 0, 4)
         self.text_label.setWordWrap(True)
@@ -334,7 +363,7 @@ class ParagraphCard(QFrame):
             self._append_translation_row(layout, min_len=8)
 
     def _setup_caption_card(self):
-        self._make_card_base("#fffdfa", "#e5e1d9")
+        self._make_card_base("#ffffff", "#e5e5ea")  # 图注卡
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 6, 20, 6)
         layout.setSpacing(4)
@@ -349,7 +378,7 @@ class ParagraphCard(QFrame):
         self._append_translation_row(layout, min_len=8)
 
     def _setup_reference_card(self):
-        self._make_card_base("#fafaf8", "#e7e7e1")
+        self._make_card_base("#ffffff", "#e5e5ea")  # 参考文献卡
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 6, 20, 6)
         layout.setSpacing(2)
@@ -364,7 +393,7 @@ class ParagraphCard(QFrame):
 
     def _setup_collapsed_card(self):
         """折叠内容卡片 —— 显示为可展开的细条（默认折叠，点击展开全文）。"""
-        self._make_card_base("#fafaf8", "#e7e7e1")
+        self._make_card_base("#ffffff", "#e5e5ea")  # 折叠卡
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 8, 16, 8)
         layout.setSpacing(6)
@@ -500,7 +529,7 @@ class ParagraphCard(QFrame):
 
     def _setup_body_card(self):
         """正文段落 —— 保持原样，不做特殊区分。"""
-        self._make_card_base("#fffdfa", "#e5e1d9")
+        self._make_card_base("#ffffff", "#e5e5ea")  # 正文卡
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 12, 20, 12)
         layout.setSpacing(8)
@@ -743,8 +772,6 @@ class PDFViewerPanel(QWidget):
     pdf_path_changed = Signal(str)
     follow_up_question = Signal(str, str)  # (question, image_path 或 "")
     structured_document_updated = Signal(str)
-    toggle_library_requested = Signal(bool)
-    toggle_chat_requested = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -784,21 +811,6 @@ class PDFViewerPanel(QWidget):
         title = QLabel("结构化阅读")
         title.setObjectName("titleLabel")
         toolbar.addWidget(title)
-        self._library_toggle_btn = QPushButton("文献列表")
-        self._library_toggle_btn.setObjectName("paneToggle")
-        self._library_toggle_btn.setCheckable(True)
-        self._library_toggle_btn.setChecked(True)
-        self._library_toggle_btn.setToolTip("显示或隐藏左侧文献列表")
-        self._library_toggle_btn.toggled.connect(self.toggle_library_requested.emit)
-        toolbar.addWidget(self._library_toggle_btn)
-
-        self._chat_toggle_btn = QPushButton("论文问答")
-        self._chat_toggle_btn.setObjectName("paneToggle")
-        self._chat_toggle_btn.setCheckable(True)
-        self._chat_toggle_btn.setChecked(True)
-        self._chat_toggle_btn.setToolTip("显示或隐藏右侧论文问答")
-        self._chat_toggle_btn.toggled.connect(self.toggle_chat_requested.emit)
-        toolbar.addWidget(self._chat_toggle_btn)
         toolbar.addStretch()
 
         self.auto_trans_btn = QPushButton("自动翻译：关")
@@ -906,6 +918,10 @@ class PDFViewerPanel(QWidget):
                 self.pdf_path_changed.emit(file_path)
                 full_text = "\n\n".join(e.text for e in doc.display_elements if e.text)
                 self.pdf_loaded.emit(full_text)
+                # 后台建库的初步整合结果：配置了纯文本接口时后台做一次接缝精修
+                if cached_state.get("seams_final", True) is False \
+                        and self._text_client is not None:
+                    self._refine_prelim_seams()
                 return
             except Exception:
                 pass  # 缓存损坏，走正常流程
@@ -1083,12 +1099,47 @@ class PDFViewerPanel(QWidget):
 
             full_text = "\n\n".join(e.text for e in doc.display_elements if e.text)
             self.pdf_loaded.emit(full_text)
+            # 接手后台建库的在途处理器（或缓存秒开）后，初步整合文档仍需
+            # 一次 LLM 接缝精修；延迟到当前调用栈外，让初步结果先落稳
+            if (self._processor is not None
+                    and self._processor.seams_mode == "prelim"
+                    and self._text_client is not None):
+                self.info_label.setText("已加载，正在后台精修跨页段落...")
+                self.info_label.setStyleSheet("color: #a76d2b;")
+                QTimer.singleShot(0, self._refine_prelim_seams)
         except Exception:
             import traceback
             traceback.print_exc()
             self._stop_stage2_timer()
             self.info_label.setText("❌ 渲染整合结果失败，可右键「重新解析整合」重试")
             self.info_label.setStyleSheet("color: #b24f4a;")
+
+    def _refine_prelim_seams(self) -> None:
+        """后台建库的初步整合文档 → 打开时用 LLM 精修跨页接缝并定稿。
+
+        复用 start_stage2 的 final 路径：定稿接缝送 LLM 复核（初步规则
+        版作为候选一并重评），完成后重建文档、刷新视图并置 seams_final。
+        """
+        if not self._current_path or self._text_client is None:
+            return
+        proc = self._processor
+        if proc is None:
+            # 缓存秒开路径没有在途处理器：为精修补建一个（读完缓存即闲）
+            try:
+                from ..core.pdf_processor import PDFProcessor
+                proc = PDFProcessor(self._current_path, self._text_client)
+            except Exception:  # noqa: BLE001
+                return
+            self._processor = proc
+            self._attach_processor_signals()
+        if getattr(proc, "_pdf_path", "") != self._current_path:
+            return
+        if proc.is_busy or proc.seams_mode not in ("", "prelim"):
+            return  # 在途或已定稿
+        proc.set_llm_client(self._text_client)
+        self.info_label.setText("正在后台精修跨页段落...")
+        self.info_label.setStyleSheet("color: #a76d2b;")
+        proc.start_stage2()
 
     def _on_stage2_error(self, pdf_path: str, error_msg: str):
         if pdf_path != self._current_path:

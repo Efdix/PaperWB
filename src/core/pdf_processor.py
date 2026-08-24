@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from .llm_client import LLMClient
 
 
-FAST_DOCUMENT_VERSION = 5
+FAST_DOCUMENT_VERSION = 9
 DOCLING_PARSER_VERSION = "docling_v3"
 
 
@@ -311,42 +311,18 @@ VALID_ELEMENT_TYPES = frozenset({
 def _validate_page_result(raw: str, page_num: int) -> dict:
     """解析并校验 LLM 返回的单页 JSON。
 
-    容错策略：
-    1. 直接 JSON 解析
-    2. 提取 ```json ... ``` 代码块
-    3. 提取第一个 { 到最后一个 }
-    4. 全部失败则返回降级结果
+    解析容错（代码围栏提取/括号切片/换行清洗/全角括号等 5 层）统一由
+    json_utils.parse_json_response 处理，此处只做空值检查与结构规范化。
 
     Returns:
         {"page": int, "page_role": str, "elements": list[dict], "parse_error": str|None}
     """
-    import re
-
     if not raw or not raw.strip():
         return _fallback_page_result(page_num, "LLM 返回为空")
 
-    text = raw.strip()
-
-    # 尝试 1: 直接解析
-    obj = _try_parse_json(text)
+    obj = _try_parse_json(raw)
     if obj is not None:
         return _normalize_page_result(obj, page_num)
-
-    # 尝试 2: ```json ... ``` 或 ``` ... ```
-    for pattern in [r'```json\s*\n?(.*?)\n?```', r'```\s*\n?(.*?)\n?```']:
-        m = re.search(pattern, text, re.DOTALL)
-        if m:
-            obj = _try_parse_json(m.group(1).strip())
-            if obj is not None:
-                return _normalize_page_result(obj, page_num)
-
-    # 尝试 3: 第一个 { 到最后一个 }
-    first_brace = text.find('{')
-    last_brace = text.rfind('}')
-    if first_brace >= 0 and last_brace > first_brace:
-        obj = _try_parse_json(text[first_brace:last_brace + 1])
-        if obj is not None:
-            return _normalize_page_result(obj, page_num)
 
     return _fallback_page_result(page_num, f"无法解析 LLM 返回的 JSON（前100字符: {raw[:100]}）")
 
@@ -412,31 +388,13 @@ def _fallback_page_result(page_num: int, error: str) -> dict:
 # ============================================================
 
 def _validate_integration_result(raw: str) -> dict:
-    """解析并校验 LLM 返回的整合 JSON。"""
-    import re
-
+    """解析并校验 LLM 返回的整合 JSON（容错统一由 json_utils 处理）。"""
     if not raw or not raw.strip():
         return {"error": "LLM 返回为空"}
 
-    text = raw.strip()
-
-    obj = _try_parse_json(text)
+    obj = _try_parse_json(raw)
     if obj is not None:
         return obj
-
-    for pattern in [r'```json\s*\n?(.*?)\n?```', r'```\s*\n?(.*?)\n?```']:
-        m = re.search(pattern, text, re.DOTALL)
-        if m:
-            obj = _try_parse_json(m.group(1).strip())
-            if obj is not None:
-                return obj
-
-    first_brace = text.find('{')
-    last_brace = text.rfind('}')
-    if first_brace >= 0 and last_brace > first_brace:
-        obj = _try_parse_json(text[first_brace:last_brace + 1])
-        if obj is not None:
-            return obj
 
     return {"error": f"无法解析整合结果 JSON（前100字符: {raw[:100]}）"}
 
@@ -499,19 +457,26 @@ def _strip_watermarks(text: str) -> str:
     if not text:
         return ""
     t = _WATERMARK_RE.sub(" ", text)
-    # 部分 PDF 字体把 fi/fl 连字拆成独立文本片段，Docling 会输出
-    # ``pro fi ling``、``fi bers`` 等形式；同时修复标题中 ``AStudy``
+    # 软连字符（U+00AD）是断行连字残留，直接拼回单词（``inter\xad twined``）；
+    # nbsp/窄 nbsp 等 Unicode 空白归一成普通空格。
+    t = re.sub(r"\xad\s?", "", t)
+    t = re.sub("[\u00a0\u202f\u2007\u2009\u2002\u2003]", " ", t)
+    # 部分 PDF 字体把 ff/fi/fl/ffi/ffl 连字拆成独立文本片段，Docling 会输出
+    # ``pro fi ling``、``di ff erent`` 等形式；同时修复标题中 ``AStudy``
     # 连写。只处理高置信模式，不做激进合并：单个大写字母 + 空格 +
     # 小写词在正常学术英语中大量存在（T cell / B cells / X axis /
     # G protein / N terminal），无条件合并会永久损坏正文文本。
     t = re.sub(r"\bA(?=[A-Z][a-z])", "A ", t)
     t = re.sub(
-        r"\b(?:(?P<prefix>[A-Za-z]+)\s+)?(?P<fragment>fi|fl)\s+"
+        r"\b(?:(?P<prefix>[A-Za-z]+)\s+)?(?P<fragment>ffi|ffl|ff|fi|fl)\s+"
         r"(?P<suffix>[a-z]+)\b",
         _repair_ligature_spacing,
         t,
         flags=re.IGNORECASE,
     )
+    # 字母间的空格连字符是断行残留（``Hong -Hu``、``broad -leaved``、
+    # ``E -mail``），拼回原词；数字两侧不动（保护 ``pages 3 - 4`` 类区间）。
+    t = re.sub(r"(?<=[A-Za-z])\s+-\s*(?=[A-Za-z])", "-", t)
     t = re.sub(r"\s{2,}", " ", t).strip()
     return t
 
@@ -521,9 +486,20 @@ _RUNNING_HEAD_BLACKLIST = (
     "article in press", "article in press1", "article in press ",
     "received:", "accepted:", "published online:", "cite this article",
     "doi:", "open access", "copyright", "© ", "issn", "volume ",
-    "www.", "http://",
+    "www.", "http://", "https://doi",
+    "email:", "e-mail:", "e mail:", "contact email",
     "we are providing", "unedited version", "if this paper is publishing",
-    "transparent peer", "the author(s)",
+    "transparent peer", "the author(s)", "this article is a",
+    "this article was submitted",
+    # 出版流程/声明行（PNAS/eLife/预印本等首页模板，任何页面出现都属噪声）
+    "author contributions", "author affiliations",
+    "competing interest", "declaration of interest",
+    "the authors declare", "competing financial interest",
+    "creative commons", "license, which permits",
+    "funding:", "reviewed preprint", "edited by", "academic editor",
+    "reviewing editor", "to whom correspondence",
+    "this article contains supporting", "pnas direct submission",
+    "these authors contributed", "corresponding author",
 )
 
 
@@ -614,7 +590,7 @@ def _figure_internal_text(e: dict, figure_bboxes: list[list[float]]) -> bool:
 
 
 _FIGURE_CAPTION_RE = re.compile(
-    r"^(?:fig(?:ure)?|extended\s+data|supplementary\s+fig(?:ure)?)\s*"
+    r"^(?:fig(?:ure)?|table|extended\s+data|supplementary\s+fig(?:ure)?)\s*"
     r"[.:]?\s*\d+",
     re.IGNORECASE,
 )
@@ -627,7 +603,13 @@ def _looks_like_figure_caption(text: str) -> bool:
 
 def _is_decorative_figure(element: dict, page_elements: list[dict],
                            page_no: int) -> bool:
-    """过滤出版社 Logo/更新图标等无图注装饰图，不影响正文大图。"""
+    """过滤出版社 Logo/更新图标等无图注装饰图，不影响正文大图。
+
+    - 无 caption/area<2500 的小图 → 装饰图（出版社徽标）；
+    - 首页无图注 + 占页面小部分 / 大幅占位 → 封面图/Graphical Abstract；
+    - 任意页：无图注 + 位于页面顶部页眉带（bbox y 距页顶 < 10%）且
+      高度小于正文行的 figure → 页眉 logo（如 Cell/CellPress 重复水印）。
+    """
     if element.get("type") != "figure":
         return False
     if not element.get("is_meaningful", True):
@@ -648,24 +630,381 @@ def _is_decorative_figure(element: dict, page_elements: list[dict],
     ]
     if not boxes:
         return False
-    page_area = max(float(b[2]) for b in boxes) * max(float(b[3]) for b in boxes)
-    # 首页无图注且只占页面小部分的图，通常是出版社 Logo/更新徽标。
-    return page_no == 1 and page_area > 0 and area / page_area < 0.25
+    page_w = max(float(b[2]) for b in boxes)
+    page_h = max(float(b[3]) for b in boxes)
+    page_area = max(page_w * page_h, 1.0)
+    # 首页无图注 + 占页面小部分 → 出版社 Logo/更新徽标
+    if page_no == 1 and area / page_area < 0.25:
+        return True
+    # 首页无图注 + 大幅占位 → 封面图/Graphical Abstract（UI 单独展示）
+    if page_no == 1 and area / page_area >= 0.30:
+        return True
+    # 任意页页眉水印：y 接近页顶（< 10%）、高度 ≤ 200px（远小于正文大图）、
+    # 宽度 ≤ 25% 页面宽 → Cell/CellPress 等重复页眉 logo
+    ex0, ey0, ex1, ey1 = (float(v) for v in bbox)
+    if ey0 < page_h * 0.10 and (ey1 - ey0) <= 200 \
+            and (ex1 - ex0) <= page_w * 0.25:
+        return True
+    return False
 
 
 def _is_front_matter_noise(text: str, page_no: int, element_type: str) -> bool:
-    """过滤首页出版社模板碎片，不误删正文中的同名术语。"""
+    """过滤首页出版社模板碎片，不误删正文中的同名术语（仅在首页生效）。
+
+    覆盖常见期刊版头：刊名卷期行（Annu. Rev. ... 2007. 38:179-201）、
+    在线访问声明、doi 行、ISSN/报价行（1543-592X/07/1201-0179$20.00）、
+    栏目类型标签（Review / Research Article / Brief Communication）、
+    通讯作者与收稿日期行、出版流程信息（Edited by / Published / 学术编辑）。
+    """
     if page_no != 1 or element_type not in ("body", "subtitle", "metadata"):
         return False
     t = _strip_watermarks(text).strip()
-    low = t.lower()
     if not t:
         return True
-    if low in {"article", "article type", "check for updates"}:
+    low = t.lower().rstrip(" .:!；;")
+    # 栏目类型标签（整词精确匹配）：标题上方/下方的文章类型标注
+    if low in {
+        "article", "articles", "research article", "research articles",
+        "review", "review article", "mini review", "minireview",
+        "brief communication", "short communication", "microarticle",
+        "case report", "perspective", "commentary", "editorial",
+        "corrigendum", "erratum", "original article", "original research",
+        "technical advance", "resource", "opinion", "news", "forum",
+        "check for updates", "article type",
+    }:
         return True
-    if "doi.org/" in low or low.startswith("https://doi"):
+    if "doi.org/" in low or low.startswith("https://doi") \
+            or re.match(r"^\(?https?://doi", low):
+        return True
+    if low.startswith(("annu. rev.", "the annual review of", "this article's doi",
+                       "article's doi:", "doi:")):
+        return True
+    if "is online at http" in low or low.startswith("www."):
+        return True
+    # ISSN/卷期页报价行：1543-592X/07/1201-0179$20.00
+    if re.match(r"^\d{4}-?\d{3}[xX]/", t) and "$" in t[20:40]:
+        return True
+    # 收稿/录用/出版日期行（Received 23 September 2024; Accepted …；
+    # Published: 29 March 2024 / Published online: xx xx xxxx）
+    if re.match(r"^\*?\s*(?:received|accepted|published|revised)\b", low) \
+            and (re.search(r"(?:19|20)\d{2}", low) or low.endswith("online")
+                 or low == "published") \
+            and len(t) <= 160:
+        return True
+    # 学术编辑/责任编辑行（PeerJ/PNAS 等流程信息）
+    if re.match(r"^\*?\s*(?:academic\s+editor|reviewing\s+editor|edited\s+by"
+                r"|handling\s+editor)\b", low):
+        return True
+    # 通讯作者行（单复数/中英文括号/星号前缀：
+    # *Author(s) for correspondence: / †Corresponding author(s). E-mail(s):）
+    if re.match(r"^\*?\s*(?:authors?\s+for\s+correspondence"
+                r"|corresponding\s+authors?|correspondence)\s*[:.]", low) \
+            or re.match(r"^[+*†‡§]?\s*correspondence\s*:?", low) \
+            or re.match(r"^\d?\s*to\s+whom\s+correspondence", low):
+        return True
+    # 通讯作者行变体（*Correspondence author(s). E-mail(s): xxx@yyy）：
+    # 以 correspondence 开头且带邮箱 → 版头信息行
+    if re.match(r"^\*?\s*correspond", low) and re.search(r"@\w+\.\w{2,}", t):
+        return True
+    # 贡献声明（These authors contributed equally to this work.）
+    if re.match(r"^[+*†‡§]?\s*(?:these\s+)?authors?\s+contributed\s+equally", low):
+        return True
+    # 邮箱行（单个或多个空格分隔，容忍句尾标点）：
+    # jiajepeng@nwpu.edu.cn. / liushk@ouc.edu.cn qili66@ouc.edu.cn
+    stripped = t.rstrip(".,;。，；")
+    emails = re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", stripped)
+    if emails and re.sub(r"\s+", "", stripped) == re.sub(
+            r"\s+", "", "".join(emails)):
+        return True
+    # ORCID / 作者信息索引行
+    if re.search(r"orcid\.org", low):
+        return True
+    # 版权/许可声明（© The Author(s) … / Creative Commons Attribution …）
+    if re.match(r"^copyright\b|^©", low) or "creative commons" in low \
+            or "rights reserved" in low or "which permits unrestricted" in low:
+        return True
+    # 纯 DOI 值行
+    if re.match(r"^10\.\d{4,9}/", t):
         return True
     return len(t) <= 60 and not re.search(r"[a-z\u4e00-\u9fff]", t, re.IGNORECASE)
+
+
+# 常见期刊名（页眉/版头标签，Docling 常标成 subtitle）：不得当作文章标题，
+# 也不关闭 front matter 状态机
+_JOURNAL_NAME_RE = re.compile(
+    r"^(?:nature\s+[a-z&]+|cell(?:[:\s]|$)|molecular\s+cell|developmental\s+cell|"
+    r"cancer\s+cell|cell\s+(?:reports?|systems?|stem\s+cell|metabolism|"
+    r"host\s+&?\s*microbe|chemical\s+biology)|current\s+biology|neuron|"
+    r"science(?:\s+advances?|\s+immunology|\s+robotics|\s+signaling|"
+    r"\s+translational\s+medicine)?|pnas|proceedings\s+of\s+the\s+national\s+"
+    r"academy\s+of\s+sciences|elife|embo\s+journal|plos\s+(?:biology|"
+    r"computational\s+biology|genetics|pathogens|one)|bmc\s+(?:biology|"
+    r"bioinformatics|genomics|medicine|plant\s+biology)|genome\s+biology|"
+    r"genome\s+research|nucleic\s+acids\s+research|bioinformatics|"
+    r"briefings\s+in\s+bioinformatics|molecular\s+systems\s+biology|"
+    r"molecular\s+biology\s+and\s+evolution|the\s+american\s+naturalist|"
+    r"journal\s+of\s+molecular\s+biology|febs\s+letters|protein\s+&?\s*cell|"
+    r"cell\s+research|science\s+china\s+life\s+sciences|"
+    r"national\s+science\s+review)\s*$",
+    re.IGNORECASE,
+)
+
+# 摘要/小结小节名（映射为摘要标题卡；其下正文映射为摘要正文卡）
+_ABSTRACT_HEADING_RE = re.compile(
+    r"^(?:abstract|summary|significance|graphical\s+abstract|highlights?)\s*$"
+    r"|^摘要$",
+    re.IGNORECASE,
+)
+
+# 常规章节名（状态机里短行小节标题不得跳过：``Methods`` 等是真实小节）
+_SECTION_TITLE_RE = re.compile(
+    r"^(?:\d+(?:[.)]\s*|\s+))?(?:introduction|methods?|"
+    r"materials?\s+(?:and\s+methods?)?|results?(?:\s+and\s+discussion)?|"
+    r"discussion|conclusions?|background|data\s+availability|"
+    r"acknowledg(e)?ments?|funding|references?|supplementary\s+materials?)\s*$",
+    re.IGNORECASE,
+)
+
+# 首页出版社模板小节名：其下条目（Highlights 列表/作者名单/邮箱等）
+# 是版面元信息而非正文，整块剔除（仅首页生效，见 _front_matter_block_ids）
+_FRONT_MATTER_SECTION_RE = re.compile(
+    r"^(?:graphical?\s+(?:abstract|abstract\s*text)|highlights?|"
+    r"authors?(?:\s+list)?|authors?\s+and\s+affiliations?|"
+    r"for\s+correspondence|\*?\s*correspondence|"
+    r"(?:reviewing\s+)?editor(?:ial\s+board)?|edited\s+by|reviewed\s+by|"
+    r"specialty\s+section|citation|in\s+brief|lead\s+contact|"
+    r"funding|competing\s+(?:interests?|statements?)|"
+    r"e[- ]?mail(?:\s+addresses?)?)\s*:?\s*$",
+    re.IGNORECASE,
+)
+
+# 单位块特征：机构词 + 编号段（``1 Department of …``），配合邮箱/邮编识别
+_INSTITUTION_WORD_RE = re.compile(
+    r"\b(?:universit|institut|college|academ|department|laborator|"
+    r"school\s+of|center\s+for|centre\s+for|museum|hospital|faculty|"
+    r"key\s+laborator)\w*", re.IGNORECASE,
+)
+_NUMBERED_AFFIL_START_RE = re.compile(r"^[(\[{]?\d{1,2}[*)\]}]?\s+[A-Za-z]")
+_NUMBERED_AFFIL_SEG_RE = re.compile(r"[.;]\s*\d{1,2}\s+[A-Z]")
+# 作者行特征：姓名（``Wei-hang Geng`` / ``Allen W. Zhang`` / ``Ciara O'Flanagan``）
+_INITIAL_RE = re.compile(
+    r"\b[A-Z][A-Za-z'\-]*(?:[ .][A-Z]\.?)?\s+[A-Z][A-Za-z'\-]+"
+)
+# 摘要开头散文信号词（区分摘要与正文）
+_ABSTRACT_PROSE_RE = re.compile(
+    r"\b(?:background|aims?|objectives?|results?|conclusions?|methods?)\b\s*"
+    r"[:.]|the\s+(?:aim|objective|purpose)\s+of|here\s+we\b|in\s+this\s+study\b|"
+    r"\bwe\b|\bour\b|"
+    r"\bwe\s+(?:show|report|present|demonstrate|describe|investigate|provide)\b|"
+    r"\babstract\b",
+    re.IGNORECASE,
+)
+_PROSE_MARKER_RE = re.compile(
+    r"\b(?:furthermore|moreover|however|although|therefore|thus|meanwhile)\b,"
+    r"?|\bwe\b|\bour\b|\bthis\s+(?:study|paper|work)\b|\bthese\s+results\b",
+    re.IGNORECASE,
+)
+_POSTAL_CODE_RE = re.compile(
+    r"\b\d{5,6}(?:-\d{4})?\b"          # 美/中/欧大陆邮编
+    r"|[A-Z]{1,2}\d{1,2}[A-Z]?\s+\d[A-Z]{2}\b"  # 英式邮编 CF10 3AT
+)
+_CONTACT_INFO_RE = re.compile(
+    r"\be[- ]?mail\b|@\w+\.\w{2,}|\b(?:tel|fax|phone)\b", re.IGNORECASE
+)
+
+
+def _is_affiliation_block(text: str, page_no: int) -> bool:
+    """判断是否为作者单位列表块（仅前两页生效）。
+
+    特征组合：机构词密度 + 编号段/编号开头 + 邮编或联系方式，
+    且不含正文散文标记（furthermore/we/this study 等）——混排了
+    正文散文的长块一律保留，避免误删真实内容。
+    """
+    if page_no > 2:
+        return False
+    t = (text or "").strip()
+    if not t or len(t) > 1500:
+        return False
+    if any("\u4e00" <= ch <= "\u9fff" for ch in t):
+        return False
+    inst_words = len(_INSTITUTION_WORD_RE.findall(t))
+    if not inst_words:
+        return False
+    numbered_start = bool(_NUMBERED_AFFIL_START_RE.match(t))
+    numbered_segs = len(_NUMBERED_AFFIL_SEG_RE.findall(t))
+    has_postal = bool(_POSTAL_CODE_RE.search(t))
+    has_contact = bool(_CONTACT_INFO_RE.search(t))
+    # 剥离声明句（``* These authors contributed equally to this work.`` /
+    # ``Correspondence and requests for materials...``）后再查散文信号，
+    # 否则单位块尾巴上的声明会误判为正文散文而拒绝识别
+    strip_notes = re.sub(
+        r"(?:[+*†‡§]?\s*these\s+authors\s+contributed\s+equally[^.]*\.|"
+        r"correspondence\s+and\s+requests[^.]*\.)",
+        "", t, flags=re.IGNORECASE)
+    if _PROSE_MARKER_RE.search(strip_notes):
+        return False  # 含正文散文 → 混排块，宁可不删
+    short = len(t) <= 300
+    if numbered_segs >= 2 and (inst_words >= 2 or has_contact or has_postal):
+        return True
+    if numbered_start and inst_words >= 1 and short:
+        return True  # 编号开头的单位行（整块或单机构短行均适用）
+    if numbered_start and inst_words >= 2 and short:
+        return True
+    # 无编号的孤立单位行/单位碎片（Texas 77555, and Florida Medical …）
+    if inst_words >= 1 and has_postal and short \
+            and not t.endswith(("。", "！")):
+        return True
+    # 机构词开头且无句终标点的多机构块（AnnRev/MDPI 等无编号单位列表）
+    if inst_words >= 2 and len(t) > 80 \
+            and not _ends_sentence(t) and not t.endswith(("。", "！")):
+        return True
+    return False
+
+
+def _is_affiliation_fragment(text: str, page_no: int) -> bool:
+    """首页正文开始前的单行单位碎片（无编号段的机构行，如 ``1 Chinese
+    Academy of Sciences, China``）。仅在 front matter 状态机内调用——
+    正文开始后不再参与，避免误删真实内容。"""
+    if page_no != 1:
+        return False
+    t = (text or "").strip()
+    if not t or len(t) > 80:
+        return False
+    if re.search(r"[.!?。！？](?:\s|$)", t):
+        return False
+    if _PROSE_MARKER_RE.search(t):
+        return False
+    if _NUMBERED_AFFIL_START_RE.match(t):
+        return True
+    return bool(_INSTITUTION_WORD_RE.search(t[:20]))
+
+
+def _is_author_line(text: str, page_no: int) -> bool:
+    """作者行识别（仅首页）：≥2 个「姓名+编号/†* 上标」模式。
+
+    Docling 常把作者行标成 body；单位块/摘要不以「姓名+编号」开头，
+    可借此区分（作者行与单位混排时也归入作者行）。
+    """
+    if page_no > 2:
+        return False
+    t = (text or "").strip()
+    if not t or len(t) > 1200:
+        return False
+    # 以句终标点结尾 → 不是作者行（容忍缩写点如 ``David M. Irwin``）
+    if re.search(r"[.!?。！？]\s*$", t):
+        return False
+    # 以编号开头（``1 Collaborative Innovation Center…``）→ 单位行而非作者行
+    if _NUMBERED_AFFIL_START_RE.match(t):
+        return False
+    # 前 80 字符内出现机构词 → 是作者行+单位混排行或纯单位块，不是作者行
+    if re.search(r"\b(?:universit|institut|college|academ|department|"
+                 r"laborator|school\s+of|center\s+for|centre\s+for|"
+                 r"key\s+laboratory)\w*", t[:80], re.IGNORECASE):
+        return False
+    names = len(_INITIAL_RE.findall(t))
+    if names < 2:
+        return False
+    # 上标标记：数字编号（``Geng 1``）或字母上标（PNAS 版式 ``Duvall a``）
+    markers = len(re.findall(
+        r"\b[A-Z][a-zA-Z'\-]+\s*[,(]?\s*(?:\d+|[a-z])(?=\s*[,;]|$)", t))
+    return markers >= 2
+
+
+def _is_keywords_line(text: str, page_no: int) -> bool:
+    """关键词行识别（首页/次页）：Keywords / Key words / 关键词 前缀。"""
+    if page_no > 2:
+        return False
+    t = (text or "").strip()
+    return bool(re.match(r"^(?:key\s*words?|keywords?|关键词)\s*:?", t.lower()))
+
+
+def _looks_like_abstract(text: str, ordered: list[dict], i: int,
+                         page_no: int) -> bool:
+    """首页正文开始前的长 body 是否摘要：有散文信号词，或其后紧跟
+    关键词行/小节标题（如 Frontiers 无 Abstract 小节的版式）。"""
+    if page_no != 1 or len(text) < 120:
+        return False
+    if _NUMBERED_AFFIL_START_RE.match(text):
+        return False  # 编号开头的单位行不是摘要
+    if _ABSTRACT_PROSE_RE.search(text):
+        return True
+    for nxt in ordered[i + 1:i + 6]:
+        if not isinstance(nxt, dict):
+            continue
+        nt = (nxt.get("text") or "").strip()
+        if not nt:
+            continue
+        if _is_keywords_line(nt, 1):
+            return True
+        if nxt.get("type") == "subtitle" \
+                and not _FRONT_MATTER_SECTION_RE.match(nt):
+            return True
+    return False
+
+
+def _is_article_title(text: str, e: dict, page1_h: float | None) -> bool:
+    """页首 subtitle 是否文章标题（用于把 Docling 标成 subtitle 的标题
+    渲染为标题卡并写入 doc.title）。"""
+    t = (text or "").strip()
+    if not (20 <= len(t) <= 300):
+        return False  # 过短（期刊名/栏目标签等）或过长（正文段）都不是标题
+    if _FRONT_MATTER_SECTION_RE.match(t) or _is_running_head(t):
+        return False
+    if _JOURNAL_NAME_RE.match(t):
+        return False  # 期刊名（Nature Communications / Cell 等）不是文章标题
+    # 排除编号小节（1 Introduction / 2.1 Methods）与常见章节名——正文
+    # 小节标题不是文章标题
+    if re.match(r"^\d+(?:[.)]\s*|\s+)", t) or re.match(
+            r"^(?:introduction|methods?|materials?\s+(?:and\s+methods?)?|"
+            r"results?(?:\s+and\s+discussion)?|discussion|conclusions?|"
+            r"background|abstract|summary|data\s+availability|"
+            r"acknowledg(e)?ments?|funding|references?)\s*$", t, re.IGNORECASE):
+        return False
+    if page1_h:
+        b = e.get("bbox") or []
+        try:
+            if float(b[3]) > page1_h * 0.6:
+                return False  # 页面下半区的 subtitle 不是标题
+        except (TypeError, ValueError):
+            pass
+    return True
+
+
+def _is_bare_number_text(text: str) -> bool:
+    """上标引用编号被拆成的裸数字元素（如 ``31``）。"""
+    return bool(re.fullmatch(r"\d{1,3}", (text or "").strip()))
+
+
+def _front_matter_block_ids(page_data: list[dict]) -> set[str]:
+    """首页模板区块（Graphical Abstract/Highlights/Authors 等）元素 id。
+
+    从模板小节标题起收集后续短条目，直到遇到下一个非模板小节标题；
+    超过 400 字符的段落视为已进入正文，停止收集防误删。
+    """
+    block: set[str] = set()
+    for page in page_data:
+        if int(page.get("page", 0)) != 1:
+            continue
+        collecting = False
+        for e in page.get("elements", []):
+            if not isinstance(e, dict) or not e.get("id"):
+                continue
+            etype = e.get("type")
+            text = _strip_watermarks(e.get("text") or "").strip()
+            if etype == "subtitle":
+                collecting = bool(text) and bool(
+                    _FRONT_MATTER_SECTION_RE.match(text)
+                )
+                if collecting:
+                    block.add(str(e["id"]))
+                continue
+            if not collecting or etype not in ("body", "metadata", "authors"):
+                continue
+            if len(text) > 400:
+                collecting = False  # 长段落 → 已是正文，停止收集
+                continue
+            block.add(str(e["id"]))
+    return block
 
 
 def _figure_plate_pages(page_data: list[dict]) -> set[int]:
@@ -732,32 +1071,85 @@ def _sorted_elements(elements: list[dict]) -> list[dict]:
     return list(elements)
 
 
+# 句尾缩写点不算句子终止（et al. / Fig. / e.g. / vs. 等）
+_ABBREV_TAIL_RE = re.compile(
+    r"\b(?:et\s+al|e\.g|i\.e|vs|cf|ca|Fig|Figs|Eq|Eqs|Ref|Refs|Sec|Secs"
+    r"|No|Nos|Vol|Dr|Prof|Mr|Ms|St|approx|ed|eds)\.\s*$",
+    re.IGNORECASE,
+)
+_CJK_TERMINAL_ENDS = ("。", "！", "？", "；", "：", "…", "——")
+
+# 参考文献条目开头（作者姓 + 名首字母缩写 + 年份），跨页配对时不得并入正文
+_REFERENCE_ENTRY_RE = re.compile(
+    r"^\s*[A-Z][A-Za-z'\-]+(?:\s+(?:[A-Z]\.){1,3}){1,3}[^a-z]{0,4}"
+    r"|[A-Za-z\-]{2,}\.(?:19|20)\d{2}"
+    r"|\b(?:19|20)\d{2}[;.,]?\s*\d{1,4}\s*[:.:]\s*\d{1,5}",
+)
+
+
+def _ends_sentence(text_a: str) -> bool:
+    """判断段落是否以真正的句终标点收尾（容忍缩写点与收尾引号）。"""
+    t = re.sub(r"[\]\[”’\"')\s]+$", "", text_a or "")
+    if not t:
+        return True
+    if not re.search(r"[.!?:;…]$|[.!?][\"'”’]$", t):
+        return False
+    return not _ABBREV_TAIL_RE.search(t)
+
+
+def _looks_like_reference_entry(text_b: str) -> bool:
+    """b 段是否像一条参考文献的开头（防止把文献列表当跨页续文合并）。"""
+    head = (text_b or "").strip()[:60]
+    if not head:
+        return False
+    return bool(_REFERENCE_ENTRY_RE.search(head))
+
+
 def _looks_like_continuation(text_a: str, text_b: str) -> bool:
     """规则判断 text_b 是否可能是 text_a 的段落跨页延续。
 
     - 上一页末段以连字符结尾 → 强信号（断词）
-    - 英文：a 不以句子终止标点结尾，且 b 以小写字母/引号/括号开头
-    - 中文：a 不以句号/问号/感叹号/分号结尾（中文无大小写）
+    - 英文：a 未以真句终标点结尾，且 b 以小写字母/引号/括号/数字开头
+      （大写开头的续文如 RNA-seq、专有名词同样常见）
+    - a 无任何终止标点时接受大写开头的 b（句子明显未写完）
+    - a 无任何终止标点时接受大写开头的 b（句子明显未写完）
+    - 中文：a 不以句号/问号/感叹号/分号结尾（中文无大小写，20 字以上即接）
+    - b 是参考文献条目开头 → 不合并
+    - b 是图注占位/分段标签（(legend on next page) / (A) Blood feeding…）→ 不合并
     """
     a = text_a.rstrip()
     b = text_b.lstrip()
     if not a or not b:
         return False
-    if len(a) < 40 or len(b) < 20:
+    if len(b) < 12:
         return False
+    # 图注占位行与图注分段标签（Figure N. 引出的 (A)/(B)… 面板说明）是版式
+    # 元素而非续文，规则层直接拒接，避免无 LLM 路径把图注并进正文
+    b_head = b[:80]
+    if b_head.lower().startswith("(legend on next page)") \
+            or b_head.lower().startswith("(legend continues"):
+        return False
+    if re.match(r"^\([A-Za-z](?:-[A-Za-z])?\)", b_head):
+        return False
+    # 连字符结尾是断词强信号（prolif- + erating），豁免短段长度门槛
     if a.endswith("-"):
         return True
     cjk_a = any("\u4e00" <= ch <= "\u9fff" for ch in a[:20])
     cjk_b = any("\u4e00" <= ch <= "\u9fff" for ch in b[:20])
     if cjk_a or cjk_b:
-        enders = ("。", "！", "？", "；", "：", "…", "——")
-        return not a.endswith(enders) and not a.endswith(".")
-    import re
-    if re.search(r"[.!?:;]%?$", a):
+        # 中文无大小写：上段未以句终标点收尾且长度足够（>20 字）即接上
+        return len(a) > 20 \
+            and not a.endswith(_CJK_TERMINAL_ENDS) and not a.endswith(".")
+    if len(a) < 30:
         return False
-    if not b[0].islower() and b[0] not in "([\"'“‘":
+    if _looks_like_reference_entry(b):
         return False
-    return True
+    if b[0].islower() or b[0] in "([\"'“‘" or b[0].isdigit():
+        # 小写/括号/数字开头：只要上一段不是真正句终就接上
+        return not _ends_sentence(a)
+    # 大写开头（RNA-seq / We / 专有名词）：仅当上一段没有真正句终
+    # （_ends_sentence 容忍句尾缩写点：e.g. / et al. / Fig. 不算句终）
+    return not _ends_sentence(a)
 
 
 def _join_cross_page_text(text_a: str, text_b: str) -> str:
@@ -769,26 +1161,179 @@ def _join_cross_page_text(text_a: str, text_b: str) -> str:
     return f"{a} {b}".strip()
 
 
+def _figure_internal_short_text(e: dict, figure_bboxes: list[list[float]]) -> bool:
+    """图内短标注文字（坐标轴标签/物种名等）：大部分面积落在图区内且文本不长。
+
+    此类元素既不是正文段落，也不是图注（图注通常在图区之外），
+    接缝配对与正文流都应跳过。
+    """
+    if len((e.get("text") or "").strip()) > 60:
+        return False
+    return _figure_internal_text(e, figure_bboxes)
+
+
+# Docling 漏识别成 table 的表格碎片特征：单/双行高度（bbox 高 < 45px）
+_TABLE_FRAGMENT_MAX_H = 45.0
+
+
+def _bbox_xywh(e: dict) -> tuple[float, float, float, float] | None:
+    b = e.get("bbox") or []
+    if len(b) != 4:
+        return None
+    try:
+        return tuple(float(v) for v in b)
+    except (TypeError, ValueError):
+        return None
+
+
+def _horizontal_fragment_pair(e: dict, other: dict) -> bool:
+    """两个矮 body 是否构成横向排布碎片：同 y 带且 x 基本不重叠。"""
+    r1 = _bbox_xywh(e)
+    r2 = _bbox_xywh(other)
+    if r1 is None or r2 is None:
+        return False
+    ex0, ey0, ex1, ey1 = r1
+    ox0, oy0, ox1, oy1 = r2
+    if ey1 - ey0 >= _TABLE_FRAGMENT_MAX_H or oy1 - oy0 >= _TABLE_FRAGMENT_MAX_H:
+        return False
+    inter_y = min(ey1, oy1) - max(ey0, oy0)
+    if inter_y <= 0.6 * min(ey1 - ey0, oy1 - oy0):
+        return False
+    inter_x = min(ex1, ox1) - max(ex0, ox0)
+    if inter_x > 0.5 * min(ex1 - ex0, ox1 - ox0):
+        return False
+    return True
+
+
+def _table_fragment_ids(page_elems: list[dict]) -> set[str]:
+    """Docling 漏识别成 table 的表格碎片 id 集合。
+
+    横向碎片：同 y 带且 x 不重叠的矮 body 成对出现（如表格跨列断行）。
+    拖尾碎片：与碎片行 y 相邻的矮 body（表格尾部断行，如
+    "3. Results nant pathogen in the phylum" 这类本行无横排对的残行）。
+    """
+    frag: set[str] = set()
+    bodies = [
+        e for e in page_elems
+        if isinstance(e, dict) and e.get("id") and e.get("type") == "body"
+        and (e.get("text") or "").strip()
+        and _bbox_xywh(e) is not None
+    ]
+    for e in bodies:
+        if any(_horizontal_fragment_pair(e, o) for o in bodies):
+            frag.add(str(e["id"]))
+    # 传播：与碎片行 y 相邻（重叠或间隙小于相邻行高）的矮 body 也是碎片
+    changed = True
+    while changed:
+        changed = False
+        for e in bodies:
+            if str(e["id"]) in frag:
+                continue
+            r = _bbox_xywh(e)
+            if r is None or r[3] - r[1] >= _TABLE_FRAGMENT_MAX_H:
+                continue
+            ex0, ey0, ex1, ey1 = r
+            for o in bodies:
+                if str(o["id"]) not in frag:
+                    continue
+                ob = _bbox_xywh(o)
+                if ob is None:
+                    continue
+                oy0, oy1 = ob[1], ob[3]
+                inter_y = min(ey1, oy1) - max(ey0, oy0)
+                max_h = max(ey1 - ey0, oy1 - oy0)
+                if inter_y >= 0.6 * min(ey1 - ey0, oy1 - oy0) \
+                        or -inter_y < max_h * 0.9:
+                    frag.add(str(e["id"]))
+                    changed = True
+                    break
+    return frag
+
+
+def _is_table_fragment(e: dict, page_elems: list[dict]) -> bool:
+    """单个 body 是否属于表格碎片（供快速判定的单元素查询）。"""
+    return str(e.get("id", "")) in _table_fragment_ids(page_elems)
+
+
+def _is_figure_caption_body(e: dict, elements: list[dict]) -> bool:
+    """紧跟「图题样式 subtitle」（Figure N / Table N）之后的 body 段 → 图注正文。
+
+    Docling 常把图题标成 subtitle、图注正文标成 body（如 Annual Reviews 版式）。
+    该 body 段不进入正文流（图注由 _bind_captions 绑定到图块），
+    跨页接缝配对时也不作为「页首正文」。
+    """
+    if not isinstance(e, dict):
+        return False
+    if e.get("type") not in _SEAM_TEXT_TYPES:
+        return False
+    if not (e.get("text") or "").strip():
+        return False
+    try:
+        idx = elements.index(e)
+    except ValueError:
+        return False
+    for prev in reversed(elements[:idx]):
+        if not isinstance(prev, dict):
+            continue
+        ptext = (prev.get("text") or "").strip()
+        if prev.get("type") == "subtitle" and _FIGURE_CAPTION_RE.match(ptext):
+            return True
+        if prev.get("type") in _SEAM_TEXT_TYPES and (prev.get("text") or "").strip():
+            return False  # 前面是正文段落：不是图注
+    return False
+
+
 def find_cross_page_seams(page_data: list[dict]) -> list[dict]:
     """检测相邻页之间疑似被分页断裂的正文段落（接缝候选）。
 
     只取上一页最后一个正文元素与下一页第一个正文元素做配对；
+    配对前过滤会挤占「页末/页首正文」位置的噪音：图内短标注、
+    表格碎片、图注正文、页脚许可/版权行、单位块、首页模板区块、
+    裸数字引用编号——否则真实续文永远进不了接缝候选。
     判定采用规则启发式（_looks_like_continuation），少量候选
     交给跨页 LLM 合并线程最终确认。
     """
     seams: list[dict] = []
     by_page: dict[int, list[dict]] = {}
+    front_block = _front_matter_block_ids(page_data)
     for page in page_data:
         try:
             pn = int(page.get("page", 0))
         except (TypeError, ValueError):
             continue
         elems = []
+        figure_bboxes: list[list[float]] = []
+        for e in page.get("elements", []):
+            if not isinstance(e, dict) or not e.get("id"):
+                continue
+            if e.get("type") in ("figure", "table") and e.get("bbox"):
+                try:
+                    figure_bboxes.append([float(v) for v in e["bbox"]])
+                except (TypeError, KeyError, ValueError):
+                    pass
         for e in page.get("elements", []):
             if isinstance(e, dict) and e.get("id") \
                     and e.get("type") in _SEAM_TEXT_TYPES:
-                if (e.get("text") or "").strip():
-                    elems.append(e)
+                text = (e.get("text") or "").strip()
+                if not text:
+                    continue
+                if str(e["id"]) in front_block:
+                    continue  # 首页模板区块（Highlights/Authors 等）
+                if _figure_internal_short_text(e, figure_bboxes):
+                    continue  # 图内短标注（坐标轴/物种名等）
+                if _is_table_fragment(e, page.get("elements", [])):
+                    continue  # Docling 漏识别成 table 的表格碎片
+                if _is_figure_caption_body(e, page.get("elements", [])):
+                    continue  # 图注正文
+                if _is_running_head(text):
+                    continue  # 页眉/页脚许可与版权行
+                if _is_front_matter_noise(text, pn, e.get("type", "")):
+                    continue  # 首页出版社模板碎片
+                if _is_affiliation_block(text, pn):
+                    continue  # 作者单位列表块
+                if _is_bare_number_text(text):
+                    continue  # 上标引用编号碎片
+                elems.append(e)
         by_page[pn] = _sorted_elements(elems)
     pages = sorted(by_page)
     for i, pn in enumerate(pages[:-1]):
@@ -849,6 +1394,11 @@ def _nearest_figure_id(caption: dict, page_no: int,
 def _bind_captions(page_data: list[dict]) -> tuple[dict[str, str], set[str]]:
     """figure_caption/table_caption → figure/table 的 bbox 就近配对。
 
+    额外识别 Docling 常见的「图题 subtitle + body 图注」结构：图题
+    （Figure N / Table N 样式）后紧跟的正文段从版面关系看是图注内容，
+    一并并入图块；否则图题会进目录、图注会被当普通正文渲染（如
+    Annual Reviews 版式中 Figure 1 整页图 + 图注版式）。
+
     Returns:
         (binding, used_caption_ids)
         binding: {figure_id: caption_text}
@@ -884,6 +1434,43 @@ def _bind_captions(page_data: list[dict]) -> tuple[dict[str, str], set[str]]:
         if old:
             cap_txt = old + " " + cap_txt
         binding[fid] = cap_txt
+
+    # 图题 subtitle（Figure N / Table N）+ 紧跟的 body 图注
+    for page in page_data:
+        pn = int(page.get("page", 0))
+        elems = page.get("elements", [])
+        for i, e in enumerate(elems):
+            if not isinstance(e, dict) or not e.get("id"):
+                continue
+            if e.get("type") != "subtitle":
+                continue
+            head_txt = _strip_watermarks(e.get("text") or "")
+            if not _FIGURE_CAPTION_RE.match(head_txt):
+                continue
+            # 向后找第一个非空文本元素：正文段 → 视为图注正文；其它类型则无
+            body = None
+            for nxt in elems[i + 1:]:
+                if not isinstance(nxt, dict):
+                    continue
+                nt = (nxt.get("text") or "").strip()
+                if not nt:
+                    continue
+                if nxt.get("type") in _SEAM_TEXT_TYPES:
+                    body = nxt
+                break
+            if body is None:
+                continue
+            fid = _nearest_figure_id(body, pn, figure_map, taken)
+            if not fid:
+                continue
+            taken.add(fid)
+            used.add(str(e.get("id")))
+            used.add(str(body.get("id")))
+            cap_txt = f"{head_txt} {_strip_watermarks(body.get('text') or '')}".strip()
+            old = binding.get(fid)
+            if old:
+                cap_txt = old + " " + cap_txt
+            binding[fid] = cap_txt
     return binding, used
 
 
@@ -918,8 +1505,13 @@ def build_document_fast(page_data: list[dict],
     if not isinstance(merged_seams, dict):
         merged_seams = {}
     merged_by_source = _index_merged_seams(merged_seams)
+    # 已被并入上一页合并正文的续文元素 id：仅跳过它本身，不得跳过
+    # 两者之间的图/图题/图注等元素（否则跨页合并会吞掉整页版式）
+    consumed_seam_targets: set[str] = set()
     binding, used_captions = _bind_captions(page_data)
     figure_plate_pages = _figure_plate_pages(page_data)
+    # 首页出版社模板区块（Graphical Abstract/Highlights/Authors/In Brief 等）
+    front_block_ids = _front_matter_block_ids(page_data)
     page_elements_by_no = {
         int(page.get("page", 0)): [
             e for e in page.get("elements", []) if isinstance(e, dict)
@@ -954,25 +1546,222 @@ def build_document_fast(page_data: list[dict],
                         [float(v) for v in e["bbox"]]
                     )
 
-    # 展平阅读顺序
-    ordered: list[dict] = []
+    # 展平阅读顺序：相邻正文段若被 Docling 切碎（如上标引用把句子打断），
+    # 顺序扫描时按续写判定合并，避免上游一切块都被独立渲染为断卡片。
+    raw_ordered: list[dict] = []
     for page in sorted(page_data, key=lambda p: int(p.get("page", 0))):
         for e in _sorted_elements(page.get("elements", [])):
-            ordered.append(e)
+            raw_ordered.append(e)
+    ordered: list[dict] = []
+    for e in raw_ordered:
+        if (ordered and e.get("type") in _SEAM_TEXT_TYPES
+                and ordered[-1].get("type") in _SEAM_TEXT_TYPES
+                and ordered[-1].get("page") == e.get("page")):
+            ta = (ordered[-1].get("text") or "").strip()
+            tb = (e.get("text") or "").strip()
+            # 首页 front matter 元素不参与同页续写合并：作者行/单位块/单位
+            # 碎片/关键词行一旦与前后文粘合，会超过单位块长度上限或变成
+            # 混排大卡（如 Frontiers 作者+单位+摘要、JSE 单位块+单位块）。
+            # 前一个元素与当前元素任一命中即不合并（单位块可能紧跟摘要）。
+            fm_page = int(ordered[-1].get("page") or 0)
+            fm_prev = (_is_author_line(ta, fm_page)
+                       or _is_affiliation_block(ta, fm_page)
+                       or _is_affiliation_fragment(ta, fm_page)
+                       or _is_keywords_line(ta, fm_page)
+                       or _is_running_head(ta)
+                       or _is_front_matter_noise(ta, fm_page, "body"))
+            fm_cur = (_is_author_line(tb, fm_page)
+                      or _is_affiliation_block(tb, fm_page)
+                      or _is_affiliation_fragment(tb, fm_page)
+                      or _is_keywords_line(tb, fm_page)
+                      or _is_running_head(tb)
+                      or _is_front_matter_noise(tb, fm_page, "body"))
+            if ta and tb and not fm_prev and not fm_cur \
+                    and _looks_like_continuation(ta, tb):
+                merged_text = _join_cross_page_text(ta, tb)
+                new_e = dict(ordered[-1])
+                new_e["text"] = merged_text
+                ordered[-1] = new_e
+                continue
+        ordered.append(e)
 
     doc = StructuredDocument()
     display: list[StructuredElement] = []
     toc: list[dict] = []
     current_section = ""
     current_level = 0
+    # 首页 front matter 状态机（仅第 1 页，进入正文后关闭）：
+    # 作者行/单位/摘要/关键词在 Docling 里常被标成 body，这里按版面
+    # 位置与文本特征归类为专门的卡片类型，而不是混入正文流。
+    page1_h = 0.0
+    for page in page_data:
+        if int(page.get("page", 0)) == 1:
+            for pe in page.get("elements", []):
+                if isinstance(pe, dict) and pe.get("bbox"):
+                    try:
+                        page1_h = max(page1_h, float(pe["bbox"][3]))
+                    except (TypeError, ValueError):
+                        pass
+    front_active = True
+    fm_author_seen = False  # 作者行已出现（其后长 body 更可能是摘要）
+    fm_title_seen = False   # 标题已捕获（只取页首第一个）
+    in_abstract_body = False  # 摘要小节（Abstract/Summary/Significance）后：body → abstract_body
     i = 0
     n = len(ordered)
     while i < n:
         e = ordered[i]
         eid = str(e.get("id", ""))
+        if eid in consumed_seam_targets:
+            i += 1
+            continue  # 已并入上一页合并正文（只消费该元素本身）
         etype = e.get("type", "unknown")
         text = _strip_watermarks(e.get("text", "") or "")
         page_no = page_by_id.get(eid, int(e.get("page", 0) or 0))
+
+        # ---- 首页 front matter 状态机 ----
+        if front_active and page_no == 1 and etype in ("body", "subtitle"):
+            if eid in front_block_ids:
+                i += 1
+                continue  # 首页模板区块（编辑信息碎片等）跳过，不关闭状态机
+            if etype == "subtitle":
+                if not fm_title_seen and _is_article_title(text, e, page1_h):
+                    # Docling 常把标题标成 subtitle：捕获为标题卡（不关闭状态机，
+                    # 标题之后仍是作者/单位/摘要的 front matter 区域）
+                    fm_title_seen = True
+                    if not doc.title:
+                        doc.title = text
+                    display.append(StructuredElement(
+                        element_type="title",
+                        text=text,
+                        page=page_no,
+                        heading_level=0,
+                        section_name="",
+                        display_priority="high",
+                        element_id=eid,
+                        bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                    ))
+                    i += 1
+                    continue
+                if _ABSTRACT_HEADING_RE.match(text):
+                    # 摘要小节（Abstract/Summary/Significance）：渲染摘要标题卡，
+                    # 不关闭状态机（其后 body 由摘要判定接管）
+                    in_abstract_body = True
+                    display.append(StructuredElement(
+                        element_type="abstract_heading",
+                        text=text,
+                        page=page_no,
+                        heading_level=0,
+                        section_name="",
+                        display_priority="high",
+                        element_id=eid,
+                        bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                    ))
+                    i += 1
+                    continue
+                if _FRONT_MATTER_SECTION_RE.match(text):
+                    i += 1
+                    continue  # 模板小节名（Highlights/Reviewed by 等）整块剔除
+                if _is_front_matter_noise(text, 1, "subtitle"):
+                    i += 1
+                    continue  # 文章类型标签（Review/Article 等）：跳过不关闭状态机
+                # 短行 subtitle（期刊名/装饰性标签如 ``nature methods``、
+                # ``BMC Bioinformatics``）：跳过不关闭状态机，也不当标题；
+                # 已知章节名（Methods 等）除外——那是真实小节，走正文流
+                if len(text) < 20 and not _SECTION_TITLE_RE.match(text):
+                    i += 1
+                    continue
+                # 期刊名（即使超过 20 字符，如 ``Nature Communications``）：
+                # 跳过不关闭状态机，也不当标题
+                if _JOURNAL_NAME_RE.match(text):
+                    i += 1
+                    continue
+                front_active = False  # 真正的章节标题 → 正文开始
+            else:  # body
+                # 版头噪声（通讯行/日期行/投稿声明/运行页眉）跳过，不关闭状态机
+                if _is_running_head(text) or _is_front_matter_noise(text, 1, "body"):
+                    i += 1
+                    continue
+                if _is_keywords_line(text, 1):
+                    display.append(StructuredElement(
+                        element_type="keywords",
+                        text=text,
+                        page=page_no,
+                        heading_level=0,
+                        section_name="",
+                        display_priority="normal",
+                        element_id=eid,
+                        bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                    ))
+                    i += 1
+                    continue
+                if _is_author_line(text, 1):
+                    if not doc.authors:
+                        doc.authors = text
+                    display.append(StructuredElement(
+                        element_type="authors",
+                        text=text,
+                        page=page_no,
+                        heading_level=0,
+                        section_name="",
+                        display_priority="normal",
+                        element_id=eid,
+                        bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                    ))
+                    fm_author_seen = True
+                    i += 1
+                    continue
+                if _is_affiliation_block(text, 1):
+                    if not doc.metadata_pool:
+                        doc.metadata_pool.append(StructuredElement(
+                            element_type="affiliations",
+                            text=text,
+                            page=page_no,
+                            heading_level=0,
+                            section_name="",
+                            display_priority="collapsed",
+                            element_id=eid,
+                            bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                        ))
+                    display.append(StructuredElement(
+                        element_type="affiliations",
+                        text=text,
+                        page=page_no,
+                        heading_level=0,
+                        section_name="",
+                        display_priority="normal",
+                        element_id=eid,
+                        bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                    ))
+                    i += 1
+                    continue
+                if _is_affiliation_fragment(text, 1):
+                    i += 1
+                    continue  # 单位碎片（编号/机构词开头的短行）
+                # 摘要：独立 Abstract 小节后的正文，或 ``Abstract ...`` 词头
+                # 长段（MDPI/JSE 版式把摘要并入同一元素）
+                if len(text) > 120 and (
+                        (fm_author_seen and _looks_like_abstract(text, ordered, i, 1))
+                        or re.match(r"^(?:abstract|summary)\b", text,
+                                    re.IGNORECASE)):
+                    display.append(StructuredElement(
+                        element_type="abstract_body",
+                        text=text,
+                        page=page_no,
+                        heading_level=0,
+                        section_name="",
+                        display_priority="normal",
+                        element_id=eid,
+                        bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                    ))
+                    i += 1
+                    continue
+                # 短碎片（名字行/日期行/无标点行）：跳过，继续 front matter 扫描
+                if len(text) < 40 and not re.search(r"[.!?。！？]", text):
+                    i += 1
+                    continue
+                # 其余首页 body：视为正文开始（编辑信息碎片由
+                # _is_front_matter_noise / front_block_ids 另行剔除）
+                front_active = False
 
         # 跨页接缝：命中缓存 → 合并为一个正文元素
         seam = merged_by_source.get(eid)
@@ -991,12 +1780,7 @@ def build_document_fast(page_data: list[dict],
                     bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
                 )
                 display.append(elem)
-                # 跳过被合并的下一页首元素
-                j = i + 1
-                while j < n and ordered[j].get("id") != next_id:
-                    j += 1
-                if j < n:
-                    i = j
+                consumed_seam_targets.add(next_id)
                 i += 1
                 continue
 
@@ -1005,9 +1789,46 @@ def build_document_fast(page_data: list[dict],
             continue
         if eid in used_captions:
             continue  # 已并入图表块
+        if eid in front_block_ids:
+            continue  # 首页模板区块（Highlights / Authors 等整块剔除）
 
         is_media = etype in ("figure", "table", "figure_caption", "table_caption")
         if _is_front_matter_noise(text, page_no, etype):
+            continue
+        if _is_affiliation_block(text, page_no):
+            # 作者单位块不进正文流；若是首页首张单位卡则记为作者单位元数据
+            if (etype in ("body", "metadata", "affiliations", "authors")
+                    and page_no <= 2 and not doc.metadata_pool
+                    and _NUMBERED_AFFIL_START_RE.match(text)):
+                doc.metadata_pool.append(StructuredElement(
+                    element_type="affiliations",
+                    text=text,
+                    page=page_no,
+                    heading_level=0,
+                    section_name="",
+                    display_priority="collapsed",
+                    element_id=eid,
+                    bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                ))
+            continue
+        if etype == "body" and _is_bare_number_text(text):
+            continue  # 上标引用编号碎片（不污染正文流与接缝配对池）
+        # 首页作者行兜底：Docling 双栏/封面版式可能把作者行排在版头小节
+        # 之后（状态机已关闭）或封面页之后的次页（Cell 版式 p2 作者行），
+        # 此时仍归类为作者卡而非正文；doc.authors 已捕获则丢弃（去重）
+        if page_no <= 2 and etype == "body" and _is_author_line(text, page_no):
+            if not doc.authors:
+                doc.authors = text
+                display.append(StructuredElement(
+                    element_type="authors",
+                    text=text,
+                    page=page_no,
+                    heading_level=0,
+                    section_name="",
+                    display_priority="normal",
+                    element_id=eid,
+                    bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                ))
             continue
         if etype == "figure" and _is_decorative_figure(
             e, page_elements_by_no.get(page_no, []), page_no,
@@ -1028,6 +1849,10 @@ def build_document_fast(page_data: list[dict],
         # 运行页眉噪声（ARTICLE IN PRESS 等）与图内标签文字不进入正文流
         if _is_running_head(text):
             continue
+        if etype == "body" and _is_table_fragment(
+            e, page_elements_by_no.get(page_no, []),
+        ):
+            continue
         if etype not in ("figure", "table"):
             fb = figure_bboxes_by_page.get(page_no, [])
             if fb and _figure_internal_text(e, fb):
@@ -1036,11 +1861,35 @@ def build_document_fast(page_data: list[dict],
 
         priority = _FAST_PRIORITY.get(etype, "normal")
         if etype == "subtitle":
+            # 模板小节名（Authors and Affiliations / Reviewed by 等，常出现在
+            # 次页版头）：不进正文流、不进目录
+            if _FRONT_MATTER_SECTION_RE.match(text):
+                continue
+            # 与已捕获标题完全相同的重复标题（封面页+正文页重复排印）去重
+            if doc.title and text.strip().lower() == doc.title.lower():
+                continue
             current_section = text
             try:
                 current_level = int(e.get("level", 1) or 1)
             except (TypeError, ValueError):
                 current_level = 1
+            # 摘要小节名（Abstract / Summary / Significance 等）映射为摘要
+            # 标题卡，其后的正文段落映射为摘要正文卡
+            if _ABSTRACT_HEADING_RE.match(text):
+                in_abstract_body = True
+                elem = StructuredElement(
+                    element_type="abstract_heading",
+                    text=text,
+                    page=page_no,
+                    heading_level=current_level,
+                    section_name="",
+                    display_priority=priority,
+                    element_id=eid,
+                    bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                )
+                display.append(elem)
+                continue
+            in_abstract_body = False
             elem = StructuredElement(
                 element_type="subtitle",
                 text=text,
@@ -1062,9 +1911,32 @@ def build_document_fast(page_data: list[dict],
         if etype == "title":
             if not doc.title:
                 doc.title = text
+            # 保留 title 卡片（旧缓存/兜底路径下渲染标题卡）
+            display.append(StructuredElement(
+                element_type="title",
+                text=text,
+                page=page_no,
+                heading_level=0,
+                section_name="",
+                display_priority="high",
+                element_id=eid,
+                bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+            ))
+            continue
         elif etype == "authors":
             if not doc.authors:
                 doc.authors = text
+            display.append(StructuredElement(
+                element_type="authors",
+                text=text,
+                page=page_no,
+                heading_level=0,
+                section_name="",
+                display_priority="normal",
+                element_id=eid,
+                bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+            ))
+            continue
         elif etype == "abstract_heading":
             current_section = text
         elif etype == "body":
@@ -1081,7 +1953,9 @@ def build_document_fast(page_data: list[dict],
             pass
 
         elem = StructuredElement(
-            element_type=etype,
+            element_type="abstract_body" if (
+                in_abstract_body and etype == "body"
+            ) else etype,
             text=text,
             page=page_no,
             heading_level=0,
@@ -1106,8 +1980,8 @@ def build_document_fast(page_data: list[dict],
             doc.tables.append(elem)
         elif elem.element_type == "reference":
             doc.references.append(elem)
-    doc.metadata_pool = [e for e in display
-                         if e.element_type in ("metadata", "affiliations", "keywords")]
+    # 不再用 display 覆盖 metadata_pool：单位块在组装时已直接入池
+    # （见 _is_affiliation_block 分支），这里保留组装期间追加的元信息
     doc.raw_page_count = len(page_data)
     return doc
 
@@ -1135,6 +2009,9 @@ def rebuild_document_fast(pdf_path: str) -> "StructuredDocument | None":
     merged = state.get("merged_seams") or {}
     if not isinstance(merged, dict):
         merged = {}
+    prelim = state.get("merged_seams_prelim") or {}
+    if isinstance(prelim, dict):
+        merged = {**prelim, **merged}
     doc = build_document_fast(page_data, merged)
     if not doc.display_elements:
         return None
@@ -1508,7 +2385,7 @@ class PDFProcessor(QObject):
         self._manifest: PageManifest | None = None
         self._cache_dir: str = ""
         self._integrated_doc: StructuredDocument | None = None
-        self._seams_done = False  # 本次会话是否已跑过接缝合并
+        self._seams_mode = ""  # 接缝合并级别："" 未处理 / "prelim" 规则初步 / "final" 定稿
         self._seam_candidates: list[dict] = []
         self._stage1_retries = 0  # done_count==0 时回退 Stage 1 的重试次数
         self._generation = 0  # cancel/重跑代际：迟到的后台结果据此丢弃
@@ -1600,6 +2477,11 @@ class PDFProcessor(QObject):
         return self.is_stage1_running or self.is_stage2_running
 
     @property
+    def seams_mode(self) -> str:
+        """接缝合并级别："" 未处理 / "prelim" 规则初步（待阅读精修） / "final" 定稿。"""
+        return self._seams_mode
+
+    @property
     def stage1_progress_ratio(self) -> float:
         if self._manifest is None:
             return 0.0
@@ -1657,11 +2539,15 @@ class PDFProcessor(QObject):
         """Docling 解析失败 → 只提示错误，不再调用视觉模型。"""
         self.stage1_error.emit(self._pdf_path, 0, error_msg)
 
-    def start_stage2(self) -> None:
+    def start_stage2(self, preliminary: bool = False) -> None:
         """启动 Stage 2：规则组装（同步、秒级）+ 跨页接缝合并（后台异步）。
 
         规则组装不依赖 LLM，立即产出结构化文档；随后若存在疑似跨页
-        断裂接缝且没有缓存，才用解析接口做小规模合并确认。
+        断裂接缝且没有定稿缓存，才用解析接口做小规模合并确认。
+
+        preliminary=True 为后台建库模式（library_preparser）：全程零 LLM，
+        规则合并结果写入 merged_seams_prelim 并把 states 标记
+        seams_final=False，留给用户点开阅读时再精修定稿。
         """
         if self._manifest is None:
             self.stage2_error.emit(self._pdf_path, "没有页面缓存数据")
@@ -1685,20 +2571,25 @@ class PDFProcessor(QObject):
             self.stage2_error.emit(self._pdf_path, "没有可用的页面缓存数据，请等待 Stage 1 完成")
             return
 
-        merged = self._load_merged_seams()
-        doc = build_document_fast(page_data, merged)
+        merged_final, merged_prelim = self._load_seam_caches()
+        doc = build_document_fast(page_data, {**merged_prelim, **merged_final})
         if not doc.display_elements:
             self.stage2_error.emit(self._pdf_path, "规则组装结果为空（页面缓存可能异常），请重新解析")
             return
+        # 检查跨页接缝：只处理到本次请求的级别（final 定稿后幂等；
+        # prelim 之后的 final 请求是阅读精修，仍要重新送 LLM 复核）。
+        # 级别在 emit stage2_finished 之前更新，UI 侧回调可据此触发阅读精修。
+        skip_seams = (self._seams_mode == "final"
+                      or (preliminary and self._seams_mode))
+        if not skip_seams:
+            self._seams_mode = "prelim" if preliminary else "final"
         self._on_stage2_finished(doc)
-
-        # 检查跨页接缝：只跳过已经缓存的接缝，不能因部分缓存而漏掉其余候选。
-        if self._seams_done:
+        if skip_seams:
             return
-        self._seams_done = True
         seams = find_cross_page_seams(page_data)
-        if merged:
-            cached_keys = {str(key) for key in merged}
+        if merged_final:
+            # 只按定稿缓存过滤：初步版接缝在阅读精修时仍要重新评估
+            cached_keys = {str(key) for key in merged_final}
             cached_sources = {
                 key.split("|", 1)[0].strip()
                 for key in cached_keys
@@ -1710,10 +2601,11 @@ class PDFProcessor(QObject):
                 and seam["element_id_a"] not in cached_sources
             ]
         if seams:
-            if self._client is not None:
+            if self._client is not None and not preliminary:
                 self._start_seam_merge(seams)
             else:
-                # 没有解析 API 时仍保证明显的跨页正文连续，不让本地整合卡住。
+                # 没有解析 API（或后台建库）时仍保证明显的跨页正文连续，
+                # 不让本地整合卡住。
                 fallback = {
                     seam["key"]: {
                         "with_id": seam["element_id_b"],
@@ -1723,7 +2615,10 @@ class PDFProcessor(QObject):
                     }
                     for seam in seams
                 }
-                self._on_seam_merge_done(fallback)
+                self._on_seam_merge_done(fallback, preliminary=preliminary)
+        elif not preliminary:
+            # 没有待处理接缝：阅读模式下直接定稿（清掉后台建库的初步标记）
+            self._mark_seams_final()
 
     def _load_all_page_data(self) -> list[dict]:
         """加载所有已完成页的完整缓存（含 bbox），供规则组装使用。"""
@@ -1736,13 +2631,20 @@ class PDFProcessor(QObject):
                     results.append(cache)
         return results
 
-    def _load_merged_seams(self) -> dict:
+    def _load_seam_caches(self) -> tuple[dict, dict]:
+        """读取两级接缝缓存：(定稿 merged_seams, 初步 merged_seams_prelim)。"""
         from ..utils.config import load_doc_state
         try:
-            merged = load_doc_state(self._pdf_path).get("merged_seams") or {}
+            state = load_doc_state(self._pdf_path)
         except Exception:
-            merged = {}
-        return merged if isinstance(merged, dict) else {}
+            return {}, {}
+        final = state.get("merged_seams") or {}
+        prelim = state.get("merged_seams_prelim") or {}
+        if not isinstance(final, dict):
+            final = {}
+        if not isinstance(prelim, dict):
+            prelim = {}
+        return final, prelim
 
     def _start_seam_merge(self, seams: list[dict]) -> None:
         """启动跨页接缝合并（后台线程），完成后回填并刷新文档。"""
@@ -1755,7 +2657,7 @@ class PDFProcessor(QObject):
         self._seam_worker.finished_signal.connect(
             lambda merged: self._on_seam_merge_done_if_current(gen, merged)
         )
-        self._seam_worker.error_signal.connect(
+        self._seam_worker.error.connect(
             lambda err: self._on_seam_merge_error_if_current(gen, err)
         )
         self._seam_worker.start()
@@ -1771,17 +2673,29 @@ class PDFProcessor(QObject):
             return
         self._on_seam_merge_error(err)
 
-    def _on_seam_merge_done(self, merged: dict) -> None:
-        """接缝合并完成 → 缓存 + 重建文档 + 通知 UI 刷新。"""
-        if not merged:
-            return
-        self._seam_candidates = []
-        self._save_merged_seams(merged)
-        if not self._integrated_doc:
+    def _on_seam_merge_done(self, merged: dict, preliminary: bool = False) -> None:
+        """接缝合并完成 → 缓存 + 重建文档 + 通知 UI 刷新。
+
+        preliminary=True：规则合并写入 merged_seams_prelim（阅读时再精修）；
+        否则为定稿：接受者入 merged_seams，被否决的初步接缝随之失效，
+        states 标记 seams_final=True。
+        """
+        doc_changed = bool(merged)
+        if preliminary:
+            if merged:
+                self._save_prelim_seams(merged)
+        else:
+            if merged:
+                self._save_merged_seams(merged)
+            if self._drop_rejected_prelim_seams(merged):
+                doc_changed = True
+            self._mark_seams_final()
+        if not doc_changed or not self._integrated_doc:
             return
         try:
             page_data = self._load_all_page_data()
-            doc = build_document_fast(page_data, self._load_merged_seams())
+            final, prelim = self._load_seam_caches()
+            doc = build_document_fast(page_data, {**prelim, **final})
             if not doc.display_elements:
                 return
             backfill_image_paths(doc, self._cache_dir)
@@ -1817,9 +2731,70 @@ class PDFProcessor(QObject):
                 cache = {}
             cache.update(merged)
             state["merged_seams"] = cache
+            # 已定稿的接缝从初步缓存中移除，保持两级缓存互斥
+            prelim = state.get("merged_seams_prelim") or {}
+            if isinstance(prelim, dict):
+                for key in merged:
+                    prelim.pop(key, None)
+                state["merged_seams_prelim"] = prelim
+            state["seams_final"] = True
             save_doc_state(self._pdf_path, state)
         except Exception:
             pass  # 缓存失败可下次重跑接缝合并
+
+    def _save_prelim_seams(self, merged: dict) -> None:
+        """后台建库的规则合并：单独立缓存并标记待阅读精修。"""
+        try:
+            from ..utils.config import load_doc_state, save_doc_state
+            state = load_doc_state(self._pdf_path)
+            cache = state.get("merged_seams_prelim") or {}
+            if not isinstance(cache, dict):
+                cache = {}
+            cache.update(merged)
+            state["merged_seams_prelim"] = cache
+            state["seams_final"] = False
+            save_doc_state(self._pdf_path, state)
+        except Exception:
+            pass
+
+    def _drop_rejected_prelim_seams(self, accepted: dict) -> bool:
+        """LLM 定稿后剔除被否决的初步接缝，避免规则版压制定稿结果。
+
+        Returns:
+            是否有剔除（有则调用方需要重建文档）。
+        """
+        if not self._seam_candidates:
+            return False
+        try:
+            from ..utils.config import load_doc_state, save_doc_state
+            state = load_doc_state(self._pdf_path)
+            prelim = state.get("merged_seams_prelim") or {}
+            if not isinstance(prelim, dict) or not prelim:
+                return False
+            changed = False
+            for seam in self._seam_candidates:
+                key = str(seam.get("key", ""))
+                if key and key not in accepted and key in prelim:
+                    prelim.pop(key, None)
+                    changed = True
+            if not changed:
+                return False
+            state["merged_seams_prelim"] = prelim
+            save_doc_state(self._pdf_path, state)
+            return True
+        except Exception:
+            return False
+
+    def _mark_seams_final(self) -> None:
+        """阅读模式定稿：清掉后台建库留下的初步整合标记。"""
+        try:
+            from ..utils.config import load_doc_state, save_doc_state
+            state = load_doc_state(self._pdf_path)
+            if state.get("seams_final") is False:
+                state["seams_final"] = True
+                save_doc_state(self._pdf_path, state)
+        except Exception:
+            pass
 
     def cancel(self) -> None:
         """取消所有进行中的操作。

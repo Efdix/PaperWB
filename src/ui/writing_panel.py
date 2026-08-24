@@ -531,6 +531,10 @@ class WritingPanel(QWidget):
 
     # 信号
     feed_requested = Signal(list, str)  # 文献补充结果推送到推荐流 (papers, label)
+    # 统计埋点：草稿落盘（字数）、润色采纳（原文/润色后字数）、文献补充检索完成（结果数）
+    draft_saved = Signal(int)
+    polish_accepted = Signal(int, int)
+    lit_search_completed = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2257,11 +2261,12 @@ class WritingPanel(QWidget):
         dialog.set_draft_text(draft)
         dialog.insert_requested.connect(self._on_lit_insert)
         dialog.feed_requested.connect(self.feed_requested.emit)
+        dialog.search_done.connect(self.lit_search_completed.emit)
         self._track_dialog(dialog)
         dialog.show()
 
     def _zotero_pool(self) -> list[dict]:
-        """Zotero 条目快照（检索结果滤除库内已有），与文献工作台同口径。"""
+        """Zotero 条目快照（检索结果滤除库内已有），与检索工作台同口径。"""
         lib = self._zotero
         if lib is None or not lib.is_available:
             return []
@@ -2481,6 +2486,7 @@ class WritingPanel(QWidget):
                 from ..utils.config import save_draft
                 save_draft(self._coach.current_profile.name, text)
                 self._draft_dirty = False
+                self.draft_saved.emit(len(text))
         except Exception:
             pass
 
@@ -2538,6 +2544,9 @@ class WritingPanel(QWidget):
                     "logic_issues": result.get("logic_issues", []),
                 }
                 save_polish_entry(self._coach.current_profile.name, entry)
+                self.polish_accepted.emit(
+                    len(original),
+                    len(final_text or result.get("polished_text", "")))
         except Exception:
             pass
 

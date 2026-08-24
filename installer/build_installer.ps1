@@ -113,9 +113,9 @@ try {
     # ---------- 4. locate Inno Setup ----------
     Step "Locate Inno Setup compiler (ISCC.exe)"
     $IsccCandidates = @(
-        Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe",
-        Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe",
-        Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe",
+        (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+        (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
         "D:\tools\Inno Setup 6\ISCC.exe"
     )
     $Iscc = $IsccCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1

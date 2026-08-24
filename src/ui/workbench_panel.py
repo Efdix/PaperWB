@@ -1,109 +1,46 @@
-"""文献智能工作台 —— 库内 RAG 问答 + 定向文献巡视。
+"""检索工作台 —— 自然语言 AI 检索 + 定时文献巡视。
 
-三栏布局::
+两栏布局（左检索右巡视）::
 
-    ┌──────────────┬──────────────────────────┬───────────────┐
-    │ 检索方向管理   │  库内问答（对话区）          │ 文献推荐流      │
-    │ 方向卡片列表   │  回答带 [n] 角标            │ 定时巡视结果    │
-    │ + 新方向      │  参考文献 → 跳转阅读工作台    │ 新文献卡片      │
-    └──────────────┴──────────────────────────┴───────────────┘
+    ┌──────────────────────────────┬──────────────────┐
+    │ AI 检索（主区）                 │ 定时巡视          │
+    │ 自然语言 → 三源检索+两轮闭环     │  方向卡片 + 新方向 │
+    │ 按库推荐 / 检索结果卡片          │ ──────────────   │
+    │                              │  巡视结果/推荐流   │
+    └──────────────────────────────┴──────────────────┘
 
-职责划分：本工作台面向整个 Zotero 库（跨文献综合问答、定时文献巡视）；
-单篇论文的阅读问答仍在阅读工作台。
+巡视方向的设置与巡视结果在同一栏内上下相邻；职责划分：本工作台只负责
+文献检索与巡视，单篇论文问答与全库跨文献问答都在阅读工作台的
+「论文问答」侧栏（本篇论文 / 全文献库 两个页签）。
 """
 
 from __future__ import annotations
 
-import os
 import urllib.parse
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEvent, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QScrollArea, QSpinBox, QSplitter, QTabWidget, QTextEdit,
+    QPushButton, QScrollArea, QSpinBox, QSplitter, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
-from ..core.library_qa import LibraryQAEngine
+from ..core.library_recommender import (
+    LibraryRecommendWorker, build_seeds,
+)
 from ..core.literature_scout import (
     MAX_INTERVAL_HOURS, ScoutManager, ScoutTopic, papers_to_ris, save_csv,
 )
+from ..utils.config import get_easyscholar_api_key
 from ..utils.threads import track
-from .chat_panel import ChatBubble
 
 if TYPE_CHECKING:
     from ..core.llm_client import LLMClient
     from ..core.zotero_parser import ZoteroLibrary
-
-
-# ============================================================
-# 后台线程
-# ============================================================
-
-class IndexBuildWorker(QThread):
-    """后台构建全库索引（元数据 + PDF 全文，支持增量与中断）。"""
-
-    progress = Signal(int, int, str)
-    finished_signal = Signal(int, int)   # (文献数, 段落数)
-    error = Signal(str)
-
-    def __init__(self, engine: LibraryQAEngine, items: list, force: bool = False,
-                 parent=None):
-        super().__init__(parent)
-        self._engine = engine
-        self._items = items
-        self._force = force
-
-    def run(self) -> None:
-        try:
-            self._engine.set_items(self._items)
-            stats = self._engine.refresh_fulltext(
-                self._items,
-                progress_cb=lambda d, t, name: self.progress.emit(d, t, name),
-                interrupt_cb=self.isInterruptionRequested,
-                force=self._force,
-            )
-            self.finished_signal.emit(stats["items"], stats["chunks"])
-        except Exception as e:  # noqa: BLE001
-            self.error.emit(str(e))
-
-
-class LibraryQAWorker(QThread):
-    """库内问答：检索证据（CPU 段）→ 流式调用解析接口。"""
-
-    chunk_received = Signal(str)
-    answer_finished = Signal(list)       # references 列表
-    error = Signal(str)
-    done = Signal()
-
-    def __init__(self, client: "LLMClient", engine: LibraryQAEngine,
-                 question: str, metadata_only: bool, history: list[dict],
-                 parent=None):
-        super().__init__(parent)
-        self._client = client
-        self._engine = engine
-        self._question = question
-        self._metadata_only = metadata_only
-        self._history = history
-
-    def run(self) -> None:
-        try:
-            messages, refs = self._engine.prepare_messages(
-                self._question, self._history,
-                metadata_only=self._metadata_only)
-            for chunk in self._client.chat_stream(messages):
-                if self.isInterruptionRequested():
-                    return  # 已取消：不再投递旧问答的后续内容
-                self.chunk_received.emit(chunk)
-            self.answer_finished.emit(refs)
-        except Exception as e:  # noqa: BLE001
-            self.error.emit(str(e))
-        finally:
-            self.done.emit()
 
 
 # ============================================================
@@ -323,13 +260,14 @@ class TopicCard(QFrame):
 
 
 # ============================================================
-# 推荐流卡片
+# 巡视结果卡片
 # ============================================================
 
 class ScoutCard(QFrame):
     """单条巡视发现的文献卡片。"""
 
     ignore_requested = Signal(str)
+    translate_requested = Signal(dict)   # 携带 paper dict
 
     def __init__(self, entry: dict, parent=None):
         super().__init__(parent)
@@ -340,6 +278,7 @@ class ScoutCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(5)
+        self._layout = layout
 
         title = QLabel(p.get("title", "") or "（无标题）")
         title.setObjectName("sectionLabel")
@@ -354,10 +293,38 @@ class ScoutCard(QFrame):
 
         chips = QHBoxLayout()
         chips.setSpacing(6)
+        self._chips_layout = chips
         topic_chip = QLabel(entry.get("topic", ""))
         topic_chip.setObjectName("feedChip")
         topic_chip.setProperty("kind", "topic")
         chips.addWidget(topic_chip)
+        if p.get("in_library"):
+            lib_chip = QLabel("已在库中")
+            lib_chip.setObjectName("feedChip")
+            lib_chip.setProperty("kind", "library")
+            lib_chip.setToolTip("这篇文献与本地 Zotero 库中已有条目匹配")
+            chips.addWidget(lib_chip)
+        cited = 0
+        try:
+            cited = int(p.get("cited_by") or 0)
+        except (TypeError, ValueError):
+            cited = 0
+        if cited > 0:
+            cited_chip = QLabel(f"被引 {cited}")
+            cited_chip.setObjectName("feedChip")
+            cited_chip.setToolTip("OpenAlex 统计的被引次数")
+            chips.addWidget(cited_chip)
+        linked = 0
+        try:
+            linked = int(entry.get("linked") or 0)
+        except (TypeError, ValueError):
+            linked = 0
+        if linked > 0:
+            linked_chip = QLabel(f"关联种子 {linked}")
+            linked_chip.setObjectName("feedChip")
+            linked_chip.setToolTip("与推荐源集合中 3 篇以上文献存在引文关联" if linked >= 3
+                                   else "与推荐源集合文献的引文关联数")
+            chips.addWidget(linked_chip)
         chips.addStretch()
         layout.addLayout(chips)
 
@@ -370,6 +337,11 @@ class ScoutCard(QFrame):
             abs_label.setToolTip(abstract)
             layout.addWidget(abs_label)
 
+        self._trans_label: QLabel | None = None
+        self._trans_box: QWidget | None = None
+        self._trans_btn: QPushButton | None = None
+        self._if_chip: QLabel | None = None
+
         btns = QHBoxLayout()
         btns.setSpacing(6)
         pubmed_btn = QPushButton("PubMed ↗")
@@ -381,6 +353,11 @@ class ScoutCard(QFrame):
         cite_btn.setObjectName("secondaryBtn")
         cite_btn.setToolTip("复制 (Author et al., Year) 格式引用")
         cite_btn.clicked.connect(self._copy_citation)
+        trans_btn = QPushButton("🌐 翻译")
+        trans_btn.setObjectName("secondaryBtn")
+        trans_btn.setToolTip("用纯文本 LLM 接口翻译标题与摘要")
+        trans_btn.clicked.connect(self._on_translate_clicked)
+        self._trans_btn = trans_btn
         ignore_btn = QPushButton("忽略")
         ignore_btn.setObjectName("softBtn")
         ignore_btn.setToolTip("从推荐流移除（之后不再重复推送）")
@@ -388,6 +365,7 @@ class ScoutCard(QFrame):
             lambda: self.ignore_requested.emit(entry.get("id", "")))
         btns.addWidget(pubmed_btn)
         btns.addWidget(cite_btn)
+        btns.addWidget(trans_btn)
         btns.addStretch()
         btns.addWidget(ignore_btn)
         layout.addLayout(btns)
@@ -403,49 +381,93 @@ class ScoutCard(QFrame):
         marker = f"({first} et al., {p.get('year', '?')})"
         QApplication.clipboard().setText(marker)
 
+    def _on_translate_clicked(self) -> None:
+        if self._trans_box is not None:
+            self._toggle_translation()
+            return
+        self.translate_requested.emit(self._entry.get("paper", {}))
 
-# ============================================================
-# 参考文献卡片（问答回答下方）
-# ============================================================
+    def _toggle_translation(self) -> None:
+        """收起已展示的译文（再次点击翻译按钮时）。"""
+        if self._trans_box is not None:
+            self._trans_box.hide()
+            self._trans_box.setParent(None)
+            self._trans_box.deleteLater()
+            self._trans_box = None
+            self._trans_label = None
+        if self._trans_btn is not None:
+            self._trans_btn.setText("🌐 翻译")
 
-class ReferenceListCard(QFrame):
-    """回答引用的库内文献列表，点击可跳阅读工作台打开 PDF。"""
+    def set_translation(self, text: str) -> None:
+        """插入/更新译文块（摘要下方、按钮行上方）。"""
+        if self._trans_box is None:
+            self._trans_box = QWidget()
+            tbox = QVBoxLayout(self._trans_box)
+            tbox.setContentsMargins(0, 0, 0, 0)
+            tbox.setSpacing(3)
+            self._trans_label = QLabel()
+            self._trans_label.setObjectName("subtitleLabel")
+            self._trans_label.setWordWrap(True)
+            self._trans_label.setStyleSheet(
+                "background-color: #f0f6fb; border: 1px solid #d5e5f2; "
+                "border-radius: 8px; padding: 6px 8px;")
+            tbox.addWidget(self._trans_label)
+            # 译文块插在按钮行（layout 末尾）之前
+            self._layout.insertWidget(self._layout.count() - 1, self._trans_box)
+        if self._trans_label is not None:
+            self._trans_label.setText(text)
+            self._trans_label.setToolTip(text)
+        self._trans_box.show()
+        if self._trans_btn is not None:
+            self._trans_btn.setText("收起译文")
+            self._trans_btn.setToolTip("收起译文")
 
-    open_requested = Signal(str)
+    def set_impact(self, text: str) -> None:
+        """影响因子查询完成后动态插入/更新 IF chip（插入 stretch 之前）。"""
+        if text:
+            text = text.strip()
+        if not text:
+            return
+        if getattr(self, "_if_chip", None) is not None:
+            self._if_chip.setText(text)
+            self._if_chip.setToolTip("数据来源 EasyScholar")
+            return
+        chip = QLabel(text)
+        chip.setObjectName("feedChip")
+        chip.setToolTip("数据来源 EasyScholar")
+        # 插到 stretch 之前
+        self._chips_layout.insertWidget(self._chips_layout.count() - 1, chip)
+        self._if_chip = chip
 
-    def __init__(self, refs: list[dict], parent=None):
+
+class CardTranslateWorker(QThread):
+    """结果卡片翻译：标题+摘要 → 中文，纯文本 LLM 接口（chat_sync）。"""
+
+    finished = Signal(str, str)   # (paper_id, 译文)
+    error = Signal(str, str)      # (paper_id, 错误信息)
+
+    def __init__(self, client: "LLMClient", paper_id: str, text: str, parent=None):
         super().__init__(parent)
-        self.setObjectName("refCard")
+        self._client = client
+        self._paper_id = paper_id
+        self._text = text
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(4)
-
-        header = QLabel("参考文献（点击打开原文）")
-        header.setObjectName("sectionLabel")
-        layout.addWidget(header)
-
-        for r in refs:
-            title = r.get("title", "") or ""
-            shown = title[:60] + ("…" if len(title) > 60 else "")
-            page = f" · 第 {r.get('page', 0)} 页" if r.get("page") else ""
-            if r.get("pdf_path"):
-                text = f"📄 [{r['n']}] {r.get('authors', '')} ({r.get('year', '')}) {shown}{page}"
-                btn = QPushButton(text)
-                btn.setObjectName("refRow")
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setToolTip(f"{title}\n{r['pdf_path']}")
-                btn.clicked.connect(
-                    lambda _c=False, path=r["pdf_path"]:
-                        self.open_requested.emit(path))
-            else:
-                btn = QPushButton(
-                    f"⚪ [{r['n']}] {r.get('authors', '')} ({r.get('year', '')}) "
-                    f"{shown} · 无 PDF 附件")
-                btn.setObjectName("refRow")
-                btn.setEnabled(False)
-                btn.setToolTip(title)
-            layout.addWidget(btn)
+    def run(self) -> None:
+        try:
+            result = self._client.chat_sync([
+                {"role": "system", "content": (
+                    "你是一位学术论文专业翻译，精通中英双语与科研写作。请将用户提供的英文文献标题与摘要译成中文。\n\n"
+                    "翻译要求：\n1. 术语准确，符合科研习惯表达\n"
+                    "2. 标题单独一行，摘要紧随其后，保持原结构\n"
+                    "3. 只输出译文本身，不要添加任何解释、注释或原文"
+                )},
+                {"role": "user", "content": self._text},
+            ])
+            if not self.isInterruptionRequested():
+                self.finished.emit(self._paper_id, result or "（空译文）")
+        except Exception as e:  # noqa: BLE001
+            if not self.isInterruptionRequested():
+                self.error.emit(self._paper_id, str(e))
 
 
 # ============================================================
@@ -453,43 +475,44 @@ class ReferenceListCard(QFrame):
 # ============================================================
 
 class WorkbenchPanel(QWidget):
-    """文献智能工作台：检索方向（左）+ 库内问答（中）+ 文献推荐流（右）。
+    """检索工作台：AI 检索（左，主区）+ 定时巡视与结果（右，同栏相邻）。"""
 
-    信号:
-        open_pdf_requested(str): 用户点击参考文献，请求在阅读工作台打开 PDF。
-    """
-
-    open_pdf_requested = Signal(str)
+    # 统计埋点：一次检索/推荐完成（结果数）、一次巡视完成（方向名、新增数）
+    search_completed = Signal(int)
+    scout_completed = Signal(str, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("workbenchPanel")
         self._library: "ZoteroLibrary | None" = None
         self._text_client: "LLMClient | None" = None
-        self._engine = LibraryQAEngine()
-        self._engine_ready = False
         self._items_snapshot: list = []
         self._collections: list[tuple[str, str]] = []
 
-        self._qa_worker: LibraryQAWorker | None = None
-        self._index_worker: IndexBuildWorker | None = None
         self._ai_worker: "PaperSearchWorker | None" = None
-        self._qa_busy = False
-        self._qa_history: list[dict] = []
-        self._current_ai_bubble: ChatBubble | None = None
-        self._welcome: QLabel | None = None
+        self._rec_worker: LibraryRecommendWorker | None = None
+        self._ai_searcher = None  # 测试可注入假多源检索器
         self._feed_empty: QLabel | None = None
         self._running_topics: set[str] = set()
+        # 卡片翻译与影响因子查询：worker 保活引用 + 目标卡片映射
+        self._trans_workers: dict[str, CardTranslateWorker] = {}
+        self._trans_cards: dict[str, "ScoutCard"] = {}
+        self._if_worker: "QThread | None" = None
+        self._if_cards: dict[str, "ScoutCard"] = {}
+        self._pending_if_jobs: list[tuple[str, str]] = []
+        # 按库推荐：级联集合选择链 + 集合树数据
+        self._rec_combos: list[QComboBox] = []
+        self._coll_nodes: dict[str, dict] = {}
+        self._coll_roots: list[str] = []
 
         self._manager = ScoutManager(self)
         self._manager.topics_changed.connect(self._render_topics)
         self._manager.topic_running.connect(self._on_topic_running)
         self._manager.results_ready.connect(self._on_scout_results)
-        self._ai_searcher = None  # 测试可注入假多源检索器
 
         self._setup_ui()
         self._manager.status_msg.connect(self._feed_status.setText)
-        self._insert_welcome()
+        self._refresh_rec_controls([])
         self._render_topics()
         self._render_feed()
 
@@ -503,57 +526,39 @@ class WorkbenchPanel(QWidget):
         header_layout.setSpacing(8)
         title_box = QVBoxLayout()
         title_box.setSpacing(1)
-        eyebrow = QLabel("文献发现与综合")
+        eyebrow = QLabel("文献检索与巡视")
         eyebrow.setObjectName("eyebrowLabel")
         title_box.addWidget(eyebrow)
-        title = QLabel("文献工作台")
+        title = QLabel("检索工作台")
         title.setObjectName("titleLabel")
         title_box.addWidget(title)
         header_layout.addLayout(title_box)
-        subtitle = QLabel("跨文献问答、AI 检索与定向巡视集中在同一工作区")
+        subtitle = QLabel("自然语言多源检索与按库推荐，定向巡视新文献并自动滤除库内已有")
         subtitle.setObjectName("subtitleLabel")
         header_layout.addWidget(subtitle)
         header_layout.addStretch()
 
-        self._topic_toggle = QPushButton("检索方向")
-        self._topic_toggle.setObjectName("paneToggle")
-        self._topic_toggle.setCheckable(True)
-        self._topic_toggle.setChecked(True)
-        header_layout.addWidget(self._topic_toggle)
-        self._feed_toggle = QPushButton("推荐流")
-        self._feed_toggle.setObjectName("paneToggle")
-        self._feed_toggle.setCheckable(True)
-        self._feed_toggle.setChecked(True)
-        header_layout.addWidget(self._feed_toggle)
+        self._scout_toggle = QPushButton("巡视面板")
+        self._scout_toggle.setObjectName("paneToggle")
+        self._scout_toggle.setCheckable(True)
+        self._scout_toggle.setChecked(True)
+        self._scout_toggle.setToolTip("显示或隐藏右侧巡视面板（方向与结果）")
+        header_layout.addWidget(self._scout_toggle)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(3)
         splitter.setOpaqueResize(False)
-        self._topic_panel = self._build_topic_panel()
-        splitter.addWidget(self._topic_panel)
-
-        center = QWidget()
-        center_layout = QVBoxLayout(center)
-        center_layout.setContentsMargins(0, 0, 0, 0)
-        self._center_tabs = QTabWidget()
-        self._center_tabs.setDocumentMode(True)
-        self._center_tabs.addTab(self._build_qa_panel(), "库内问答")
-        self._center_tabs.addTab(self._build_ai_search_panel(), "AI 检索")
-        center_layout.addWidget(self._center_tabs)
-        splitter.addWidget(center)
-
-        self._feed_panel = self._build_feed_panel()
-        splitter.addWidget(self._feed_panel)
-        splitter.setSizes([280, 640, 400])
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 0)
-        splitter.setCollapsible(0, True)
-        splitter.setCollapsible(1, False)
-        splitter.setCollapsible(2, True)
+        self._ai_panel = self._build_ai_search_panel()
+        splitter.addWidget(self._ai_panel)
+        self._scout_panel = self._build_scout_panel()
+        splitter.addWidget(self._scout_panel)
+        splitter.setSizes([720, 430])
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, True)
         self._workbench_splitter = splitter
-        self._topic_toggle.toggled.connect(self._set_topic_visible)
-        self._feed_toggle.toggled.connect(self._set_feed_visible)
+        self._scout_toggle.toggled.connect(self._set_scout_visible)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -561,18 +566,139 @@ class WorkbenchPanel(QWidget):
         layout.addWidget(header)
         layout.addWidget(splitter, 1)
 
-    def _build_topic_panel(self) -> QFrame:
+    def _build_ai_search_panel(self) -> QFrame:
+        """AI 检索主区：自然语言描述需求 → 自动生成检索式 → 多源检索。"""
         panel = QFrame()
-        panel.setObjectName("topicPanel")
-        panel.setMinimumWidth(240)
+        panel.setObjectName("aiSearchPanel")
+        panel.setMinimumWidth(420)
         v = QVBoxLayout(panel)
         v.setContentsMargins(16, 14, 14, 12)
         v.setSpacing(8)
 
-        title = QLabel("检索方向")
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(1)
+        title = QLabel("AI 检索")
+        title.setObjectName("titleLabel")
+        title_box.addWidget(title)
+        subtitle = QLabel("自然语言三源检索（OpenAlex / PubMed / arXiv）· 两轮闭环 · 自动滤除库内已有")
+        subtitle.setObjectName("subtitleLabel")
+        subtitle.setWordWrap(True)
+        title_box.addWidget(subtitle)
+        header.addLayout(title_box)
+        header.addStretch()
+        self._rec_mode_cb = QCheckBox("📚 按库推荐")
+        self._rec_mode_cb.setToolTip(
+            "勾选后切换为按库推荐：以某个 Zotero 集合（含其全部子级）的文献\n"
+            "作为推荐源；取消勾选回到自然语言检索。两种模式互斥显示。")
+        self._rec_mode_cb.toggled.connect(self._set_recommend_mode)
+        header.addWidget(self._rec_mode_cb)
+        v.addLayout(header)
+
+        self._ai_input = QTextEdit()
+        self._ai_input.setPlaceholderText(
+            "描述你想找的文献，例如：\n"
+            "· 近三年鸟类羽色发育中黑色素细胞分化的单细胞研究\n"
+            "· 2024 年以来关于羽毛图案形成的机制综述\n\n"
+            "两轮检索：先初检，AI 分析缺口后自动补充第二轮\n"
+            "按 Ctrl+Enter 检索")
+        self._ai_input.setMaximumHeight(120)
+        self._ai_input.setMinimumHeight(64)
+        self._ai_input.installEventFilter(self)
+        v.addWidget(self._ai_input)
+
+        self._ai_ctrl_widget = QWidget()
+        ctrl = QHBoxLayout(self._ai_ctrl_widget)
+        ctrl.setContentsMargins(0, 0, 0, 0)
+        ctrl.setSpacing(8)
+        self._filter_library_cb = QCheckBox("过滤库内已有")
+        self._filter_library_cb.setToolTip(
+            "勾选 = 从结果中剔除本地 Zotero 库中已有的文献；\n"
+            "不勾选 = 保留全部结果，并在卡片上标注「已在库中」")
+        ctrl.addWidget(self._filter_library_cb)
+        ctrl.addStretch()
+        self._ai_search_btn = QPushButton("开始检索 ✈")
+        self._ai_search_btn.setObjectName("primaryBtn")
+        self._ai_search_btn.setEnabled(False)
+        self._ai_search_btn.clicked.connect(self._on_ai_search)
+        ctrl.addWidget(self._ai_search_btn)
+        v.addWidget(self._ai_ctrl_widget)
+
+        # 模式二：按库推荐（级联集合选择，勾选头部复选框后显示，与检索互斥）
+        self._rec_range_row = QWidget()
+        rec_row = QHBoxLayout(self._rec_range_row)
+        rec_row.setContentsMargins(0, 0, 0, 0)
+        rec_row.setSpacing(8)
+        rec_label = QLabel("推荐范围：")
+        rec_label.setObjectName("subtitleLabel")
+        rec_row.addWidget(rec_label)
+        combos_host = QWidget()
+        self._rec_combos_layout = QHBoxLayout(combos_host)
+        self._rec_combos_layout.setContentsMargins(0, 0, 0, 0)
+        self._rec_combos_layout.setSpacing(6)
+        rec_row.addWidget(combos_host, 1)
+        self._rec_btn = QPushButton("📚 按库推荐")
+        self._rec_btn.setObjectName("primaryBtn")
+        self._rec_btn.setEnabled(False)
+        self._rec_btn.setToolTip("以所选范围（该级及其全部子级）的文献为种子：\n"
+                                 "OpenAlex 引文图谱推荐 + AI 集合画像检索")
+        self._rec_btn.clicked.connect(self._on_library_recommend)
+        rec_row.addWidget(self._rec_btn)
+        self._rec_range_row.setVisible(False)
+        v.addWidget(self._rec_range_row)
+
+        self._ai_log = QLabel("")
+        self._ai_log.setObjectName("subtitleLabel")
+        self._ai_log.setWordWrap(True)
+        self._ai_log.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        v.addWidget(self._ai_log)
+
+        self._ai_scroll = QScrollArea()
+        self._ai_scroll.setWidgetResizable(True)
+        host = QWidget()
+        self._ai_results_layout = QVBoxLayout(host)
+        self._ai_results_layout.setContentsMargins(0, 4, 2, 0)
+        self._ai_results_layout.setSpacing(8)
+        self._ai_results_layout.addStretch()
+        self._ai_scroll.setWidget(host)
+        v.addWidget(self._ai_scroll, 1)
+
+        return panel
+
+    def _build_scout_panel(self) -> QWidget:
+        """右栏巡视面板：方向管理在上，巡视结果（推荐流）在下，同栏相邻。"""
+        container = QWidget()
+        container.setMinimumWidth(340)
+        v = QVBoxLayout(container)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(10)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setHandleWidth(6)
+        splitter.setOpaqueResize(False)
+        splitter.addWidget(self._build_topic_panel())
+        splitter.addWidget(self._build_feed_panel())
+        splitter.setSizes([300, 430])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setCollapsible(0, True)
+        splitter.setCollapsible(1, False)
+        self._scout_splitter = splitter
+        v.addWidget(splitter)
+        return container
+
+    def _build_topic_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("topicPanel")
+        v = QVBoxLayout(panel)
+        v.setContentsMargins(16, 14, 14, 12)
+        v.setSpacing(8)
+
+        title = QLabel("定时巡视")
         title.setObjectName("titleLabel")
         v.addWidget(title)
-        subtitle = QLabel("定时巡视 PubMed · 自动滤除库内已有")
+        subtitle = QLabel("按方向周期检索 PubMed · 自动滤除库内已有")
         subtitle.setObjectName("subtitleLabel")
         subtitle.setWordWrap(True)
         v.addWidget(subtitle)
@@ -594,179 +720,14 @@ class WorkbenchPanel(QWidget):
         v.addWidget(self._topic_scroll, 1)
         return panel
 
-    def _build_qa_panel(self) -> QFrame:
-        panel = QFrame()
-        panel.setObjectName("qaPanel")
-        panel.setMinimumWidth(360)
-        v = QVBoxLayout(panel)
-        v.setContentsMargins(16, 14, 14, 12)
-        v.setSpacing(0)
-
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 8)
-        title_box = QVBoxLayout()
-        title_box.setSpacing(1)
-        title = QLabel("库内问答")
-        title.setObjectName("titleLabel")
-        title_box.addWidget(title)
-        subtitle = QLabel("面向整个 Zotero 库的跨文献问答 · 回答带 [n] 角标")
-        subtitle.setObjectName("subtitleLabel")
-        title_box.addWidget(subtitle)
-        header.addLayout(title_box)
-        header.addStretch()
-        v.addLayout(header)
-
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #e4e0d8; max-height: 1px;")
-        v.addWidget(sep)
-
-        self._qa_scroll = QScrollArea()
-        self._qa_scroll.setWidgetResizable(True)
-        self._qa_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        host = QWidget()
-        host.setObjectName("chatMessages")
-        self._msg_layout = QVBoxLayout(host)
-        self._msg_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._msg_layout.setSpacing(8)
-        self._msg_layout.addStretch()
-        self._qa_scroll.setWidget(host)
-        v.addWidget(self._qa_scroll, 1)
-
-        input_frame = QFrame()
-        input_frame.setObjectName("qaInput")
-        input_layout = QVBoxLayout(input_frame)
-        input_layout.setContentsMargins(0, 10, 0, 0)
-        input_layout.setSpacing(8)
-
-        self._ask_input = QTextEdit()
-        self._ask_input.setPlaceholderText(
-            "向你的文献库提问，按 Ctrl+Enter 发送。\n"
-            "例如：这两篇关于羽色发育的结论矛盾吗？库内有哪些用单细胞测序的文献？")
-        self._ask_input.setMaximumHeight(110)
-        self._ask_input.setMinimumHeight(56)
-        self._ask_input.installEventFilter(self)
-        input_layout.addWidget(self._ask_input)
-
-        ctrl = QHBoxLayout()
-        ctrl.setSpacing(8)
-        self._lib_only_cb = QCheckBox("只问库")
-        self._lib_only_cb.setToolTip(
-            "开启后不检索 PDF 全文，只根据条目元数据（标题/作者/摘要）回答，\n"
-            "适合「我有哪些关于 X 的文献」这类清点式问题。")
-        ctrl.addWidget(self._lib_only_cb)
-        ctrl.addStretch()
-        rebuild_btn = QPushButton("重建索引")
-        rebuild_btn.setObjectName("secondaryBtn")
-        rebuild_btn.setToolTip("强制重建全库全文索引（PDF 更换附件后使用）")
-        rebuild_btn.clicked.connect(lambda: self._start_index_build(force=True))
-        ctrl.addWidget(rebuild_btn)
-        clear_btn = QPushButton("清空")
-        clear_btn.setObjectName("softBtn")
-        clear_btn.setToolTip("清空当前问答会话")
-        clear_btn.clicked.connect(self._on_clear_chat)
-        ctrl.addWidget(clear_btn)
-        self._ask_btn = QPushButton("提问 ✈")
-        self._ask_btn.setObjectName("primaryBtn")
-        self._ask_btn.setEnabled(False)
-        self._ask_btn.clicked.connect(self._on_ask)
-        ctrl.addWidget(self._ask_btn)
-        input_layout.addLayout(ctrl)
-
-        self._qa_status = QLabel("索引：未构建")
-        self._qa_status.setObjectName("subtitleLabel")
-        self._qa_status.setWordWrap(True)
-        input_layout.addWidget(self._qa_status)
-
-        v.addWidget(input_frame)
-        return panel
-
-    def _build_ai_search_panel(self) -> QFrame:
-        """AI 检索页签：自然语言描述需求 → 自动生成检索式 → 多源检索。"""
-        panel = QFrame()
-        panel.setObjectName("aiSearchPanel")
-        panel.setMinimumWidth(360)
-        v = QVBoxLayout(panel)
-        v.setContentsMargins(16, 14, 14, 12)
-        v.setSpacing(8)
-
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        title_box = QVBoxLayout()
-        title_box.setSpacing(1)
-        title = QLabel("AI 检索")
-        title.setObjectName("titleLabel")
-        title_box.addWidget(title)
-        subtitle = QLabel("自然语言描述需求，自动检索 PubMed + arXiv 并滤除库内已有")
-        subtitle.setObjectName("subtitleLabel")
-        subtitle.setWordWrap(True)
-        title_box.addWidget(subtitle)
-        header.addLayout(title_box)
-        header.addStretch()
-        v.addLayout(header)
-
-        self._ai_input = QTextEdit()
-        self._ai_input.setPlaceholderText(
-            "描述你想找的文献，例如：\n"
-            "· 近三年鸟类羽色发育中黑色素细胞分化的单细胞研究\n"
-            "· 2024 年以来关于羽毛图案形成的机制综述\n\n"
-            "按 Ctrl+Enter 检索")
-        self._ai_input.setMaximumHeight(110)
-        self._ai_input.setMinimumHeight(56)
-        self._ai_input.installEventFilter(self)
-        v.addWidget(self._ai_input)
-
-        ctrl = QHBoxLayout()
-        ctrl.setSpacing(8)
-        ctrl.addStretch()
-        self._ai_search_btn = QPushButton("开始检索 ✈")
-        self._ai_search_btn.setObjectName("primaryBtn")
-        self._ai_search_btn.setEnabled(False)
-        self._ai_search_btn.clicked.connect(self._on_ai_search)
-        ctrl.addWidget(self._ai_search_btn)
-        v.addLayout(ctrl)
-
-        self._ai_log = QLabel("")
-        self._ai_log.setObjectName("subtitleLabel")
-        self._ai_log.setWordWrap(True)
-        self._ai_log.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        v.addWidget(self._ai_log)
-
-        self._ai_scroll = QScrollArea()
-        self._ai_scroll.setWidgetResizable(True)
-        host = QWidget()
-        self._ai_results_layout = QVBoxLayout(host)
-        self._ai_results_layout.setContentsMargins(0, 4, 2, 0)
-        self._ai_results_layout.setSpacing(8)
-        self._ai_results_layout.addStretch()
-        self._ai_scroll.setWidget(host)
-        v.addWidget(self._ai_scroll, 1)
-
-        return panel
-
-    def _set_topic_visible(self, visible: bool) -> None:
-        self._topic_panel.setVisible(bool(visible))
-        if visible:
-            self._workbench_splitter.setSizes([280, max(420, self.width() - 700), 360])
-        else:
-            self._workbench_splitter.setSizes([0, max(600, self.width() - 390), 360])
-
-    def _set_feed_visible(self, visible: bool) -> None:
-        self._feed_panel.setVisible(bool(visible))
-        if visible:
-            self._workbench_splitter.setSizes([280, max(420, self.width() - 700), 360])
-        else:
-            self._workbench_splitter.setSizes([280, max(600, self.width() - 330), 0])
-
     def _build_feed_panel(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("feedPanel")
-        panel.setMinimumWidth(330)
         v = QVBoxLayout(panel)
         v.setContentsMargins(16, 14, 14, 12)
         v.setSpacing(8)
 
-        title = QLabel("文献推荐流")
+        title = QLabel("巡视结果")
         title.setObjectName("titleLabel")
         v.addWidget(title)
         self._feed_status = QLabel("未运行巡视 · 新文献自动推送至此")
@@ -803,12 +764,18 @@ class WorkbenchPanel(QWidget):
         v.addLayout(footer)
         return panel
 
+    def _set_scout_visible(self, visible: bool) -> None:
+        self._scout_panel.setVisible(bool(visible))
+        if visible:
+            self._workbench_splitter.setSizes([max(600, self.width() - 470), 430])
+        else:
+            self._workbench_splitter.setSizes([max(600, self.width() - 30), 0])
+
     # ================= 依赖注入 =================
 
     def set_text_client(self, client: "LLMClient | None") -> None:
         self._text_client = client
         self._manager.set_llm_client(client)
-        self._apply_ask_state()
         self._ai_search_btn.setEnabled(client is not None)
 
     def set_ai_searcher(self, searcher) -> None:
@@ -824,69 +791,67 @@ class WorkbenchPanel(QWidget):
             except Exception:  # noqa: BLE001
                 items = []
         self._items_snapshot = items
-        self._engine_ready = False
         self._build_collections()
-        self._manager.set_match_pool(self._build_pool())
+        self._build_collection_tree()
+        pool = self._build_pool()
+        self._manager.set_match_pool(pool)
         self._manager.start()
-        self._start_index_build()
-        self._apply_ask_state()
+        self._refresh_rec_controls(pool)
 
     def on_zotero_changed(self) -> None:
-        """Zotero 周期同步发现变化后：重建比对池 + 增量刷新索引。"""
+        """Zotero 周期同步发现变化后：重建比对池。"""
         self.set_zotero_library(self._library)
 
     def reload_storage(self) -> bool:
-        """数据根目录切换后重新绑定索引、巡视和推荐流。"""
-        for attr in ("_index_worker", "_qa_worker", "_ai_worker"):
+        """数据根目录切换后重新绑定巡视和推荐流。"""
+        for attr in ("_ai_worker", "_rec_worker"):
             worker = getattr(self, attr)
             if worker is not None and worker.isRunning():
                 worker.requestInterruption()
                 if not worker.wait(3_000):
-                    self._feed_status.setText("已有文献任务正在退出，稍后再切换数据目录")
+                    self._feed_status.setText("已有检索任务正在退出，稍后再切换数据目录")
                     return False
             setattr(self, attr, None)
-        self._qa_busy = False
         if not self._manager.reload_storage():
             self._feed_status.setText("已有巡视任务正在退出，稍后再切换数据目录")
             return False
-        self._engine = LibraryQAEngine()
-        self._engine_ready = False
-        self._on_clear_chat()
         self._render_topics()
         self._render_feed()
         if self._library is not None:
-            self._manager.set_match_pool(self._build_pool())
+            pool = self._build_pool()
+            self._manager.set_match_pool(pool)
             self._manager.start()
-            self._start_index_build()
+            self._refresh_rec_controls(pool)
         return True
 
     def shutdown(self) -> None:
         """停止巡视定时器并请求中断后台线程（关窗时调用）。"""
         self._manager.shutdown()
-        for w in (self._index_worker, self._qa_worker, self._ai_worker):
+        for w in (self._ai_worker, self._rec_worker, self._if_worker):
             if w is not None and w.isRunning():
+                w.requestInterruption()
+        for w in self._trans_workers.values():
+            if w.isRunning():
                 w.requestInterruption()
 
     def has_busy_workers(self) -> bool:
-        qa = self._qa_worker is not None and self._qa_worker.isRunning()
-        idx = self._index_worker is not None and self._index_worker.isRunning()
         ai = self._ai_worker is not None and self._ai_worker.isRunning()
-        return qa or idx or ai or self._manager.has_busy_workers()
-
+        rec = self._rec_worker is not None and self._rec_worker.isRunning()
+        return ai or rec or self._manager.has_busy_workers()
     # ================= 库快照工具 =================
 
     def _build_collections(self) -> None:
-        """集合下拉数据：[(key, '父 / 子' 显示名)]。"""
+        """集合下拉数据：[(key, '父 / 子' 显示名)]，同级按名称排序。"""
         self._collections = []
         lib = self._library
         if lib is None:
             return
         by_id = {c.collection_id: c for c in lib.collections}
-        for c in lib.get_collections_tree():
+        for c in sorted(lib.get_collections_tree(), key=lambda c: c.name or ""):
             self._walk_collections(c, by_id)
 
     def _walk_collections(self, coll, by_id: dict) -> None:
-        """递归收集 (key, 显示名)。"""
+        """递归收集 (key, 显示名)，同级按名称排序（01 → 02 → 03）。"""
         names = [coll.name or ""]
         pid = coll.parent_id
         seen = {coll.collection_id}
@@ -896,10 +861,28 @@ class WorkbenchPanel(QWidget):
             seen.add(pid)
             pid = parent.parent_id
         self._collections.append((coll.key, " / ".join(reversed(names))))
-        for cid in coll.child_ids:
-            child = by_id.get(cid)
-            if child is not None:
-                self._walk_collections(child, by_id)
+        children = [by_id[cid] for cid in coll.child_ids if cid in by_id]
+        for child in sorted(children, key=lambda c: c.name or ""):
+            self._walk_collections(child, by_id)
+
+    def _build_collection_tree(self) -> None:
+        """按库推荐的级联数据：根 key 列表 + key→{name, children:[key]}，同级按名称排序。"""
+        self._coll_nodes = {}
+        self._coll_roots = []
+        lib = self._library
+        if lib is None:
+            return
+        by_id = {c.collection_id: c for c in lib.collections}
+
+        def walk(c) -> str:
+            self._coll_nodes[c.key] = {"name": c.name or "", "children": []}
+            children = [by_id[cid] for cid in c.child_ids if cid in by_id]
+            for child in sorted(children, key=lambda c: c.name or ""):
+                self._coll_nodes[c.key]["children"].append(walk(child))
+            return c.key
+
+        for c in sorted(lib.get_collections_tree(), key=lambda c: c.name or ""):
+            self._coll_roots.append(walk(c))
 
     def _build_pool(self) -> list[dict]:
         """构建巡视比对池：条目快照 + 其所属集合（含祖先）的 key 集合。"""
@@ -935,200 +918,16 @@ class WorkbenchPanel(QWidget):
             })
         return pool
 
-    # ================= 索引构建 =================
-
-    def _start_index_build(self, force: bool = False) -> None:
-        if self._index_worker is not None and self._index_worker.isRunning():
-            self._qa_status.setText("索引：正在构建中，请稍候…")
-            return
-        if not self._items_snapshot:
-            self._engine_ready = False
-            self._qa_status.setText(
-                "未检测到 Zotero 文献库——请在「设置 → Zotero 文献库路径设置」配置")
-            self._apply_ask_state()
-            return
-        self._qa_status.setText("索引：准备构建…")
-        worker = IndexBuildWorker(self._engine, self._items_snapshot, force)
-        track(worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
-        self._index_worker = worker
-        worker.progress.connect(self._on_index_progress)
-        worker.finished_signal.connect(self._on_index_done)
-        worker.error.connect(self._on_index_error)
-        worker.start()
-        self._apply_ask_state()
-
-    def _on_index_progress(self, done: int, total: int, name: str) -> None:
-        self._qa_status.setText(f"索引：{done}/{total} · {name}")
-
-    def _on_index_done(self, items: int, chunks: int) -> None:
-        if self.sender() is not self._index_worker:
-            return
-        self._index_worker = None
-        self._engine_ready = True
-        self._qa_status.setText(f"索引就绪 · {items} 篇全文 / {chunks} 段")
-        self._apply_ask_state()
-
-    def _on_index_error(self, err: str) -> None:
-        if self.sender() is not self._index_worker:
-            return
-        self._index_worker = None
-        # set_items 已执行的话元数据级问答仍可用
-        self._engine_ready = self._engine.is_ready
-        self._qa_status.setText(
-            f"全文索引构建失败（{err}）"
-            + ("；元数据问答可用" if self._engine_ready else ""))
-        self._apply_ask_state()
-
-    # ================= 库内问答 =================
-
-    def _apply_ask_state(self) -> None:
-        base = self._text_client is not None and self._engine_ready
-        self._ask_input.setEnabled(base)
-        self._ask_btn.setEnabled(base and not self._qa_busy)
+    # ================= 检索方向 =================
 
     def eventFilter(self, obj, event) -> bool:
-        # 构建顺序问题：eventFilter 可能在 _ai_input 创建前被调用，用 getattr 守卫
-        if (obj is getattr(self, "_ask_input", None)
-                or obj is getattr(self, "_ai_input", None)) \
+        if obj is self._ai_input \
                 and event.type() == QEvent.Type.KeyPress:
             if (event.key() == Qt.Key.Key_Return
                     and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-                if obj is getattr(self, "_ai_input", None):
-                    self._on_ai_search()
-                else:
-                    self._on_ask()
+                self._on_ai_search()
                 return True
         return super().eventFilter(obj, event)
-
-    def _insert_welcome(self) -> None:
-        if self._welcome is not None:
-            return
-        welcome = QLabel(
-            "欢迎使用文献工作台\n\n"
-            "这里可以向你的整个 Zotero 文献库提问，例如：\n"
-            "· 这两篇关于 X 的研究结论是否矛盾？\n"
-            "· 我的库里有哪些使用单细胞测序的文献？\n"
-            "· 总结一下 2023 年以来关于 Y 方向的进展\n\n"
-            "回答会标注 [n] 角标，点击参考文献可跳到阅读工作台打开原文。\n"
-            "首次使用会自动为库内 PDF 构建全文索引（只读，不改动 Zotero 数据）。"
-        )
-        welcome.setWordWrap(True)
-        welcome.setStyleSheet(
-            "color: #718180; background-color: #f5f8f6; border: 1px solid #e1ebe7; "
-            "border-radius: 12px; padding: 18px; font-size: 13px; line-height: 1.8;"
-        )
-        self._msg_layout.insertWidget(self._msg_layout.count() - 1, welcome)
-        self._welcome = welcome
-
-    def _remove_welcome(self) -> None:
-        if self._welcome is not None:
-            self._welcome.hide()
-            self._welcome.setParent(None)
-            self._welcome.deleteLater()
-            self._welcome = None
-
-    def _on_ask(self) -> None:
-        if self._qa_busy:
-            return
-        text = self._ask_input.toPlainText().strip()
-        if not text:
-            return
-        if self._text_client is None:
-            QMessageBox.warning(self, "未配置解析接口",
-                                "请先在「设置 → API 接口设置」中配置解析接口。")
-            return
-        if not self._engine_ready:
-            QMessageBox.information(self, "索引未就绪", "全库索引正在构建，请稍候。")
-            return
-
-        self._ask_input.clear()
-        self._remove_welcome()
-        self._qa_history.append({"role": "user", "content": text})
-        bubble = ChatBubble("user", text)
-        self._insert_msg(bubble)
-
-        self._qa_busy = True
-        self._apply_ask_state()
-        ai_bubble = ChatBubble("assistant", "AI 正在检索文献库…", thinking=True)
-        self._insert_msg(ai_bubble)
-        self._current_ai_bubble = ai_bubble
-
-        worker = LibraryQAWorker(
-            self._text_client, self._engine, text,
-            metadata_only=self._lib_only_cb.isChecked(),
-            history=list(self._qa_history[:-1]))
-        track(worker)
-        self._qa_worker = worker
-        worker.chunk_received.connect(self._on_qa_chunk)
-        worker.answer_finished.connect(self._on_qa_answer)
-        worker.error.connect(self._on_qa_error)
-        worker.done.connect(self._on_qa_done)
-        worker.start()
-
-    def _insert_msg(self, widget: QWidget) -> None:
-        self._msg_layout.insertWidget(self._msg_layout.count() - 1, widget)
-        QTimer.singleShot(50, lambda: self._qa_scroll.verticalScrollBar().setValue(
-            self._qa_scroll.verticalScrollBar().maximum()))
-
-    def _on_qa_chunk(self, chunk: str) -> None:
-        if self.sender() is not self._qa_worker:
-            return  # 旧 worker 的残余流直接丢弃
-        if self._current_ai_bubble is not None:
-            self._current_ai_bubble.append_content(chunk)
-
-    def _on_qa_answer(self, refs: list) -> None:
-        if self.sender() is not self._qa_worker:
-            return
-        self._finish_ai_bubble()
-        if refs:
-            card = ReferenceListCard(refs)
-            card.open_requested.connect(self.open_pdf_requested.emit)
-            self._insert_msg(card)
-
-    def _on_qa_error(self, err: str) -> None:
-        if self.sender() is not self._qa_worker:
-            return
-        if self._current_ai_bubble is not None:
-            self._current_ai_bubble.append_content(f"\n\n❌ 错误：{err}")
-        self._finish_ai_bubble()
-
-    def _on_qa_done(self) -> None:
-        if self.sender() is not self._qa_worker:
-            return
-        self._finish_ai_bubble()  # 中断路径：气泡可能还开着
-        self._qa_worker = None
-        self._qa_busy = False
-        self._apply_ask_state()
-
-    def _finish_ai_bubble(self) -> None:
-        bubble = self._current_ai_bubble
-        if bubble is None:
-            return
-        self._current_ai_bubble = None
-        bubble.set_thinking(False)
-        content = bubble.get_content().strip()
-        if not content:
-            content = "（回答被中断或模型未返回内容）"
-            bubble.set_content(content)
-        self._qa_history.append({"role": "assistant", "content": content})
-
-    def _on_clear_chat(self) -> None:
-        self._qa_history.clear()
-        self._current_ai_bubble = None
-        self._qa_busy = False
-        while self._msg_layout.count():
-            item = self._msg_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.hide()
-                w.setParent(None)
-                w.deleteLater()
-        self._msg_layout.addStretch()
-        self._welcome = None
-        self._insert_welcome()
-        self._apply_ask_state()
-
-    # ================= 检索方向 =================
 
     def _render_topics(self) -> None:
         while self._topic_layout.count() > 1:  # 保留末尾 stretch
@@ -1205,10 +1004,87 @@ class WorkbenchPanel(QWidget):
                + urllib.parse.quote(term))
         QDesktopServices.openUrl(QUrl(url))
 
-    # ================= AI 检索 =================
+    # ================= AI 检索 / 按库推荐 =================
+
+    def _set_recommend_mode(self, on: bool) -> None:
+        """模式互斥切换：自然语言检索 ⇄ 按库推荐。"""
+        self._ai_input.setVisible(not on)
+        self._ai_ctrl_widget.setVisible(not on)
+        self._rec_range_row.setVisible(on)
+        if on:
+            self._ai_log.setText("选择推荐范围（任一级即含其全部子级）后点击「按库推荐」")
+        else:
+            self._ai_log.setText("")
+
+    def _refresh_rec_controls(self, pool: list) -> None:
+        """按库推荐控件：级联下拉重建 + 按钮可用性。"""
+        self._truncate_rec_combos(0)
+        self._append_rec_combo(0, "")
+        self._rec_btn.setEnabled(bool(pool) and self._rec_worker is None)
+
+    def _truncate_rec_combos(self, keep: int) -> None:
+        """移除第 keep 级及更深的集合下拉。"""
+        while len(self._rec_combos) > keep:
+            combo = self._rec_combos.pop()
+            try:
+                combo.currentIndexChanged.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self._rec_combos_layout.removeWidget(combo)
+            combo.setParent(None)
+            combo.deleteLater()
+
+    def _append_rec_combo(self, level: int, parent_key: str) -> None:
+        """追加第 level 级集合下拉。
+
+        第 0 级：全库 + 顶层集合；更深层：「（含全部子级）」+ 子集合。
+        """
+        combo = QComboBox()
+        combo.setMinimumWidth(140)
+        if level == 0:
+            combo.addItem("全库", "")
+            for k in self._coll_roots:
+                combo.addItem(self._coll_nodes[k]["name"], k)
+        else:
+            combo.addItem("（含全部子级）", "")
+            for k in self._coll_nodes.get(parent_key, {}).get("children", []):
+                combo.addItem(self._coll_nodes[k]["name"], k)
+        combo.currentIndexChanged.connect(
+            lambda _idx, lv=level: self._on_rec_combo_changed(lv))
+        self._rec_combos_layout.addWidget(combo)
+        self._rec_combos.append(combo)
+
+    def _on_rec_combo_changed(self, level: int) -> None:
+        """某级选择变化：选中项有子集合则下钻一级，否则收起更深层。"""
+        if level >= len(self._rec_combos):
+            return
+        key = self._rec_combos[level].currentData() or ""
+        self._truncate_rec_combos(level + 1)
+        if key and self._coll_nodes.get(key, {}).get("children"):
+            self._append_rec_combo(level + 1, key)
+
+    def _current_rec_key(self) -> str:
+        """生效集合 key = 链上最深的非空选择（'' = 全库）。
+
+        选中任一级即含其全部子级（比对池条目的 collections 含祖先键）。
+        """
+        for combo in reversed(self._rec_combos):
+            key = combo.currentData() or ""
+            if key:
+                return key
+        return ""
+
+    def _current_rec_label(self) -> str:
+        """日志用：级联选择路径名（如「动物学 / 鸟类」）。"""
+        parts = [self._coll_nodes.get(combo.currentData(), {}).get("name", "")
+                 for combo in self._rec_combos if combo.currentData()]
+        return " / ".join(p for p in parts if p) if parts else "全库"
 
     def _on_ai_search(self) -> None:
         if self._ai_worker is not None and self._ai_worker.isRunning():
+            return
+        if self._rec_worker is not None and self._rec_worker.isRunning():
+            self._ai_log.setText("按库推荐正在进行，请稍候…")
             return
         text = self._ai_input.toPlainText().strip()
         if not text:
@@ -1220,12 +1096,14 @@ class WorkbenchPanel(QWidget):
 
         self._ai_search_btn.setEnabled(False)
         self._ai_search_btn.setText("检索中...")
+        self._rec_btn.setEnabled(False)
         self._ai_log.setText("正在生成检索方案...")
 
         from ..core.literature_search import PaperSearchWorker
         worker = PaperSearchWorker(
             text, client=self._text_client, pool=self._build_pool(), limit=10,
-            searcher=self._ai_searcher)
+            searcher=self._ai_searcher, rounds=2,
+            filter_library=self._filter_library_cb.isChecked())
         track(worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._ai_worker = worker
         worker.log.connect(self._on_ai_log)
@@ -1240,28 +1118,8 @@ class WorkbenchPanel(QWidget):
     def _on_ai_results(self, papers: list) -> None:
         if self.sender() is not self._ai_worker:
             return
-        self._clear_ai_results()
-        if not papers:
-            empty = QLabel("未检索到符合条件的文献，可换一种描述再试。")
-            empty.setObjectName("subtitleLabel")
-            empty.setWordWrap(True)
-            empty.setStyleSheet(
-                "color: #718180; background-color: #f5f8f6; "
-                "border: 1px solid #e1ebe7; border-radius: 12px; padding: 14px;")
-            self._ai_results_layout.insertWidget(
-                self._ai_results_layout.count() - 1, empty)
-            return
-        for p in papers:
-            entry = {
-                "id": f"{p.get('pmid') or p.get('arxiv_id') or p.get('doi') or ''}@AI检索",
-                "topic": "AI 检索",
-                "added_at": datetime.now().isoformat(timespec="seconds"),
-                "paper": p,
-            }
-            card = ScoutCard(entry)
-            card.ignore_requested.connect(self._on_ignore_feed)
-            self._ai_results_layout.insertWidget(
-                self._ai_results_layout.count() - 1, card)
+        self._render_search_papers(papers, "AI 检索")
+        self.search_completed.emit(len(papers))
 
     def _on_ai_error(self, err: str) -> None:
         if self.sender() is not self._ai_worker:
@@ -1274,17 +1132,102 @@ class WorkbenchPanel(QWidget):
         self._ai_worker = None
         self._ai_search_btn.setEnabled(self._text_client is not None)
         self._ai_search_btn.setText("开始检索 ✈")
+        self._rec_btn.setEnabled(self._library is not None)
+
+    def _on_library_recommend(self) -> None:
+        """按库推荐：以所选集合（含子集合）文献为种子的两路推荐。"""
+        if self._rec_worker is not None and self._rec_worker.isRunning():
+            return
+        if self._ai_worker is not None and self._ai_worker.isRunning():
+            self._ai_log.setText("AI 检索正在进行，请稍候…")
+            return
+        pool = self._build_pool()
+        collection_key = self._current_rec_key()
+        seeds = build_seeds(pool, collection_key)
+        if not seeds:
+            QMessageBox.information(
+                self, "无可用种子",
+                "所选范围内没有可用文献（种子需要有 DOI 或标题）。\n"
+                "请确认 Zotero 库已配置且集合非空。")
+            return
+        self._rec_btn.setEnabled(False)
+        self._rec_btn.setText("推荐中...")
+        self._ai_search_btn.setEnabled(False)
+        self._ai_log.setText(
+            f"按库推荐 · {self._current_rec_label()} · 种子 {len(seeds)} 篇")
+
+        worker = LibraryRecommendWorker(
+            seeds, pool, client=self._text_client, limit=20,
+            searcher=self._ai_searcher)
+        track(worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
+        self._rec_worker = worker
+        worker.log.connect(self._on_ai_log)
+        worker.results_ready.connect(self._on_rec_results)
+        worker.error.connect(self._on_rec_error)
+        worker.done.connect(self._on_rec_done)
+        worker.start()
+
+    def _on_rec_results(self, papers: list) -> None:
+        if self.sender() is not self._rec_worker:
+            return
+        self._render_search_papers(papers, "按库推荐")
+        self.search_completed.emit(len(papers))
+
+    def _on_rec_error(self, err: str) -> None:
+        if self.sender() is not self._rec_worker:
+            return
+        self._ai_log.setText(f"按库推荐失败：{err}")
+
+    def _on_rec_done(self) -> None:
+        if self.sender() is not self._rec_worker:
+            return
+        self._rec_worker = None
+        self._rec_btn.setText("📚 按库推荐")
+        self._rec_btn.setEnabled(self._library is not None)
+        self._ai_search_btn.setEnabled(self._text_client is not None)
+
+    def _render_search_papers(self, papers: list, chip_fallback: str) -> None:
+        """把检索/推荐结果渲染为卡片（chip 区分来源，linked 带关联种子数）。"""
+        self._clear_ai_results()
+        if not papers:
+            empty = QLabel("未检索到符合条件的文献，可换一种描述再试。")
+            empty.setObjectName("subtitleLabel")
+            empty.setWordWrap(True)
+            empty.setStyleSheet(
+                "color: #718180; background-color: #f5f8f6; "
+                "border: 1px solid #e1ebe7; border-radius: 12px; padding: 14px;")
+            self._ai_results_layout.insertWidget(
+                self._ai_results_layout.count() - 1, empty)
+            return
+        for p in papers:
+            chip = p.get("rec_source") or chip_fallback
+            entry = {
+                "id": f"{p.get('pmid') or p.get('arxiv_id') or p.get('doi') or ''}@{chip}",
+                "topic": chip,
+                "added_at": datetime.now().isoformat(timespec="seconds"),
+                "paper": p,
+                "linked": p.get("linked", 0),
+            }
+            card = ScoutCard(entry)
+            card.ignore_requested.connect(self._on_ignore_feed)
+            card.translate_requested.connect(self._on_translate_card)
+            self._register_card(card)
+            self._ai_results_layout.insertWidget(
+                self._ai_results_layout.count() - 1, card)
+        self._flush_if_queries()
 
     def _clear_ai_results(self) -> None:
         while self._ai_results_layout.count() > 1:  # 保留末尾 stretch
             item = self._ai_results_layout.takeAt(0)
             w = item.widget()
             if w is not None:
+                if isinstance(w, ScoutCard):
+                    self._unregister_card(w)
                 w.hide()
                 w.setParent(None)
                 w.deleteLater()
 
-    # ================= 推荐流 =================
+    # ================= 巡视结果（推荐流） =================
 
     def add_to_feed(self, papers: list[dict], label: str) -> int:
         """把任意检索结果推入推荐流（文献补充对话框等外部调用）。"""
@@ -1295,6 +1238,8 @@ class WorkbenchPanel(QWidget):
             item = self._feed_layout.takeAt(0)
             w = item.widget()
             if w is not None:
+                if isinstance(w, ScoutCard):
+                    self._unregister_card(w)
                 w.hide()
                 w.setParent(None)
                 w.deleteLater()
@@ -1321,21 +1266,126 @@ class WorkbenchPanel(QWidget):
             self._feed_empty = None
         card = ScoutCard(entry)
         card.ignore_requested.connect(self._on_ignore_feed)
+        card.translate_requested.connect(self._on_translate_card)
+        self._register_card(card)
+        self._flush_if_queries()
         # 新卡片插到最前（stretch 之前）
         self._feed_layout.insertWidget(0, card)
 
     def _on_scout_results(self, topic_name: str, entries: list) -> None:
         for entry in entries:
             self._add_feed_card(entry)
+        self.scout_completed.emit(topic_name, len(entries))
 
     def _on_ignore_feed(self, entry_id: str) -> None:
         self._manager.ignore_feed_item(entry_id)
         sender = self.sender()
         if sender is not None:
+            self._unregister_card(sender)
             sender.setParent(None)
             sender.deleteLater()
         if not self._manager.feed_items():
             self._render_feed()
+
+    # ================= 卡片翻译 + 影响因子 =================
+
+    @staticmethod
+    def _paper_card_id(paper: dict) -> str:
+        """卡片标识：pmid / arxiv_id / doi 优先取有值的。"""
+        return (paper.get("pmid") or paper.get("arxiv_id")
+                or paper.get("doi") or "").strip()
+
+    def _register_card(self, card: "ScoutCard") -> None:
+        """登记卡片：翻译映射始终登记；影响因子仅密钥已配置且期刊非空时登记。"""
+        paper = card._entry.get("paper", {})
+        pid = self._paper_card_id(paper)
+        if not pid:
+            return
+        self._trans_cards[pid] = card
+        if not get_easyscholar_api_key():
+            return
+        journal = (paper.get("journal") or "").strip()
+        if journal:
+            self._pending_if_jobs.append((pid, journal))
+            self._if_cards[pid] = card
+
+    def _unregister_card(self, card: "ScoutCard") -> None:
+        """卡片销毁前从目标映射移除（避免回填已删除卡片）。"""
+        for mapping in (self._trans_cards, self._if_cards):
+            for key, c in list(mapping.items()):
+                if c is card:
+                    mapping.pop(key, None)
+
+    def _flush_if_queries(self) -> None:
+        """启动一次影响因子批量查询（仅当已登记任务且密钥已配置）。"""
+        if not self._pending_if_jobs:
+            return
+        if self._if_worker is not None and self._if_worker.isRunning():
+            return
+        key = get_easyscholar_api_key()
+        if not key:
+            self._pending_if_jobs.clear()
+            return
+        from ..core.easyscholar import ImpactFactorWorker
+        worker = ImpactFactorWorker(self._pending_if_jobs, key)
+        track(worker)  # 运行期间保活
+        self._if_worker = worker
+        self._pending_if_jobs = []
+        worker.results_ready.connect(self._on_if_results)
+        worker.done.connect(self._on_if_done)
+        worker.start()
+
+    def _on_if_results(self, results: dict) -> None:
+        for pid, data in (results or {}).items():
+            card = self._if_cards.get(pid)
+            if card is None:
+                continue
+            parts = []
+            if data.get("if"):
+                parts.append(f"IF {data['if']}")
+            if data.get("sci5"):
+                parts.append(f"5年IF {data['sci5']}")
+            if parts:
+                card.set_impact(" · ".join(parts))
+
+    def _on_if_done(self) -> None:
+        self._if_worker = None
+        # 批量查询期间新登记的任务（如巡视新结果）继续处理
+        self._flush_if_queries()
+
+    def _on_translate_card(self, paper: dict) -> None:
+        if self._text_client is None:
+            QMessageBox.warning(
+                self, "未配置纯文本接口",
+                "翻译需要纯文本 LLM 接口。请先在「设置 → API 接口设置」"
+                "中配置纯文本接口。")
+            return
+        pid = self._paper_card_id(paper)
+        if not pid:
+            QMessageBox.warning(self, "无法翻译", "这篇文献缺少可识别的标识。")
+            return
+        text = "标题：" + (paper.get("title") or "").strip()
+        abstract = (paper.get("abstract") or "").strip()
+        if abstract:
+            text += "\n\n摘要：" + abstract
+        worker = CardTranslateWorker(self._text_client, pid, text)
+        track(worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
+        self._trans_workers[pid] = worker
+        worker.finished.connect(self._on_card_translated)
+        worker.error.connect(self._on_card_translate_error)
+        worker.start()
+
+    def _on_card_translated(self, paper_id: str, translation: str) -> None:
+        self._trans_workers.pop(paper_id, None)
+        card = self._trans_cards.get(paper_id)
+        if card is not None:
+            card.set_translation(translation)
+
+    def _on_card_translate_error(self, paper_id: str, err: str) -> None:
+        self._trans_workers.pop(paper_id, None)
+        card = self._trans_cards.get(paper_id)
+        if card is not None:
+            card.set_translation(f"翻译失败：{err}")
 
     def _on_clear_feed(self) -> None:
         if not self._manager.feed_items():

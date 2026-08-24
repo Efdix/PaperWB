@@ -4,8 +4,11 @@
 
     ZoteroLibrary.get_all_items()
       ├─ 元数据（标题/作者/年份/期刊/摘要/DOI）→ 内存 BM25 轻索引（毫秒级重建）
-      └─ PDF 附件 → PyMuPDF 按页抽段 → {data_root}/.paperwb/lib_index/fulltext.json
-                    （键 = Zotero 条目 key，失效判据 = PDF mtime，支持增量刷新）
+      └─ PDF 附件 → 优先复用两阶段管线的结构化整合缓存（只取正文/摘要段、
+        带章节名，参考文献与页眉页脚天然去噪）；无缓存回退 PyMuPDF 按页抽段
+        → {data_root}/.paperwb/lib_index/fulltext.json
+        （键 = Zotero 条目 key，失效判据 = PDF mtime，支持增量刷新；
+        后台预解析完成后经 refresh_item 单篇升级，flush 批量收口）
 
 检索策略：元数据索引 + 全文索引混合 —— 元数据命中的条目加权排在前面
 （用户点名某篇时优先定位），全文命中的条目携带最佳段落进入上下文。
@@ -14,22 +17,22 @@
 只读铁律：索引构建仅以只读方式打开 Zotero 的 PDF 原文件，绝不写 Zotero 目录。
 线程模型：set_items / refresh_fulltext 在后台索引线程调用，prepare_messages
 可在问答线程调用，状态交换由内部锁保护；BM25 检索对象一旦构建即不可变，
-问答线程持有的旧引用在交换后依然自洽。
+问答线程持有的旧引用在交换后依然自洽。refresh_item/flush 在主线程调用：
+构建进行中时单篇刷新进入待办队列，由 refresh_fulltext 收尾统一补抽。
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import threading
 from pathlib import Path
 from typing import Callable
 
-from .retriever import Bm25Retriever
+from .retriever import Bm25Retriever, split_paragraphs
 from ..utils.config import get_lib_index_dir
 
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 STATE_FILENAME = "fulltext.json"
 
 MIN_PARA_CHARS = 20          # 短于此的段落不进索引（页眉页脚噪音）
@@ -43,7 +46,7 @@ META_MAX_ITEMS = 12          # 只问库模式下最多列出的条目数
 FT_SCAN_HITS = 30            # 全文检索扫描的原始命中数（再按篇聚合）
 
 SYSTEM_PROMPT = (
-    "你是「文献工作台」的库内问答助手，帮助用户跨文献综合分析其 Zotero 文献库。\n"
+    "你是全文献库问答助手，帮助用户跨文献综合分析其 Zotero 文献库。\n"
     "规则：\n"
     "1. 只依据下方【文献库检索结果】中的内容回答；库内没有的信息不要编造\n"
     "2. 引用某条文献的证据时，在句末标注角标，如 [1] 或 [2][4]；"
@@ -67,15 +70,70 @@ def extract_pdf_chunks(pdf_path: str) -> list[dict]:
                 text = page.get_text()
                 if not text:
                     continue
-                for para in re.split(r"\n\s*\n", text):
-                    p = para.strip()
-                    if len(p) >= MIN_PARA_CHARS:
-                        chunks.append({"p": pno, "t": p[:MAX_CHUNK_CHARS]})
-                        if len(chunks) >= MAX_CHUNKS_PER_PDF:
-                            return chunks
+                for p in split_paragraphs(text, MIN_PARA_CHARS):
+                    chunks.append({"p": pno, "t": p[:MAX_CHUNK_CHARS]})
+                    if len(chunks) >= MAX_CHUNKS_PER_PDF:
+                        return chunks
             return chunks
     except Exception:
         return []
+
+
+def extract_structured_chunks(pdf_path: str) -> list[dict] | None:
+    """从两阶段管线的结构化整合缓存（states/）抽取正文段落。
+
+    只取 body/abstract_body 元素：参考文献列表、页眉页脚、图表注等
+    噪音天然排除；段落携带章节名。缓存无效（未解析/版本过期/PDF 已变）
+    返回 None，由调用方回退 PyMuPDF 裸文本。
+
+    Returns:
+        [{"p": 页码, "s": 章节名, "t": 段落文本}, ...] 或 None。
+    """
+    from .pdf_processor import FAST_DOCUMENT_VERSION
+    from ..utils.config import load_doc_state
+    try:
+        state = load_doc_state(pdf_path)
+    except Exception:
+        return None
+    if state.get("doc_format") != "fast":
+        return None
+    if not state.get("structured_document"):
+        return None
+    try:
+        if int(state.get("fast_version", 0) or 0) != FAST_DOCUMENT_VERSION:
+            return None
+        if abs(float(state.get("pdf_mtime", 0.0) or 0.0)
+               - os.path.getmtime(pdf_path)) > 1.0:
+            return None
+    except (OSError, TypeError, ValueError):
+        return None
+
+    doc = state["structured_document"]
+    if not isinstance(doc, dict):
+        return None
+    chunks: list[dict] = []
+    for e in doc.get("display_elements", []):
+        if not isinstance(e, dict):
+            continue
+        if e.get("element_type") not in ("body", "abstract_body"):
+            continue
+        text = (e.get("text") or "").strip()
+        if len(text) < MIN_PARA_CHARS:
+            continue
+        chunks.append({
+            "p": int(e.get("page", 0) or 0),
+            "s": (e.get("section_name") or "").strip()[:60],
+            "t": text[:MAX_CHUNK_CHARS],
+        })
+        if len(chunks) >= MAX_CHUNKS_PER_PDF:
+            break
+    return chunks
+
+
+def extract_chunks(pdf_path: str) -> list[dict]:
+    """全文抽取统一口径：优先结构化缓存（去噪+章节），否则 PyMuPDF 裸文本。"""
+    chs = extract_structured_chunks(pdf_path)
+    return chs if chs else extract_pdf_chunks(pdf_path)
 
 
 def _short_authors(authors: list[str]) -> str:
@@ -98,6 +156,9 @@ class LibraryQAEngine:
         self._ft_retriever: Bm25Retriever | None = None
         # 持久化镜像：{"version", "items": {key: {"pdf","mtime","error"}}, "chunks": [...]}
         self._ft_state: dict = {"version": INDEX_VERSION, "items": {}, "chunks": []}
+        self._building = False           # refresh_fulltext 进行中（单篇刷新转待办）
+        self._refresh_pending: set[str] = set()
+        self._ft_dirty = False           # refresh_item 改动未落盘/未重建检索器
 
     # ---- 状态查询 ----
 
@@ -170,6 +231,21 @@ class LibraryQAEngine:
         Returns:
             {"items": 索引文献数, "chunks": 段落总数}
         """
+        with self._lock:
+            self._building = True
+        try:
+            return self._refresh_fulltext_locked(items, progress_cb, interrupt_cb, force)
+        finally:
+            with self._lock:
+                self._building = False
+
+    def _refresh_fulltext_locked(
+        self,
+        items: list,
+        progress_cb: Callable[[int, int, str], None] | None,
+        interrupt_cb: Callable[[], bool] | None,
+        force: bool,
+    ) -> dict:
         state = {"version": INDEX_VERSION, "items": {}, "chunks": []}
         if not force:
             loaded = self._load_state()
@@ -186,7 +262,8 @@ class LibraryQAEngine:
             pdf = (it.pdf_path or "").strip()
             if pdf:
                 targets.append((it.key, pdf))
-        target_keys = {k for k, _ in targets}
+        target_map = {k: pdf for k, pdf in targets}
+        target_keys = set(target_map)
 
         # 移除已不在库中（或已无 PDF）的条目
         for k in list(items_map.keys()):
@@ -212,7 +289,7 @@ class LibraryQAEngine:
                 items_map[key] = {"pdf": pdf, "mtime": 0.0, "error": True}
                 chunks_by_key.pop(key, None)
             elif force or entry.get("mtime") != mtime:
-                chs = extract_pdf_chunks(pdf)
+                chs = extract_chunks(pdf)
                 chunks_by_key[key] = chs
                 items_map[key] = {"pdf": pdf, "mtime": mtime, "error": False}
                 changed = True
@@ -221,8 +298,23 @@ class LibraryQAEngine:
             if progress_cb is not None:
                 progress_cb(i + 1, total, os.path.basename(pdf))
 
+        # 构建期间后台预解析完成（refresh_item 转待办）的条目统一补抽
+        with self._lock:
+            pending = {k for k in self._refresh_pending if k in target_keys}
+            self._refresh_pending.clear()
+        for key in pending:
+            pdf = target_map[key]
+            entry = items_map.get(key) or {}
+            try:
+                mtime = os.path.getmtime(pdf)
+            except OSError:
+                continue
+            if entry.get("mtime") == mtime and not entry.get("error"):
+                chunks_by_key[key] = extract_chunks(pdf)
+                changed = True
+
         chunks_flat = [
-            {"k": k, "p": c["p"], "t": c["t"]}
+            {"k": k, "p": c["p"], "s": c.get("s", ""), "t": c["t"]}
             for k, chs in chunks_by_key.items() for c in chs
         ]
         state["chunks"] = chunks_flat
@@ -230,13 +322,86 @@ class LibraryQAEngine:
             self._save_state(state)
 
         retriever = Bm25Retriever()
-        retriever.index([
-            {"text": c["t"], "page": c["p"], "k": c["k"]} for c in chunks_flat
-        ])
+        retriever.index([self._ft_index_chunk(c) for c in chunks_flat])
         with self._lock:
             self._ft_retriever = retriever
             self._ft_state = state
+            self._ft_dirty = False
         return {"items": len(chunks_by_key), "chunks": len(chunks_flat)}
+
+    @staticmethod
+    def _ft_index_chunk(c: dict) -> dict:
+        """全文 chunk → BM25 索引条目：章节名参与打分，正文保持原样展示。"""
+        s = c.get("s", "")
+        entry = {"text": c["t"], "page": c["p"], "k": c["k"], "s": s}
+        if s:
+            entry["index_text"] = f"{s} {c['t']}"
+        return entry
+
+    def refresh_item(self, key: str) -> bool:
+        """单篇按最新结构化缓存重抽 chunks（预解析/阅读精修完成后调用）。
+
+        只更新内存 state 并置脏；落盘与检索器重建由 flush() 批量收口，
+        避免逐篇重写 15MB 状态文件和重建全库 BM25。构建进行中时转入
+        待办队列（由 refresh_fulltext 收尾补抽）。PDF 有变化（mtime 不符）
+        时不处理，留给下次全量刷新。
+
+        Returns:
+            是否实际更新（False = 转待办/条目缺失/PDF 已变）。
+        """
+        with self._lock:
+            if self._building:
+                self._refresh_pending.add(key)
+                return False
+            d = self._items.get(key) or {}
+            state = self._ft_state
+        pdf = (d.get("pdf_path") or "").strip()
+        if not pdf:
+            return False
+        try:
+            mtime = os.path.getmtime(pdf)
+        except OSError:
+            return False
+        items_map = state.get("items", {})
+        entry = items_map.get(key) or {}
+        if entry.get("mtime") != mtime or entry.get("error"):
+            return False
+        chs = extract_chunks(pdf)
+        with self._lock:
+            chunks = [c for c in state.get("chunks", []) if c.get("k") != key]
+            chunks.extend(
+                {"k": key, "p": c["p"], "s": c.get("s", ""), "t": c["t"]}
+                for c in chs)
+            state["chunks"] = chunks
+            self._ft_dirty = True
+        return True
+
+    def flush(self, reindex: bool = True) -> None:
+        """把 refresh_item 累积的变更落盘；reindex 时同步重建全文检索器。
+
+        构建进行中时跳过（保持脏标记，构建收尾的状态已含补抽结果）。
+        reindex=False 供高频节流调用（纯落盘），idle/pause 等收口时机
+        再 reindex=True 原子换入新检索器。
+        """
+        with self._lock:
+            if self._building or not self._ft_dirty:
+                return
+            state = self._ft_state
+        self._save_state(state)
+        if not reindex:
+            return
+        chunks_flat = [
+            {"k": c.get("k", ""), "p": c.get("p", 0),
+             "s": c.get("s", ""), "t": c.get("t", "")}
+            for c in state.get("chunks", [])
+        ]
+        retriever = Bm25Retriever()
+        retriever.index([self._ft_index_chunk(c) for c in chunks_flat])
+        with self._lock:
+            if self._building or self._ft_state is not state:
+                return  # 构建已接管状态：以构建结果为准
+            self._ft_retriever = retriever
+            self._ft_dirty = False
 
     # ---- 检索与消息组装（问答线程调用） ----
 
@@ -260,20 +425,21 @@ class LibraryQAEngine:
                 if k and k not in picked:
                     picked[k] = {"meta": hit.get("score", 0.0), "ft": 0.0, "chunks": []}
         if not metadata_only and ft_r is not None:
-            per_item: dict[str, list[tuple[int, str, float]]] = {}
+            per_item: dict[str, list[tuple[int, str, str, float]]] = {}
             for hit in ft_r.search(question, top_k=FT_SCAN_HITS):
                 k = hit.get("k")
                 if k:
                     per_item.setdefault(k, []).append(
-                        (hit.get("page", 0), hit.get("text", ""), hit.get("score", 0.0)))
+                        (hit.get("page", 0), hit.get("text", ""),
+                         hit.get("s", ""), hit.get("score", 0.0)))
             ranked = sorted(
                 per_item.items(),
-                key=lambda kv: sum(h[2] for h in kv[1][:CTX_CHUNKS_PER_ITEM]),
+                key=lambda kv: sum(h[3] for h in kv[1][:CTX_CHUNKS_PER_ITEM]),
                 reverse=True)
             for k, chs in ranked[:CTX_MAX_ITEMS]:
                 e = picked.setdefault(k, {"meta": 0.0, "ft": 0.0, "chunks": []})
-                e["ft"] = sum(h[2] for h in chs[:CTX_CHUNKS_PER_ITEM])
-                e["chunks"] = [(p, t) for p, t, _ in chs[:CTX_CHUNKS_PER_ITEM]]
+                e["ft"] = sum(h[3] for h in chs[:CTX_CHUNKS_PER_ITEM])
+                e["chunks"] = [(p, t, s) for p, t, s, _ in chs[:CTX_CHUNKS_PER_ITEM]]
 
         meta_keys = sorted((k for k, e in picked.items() if e["meta"] > 0),
                            key=lambda k: picked[k]["meta"], reverse=True)
@@ -296,10 +462,12 @@ class LibraryQAEngine:
             if d["doi"]:
                 head += f" DOI: {d['doi']}"
             lines = [head]
-            if metadata_only and d["abstract"]:
+            if d["abstract"]:
+                # 摘要行两种模式都带：全文模式此前完全缺失，是便宜的准确率提升
                 lines.append("    摘要: " + d["abstract"][:300])
-            for page, text in e["chunks"]:
-                lines.append(f"    （第 {page} 页）{text[:CTX_CHUNK_CHARS]}")
+            for page, text, section in e["chunks"]:
+                where = f"第 {page} 页 · {section}" if section else f"第 {page} 页"
+                lines.append(f"    （{where}）{text[:CTX_CHUNK_CHARS]}")
             blocks.append("\n".join(lines))
             references.append({
                 "n": n, "key": k, "title": d["title"], "authors": author_str,

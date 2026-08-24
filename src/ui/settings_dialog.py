@@ -9,7 +9,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal as QtSignal
 
 from ..core.llm_client import PROVIDERS, VISION_MODELS
-from ..utils.config import load_config, save_config, get_vision_api, get_text_api
+from ..utils.config import (
+    load_config, save_config, get_vision_api, get_text_api, get_openalex_api_key,
+    get_easyscholar_api_key,
+)
 from ..utils.threads import track
 
 
@@ -35,6 +38,46 @@ class _TestConnectionWorker(QThread):
             if self.isInterruptionRequested():
                 return
             self.finished_signal.emit(True, reply or "")
+        except Exception as e:
+            if not self.isInterruptionRequested():
+                self.finished_signal.emit(False, str(e))
+
+
+class _TestOpenAlexWorker(QThread):
+    """后台测试 OpenAlex 连通性/密钥有效性（密钥可空）。"""
+
+    finished_signal = QtSignal(bool, str)  # (ok, message)
+
+    def __init__(self, api_key: str, parent=None):
+        super().__init__(parent)
+        self._key = api_key
+
+    def run(self):
+        try:
+            from ..core.literature_search import test_openalex_connection
+            ok, msg = test_openalex_connection(self._key)
+            if not self.isInterruptionRequested():
+                self.finished_signal.emit(ok, msg)
+        except Exception as e:
+            if not self.isInterruptionRequested():
+                self.finished_signal.emit(False, str(e))
+
+
+class _TestEasyScholarWorker(QThread):
+    """后台测试 EasyScholar 密钥有效性。"""
+
+    finished_signal = QtSignal(bool, str)  # (ok, message)
+
+    def __init__(self, secret_key: str, parent=None):
+        super().__init__(parent)
+        self._key = secret_key
+
+    def run(self):
+        try:
+            from ..core.easyscholar import test_easyscholar_connection
+            ok, msg = test_easyscholar_connection(self._key)
+            if not self.isInterruptionRequested():
+                self.finished_signal.emit(ok, msg)
         except Exception as e:
             if not self.isInterruptionRequested():
                 self.finished_signal.emit(False, str(e))
@@ -141,6 +184,88 @@ class APIConfigTab(QWidget):
             "base_url": self.base_url.text().strip(),
             "model": model,
         }
+
+
+class OpenAlexTab(QWidget):
+    """OpenAlex 检索源配置页签（密钥完全可选）。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        desc = QLabel(
+            "OpenAlex 免费学术文献库（约 2.5 亿条，全学科覆盖，含被引次数与开放获取链接）。"
+            "已用于检索工作台的 AI 检索与按库推荐。密钥完全可选：不填可直接使用基础免费额度；"
+            "免费注册后填写密钥可获更高每日额度——实际额度以「测试」按钮返回的剩余额度为准。"
+        )
+        desc.setObjectName("subtitleLabel")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        group = QGroupBox("API 密钥（可选）")
+        form = QFormLayout(group)
+        self.api_key = QLineEdit()
+        self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key.setPlaceholderText("留空 = 使用免费额度（无需注册）")
+        form.addRow("密钥：", self.api_key)
+        layout.addWidget(group)
+
+        hint = QLabel(
+            "获取密钥：openalex.org 免费注册账号 → 账户设置中生成 API Key。\n"
+            "密钥保存在本机配置文件中，仅随文献检索请求发送给 OpenAlex。"
+        )
+        hint.setObjectName("subtitleLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        layout.addStretch()
+
+    def load(self, api_key: str):
+        self.api_key.setText(api_key or "")
+
+    def get(self) -> str:
+        return self.api_key.text().strip()
+
+
+class EasyScholarTab(QWidget):
+    """EasyScholar 影响因子配置页签（密钥必填才启用）。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        desc = QLabel(
+            "EasyScholar 开放 API 用于检索结果卡片显示期刊影响因子（JCR IF 与 5 年 IF）。"
+            "密钥必填：不填写则检索工作台不启用影响因子显示（卡片不显示 IF）。"
+            "免费用户有每日调用额度，同一期刊多篇文献共享一次查询并缓存到本地，不重复消耗额度。"
+        )
+        desc.setObjectName("subtitleLabel")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        group = QGroupBox("API 密钥")
+        form = QFormLayout(group)
+        self.api_key = QLineEdit()
+        self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key.setPlaceholderText("easyscholar.cc 注册后获取的 secretKey")
+        form.addRow("密钥：", self.api_key)
+        layout.addWidget(group)
+
+        hint = QLabel(
+            "获取密钥：easyscholar.cc 免费注册账号 → 开放接口（openApi）页面复制 secretKey。\n"
+            "密钥保存在本机配置文件中，仅随影响因子查询发送给 EasyScholar。"
+        )
+        hint.setObjectName("subtitleLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        layout.addStretch()
+
+    def load(self, secret_key: str):
+        self.api_key.setText(secret_key or "")
+
+    def get(self) -> str:
+        return self.api_key.text().strip()
 
 
 class DirectorySettingDialog(QDialog):
@@ -265,13 +390,19 @@ class SettingsDialog(QDialog):
         )
         self._text_tab = APIConfigTab(
             "text",
-            "纯文本接口：论文问答、段落翻译、写作（润色/引文核查/风格分析/文献补充）、"
-            "文献工作台问答与巡视、跨页段落整合等全部文本功能共用此接口。",
+            "纯文本接口：论文问答（本篇/全库）、段落翻译、写作（润色/引文核查/风格分析/文献补充）、"
+            "文献检索与巡视、跨页段落整合等全部文本功能共用此接口。",
         )
         self.tabs.addTab(self._vision_tab, "多模态")
         self.tabs.addTab(self._text_tab, "纯文本")
+        self._openalex_tab = OpenAlexTab()
+        self.tabs.addTab(self._openalex_tab, "文献检索源")
+        self._easyscholar_tab = EasyScholarTab()
+        self.tabs.addTab(self._easyscholar_tab, "影响因子")
         layout.addWidget(self.tabs)
         self._test_worker: _TestConnectionWorker | None = None
+        self._openalex_test_worker: _TestOpenAlexWorker | None = None
+        self._easyscholar_test_worker: _TestEasyScholarWorker | None = None
 
         btn = QHBoxLayout()
         btn.addStretch()
@@ -291,10 +422,14 @@ class SettingsDialog(QDialog):
     def _load(self):
         self._vision_tab.load(get_vision_api(self._config))
         self._text_tab.load(get_text_api(self._config))
+        self._openalex_tab.load(get_openalex_api_key(self._config))
+        self._easyscholar_tab.load(get_easyscholar_api_key(self._config))
 
     def _save(self):
         self._config["vision_api"] = self._vision_tab.get()
         self._config["text_api"] = self._text_tab.get()
+        self._config["openalex_api_key"] = self._openalex_tab.get()
+        self._config["easyscholar_api_key"] = self._easyscholar_tab.get()
         save_config(self._config)
         QMessageBox.information(
             self, "已保存",
@@ -304,6 +439,12 @@ class SettingsDialog(QDialog):
 
     def _test(self):
         current = self.tabs.currentWidget()
+        if isinstance(current, OpenAlexTab):
+            self._test_openalex(current)
+            return
+        if isinstance(current, EasyScholarTab):
+            self._test_easyscholar(current)
+            return
         if not isinstance(current, APIConfigTab):
             return
         cfg = current.get()
@@ -320,6 +461,53 @@ class SettingsDialog(QDialog):
         self._test_worker.finished_signal.connect(self._on_test_done)
         self._test_worker.start()
 
+    def _test_openalex(self, tab: OpenAlexTab):
+        """文献检索源页签：密钥可空，测试连通性与密钥有效性。"""
+        if self._openalex_test_worker is not None and self._openalex_test_worker.isRunning():
+            return
+        self._test_btn.setEnabled(False)
+        self._test_btn.setText("测试中...")
+        self._openalex_test_worker = _TestOpenAlexWorker(tab.get())
+        track(self._openalex_test_worker)
+        self._openalex_test_worker.finished_signal.connect(self._on_openalex_test_done)
+        self._openalex_test_worker.start()
+
+    def _test_easyscholar(self, tab: EasyScholarTab):
+        """影响因子页签：密钥必填，测试密钥有效性与额度。"""
+        if self._easyscholar_test_worker is not None and self._easyscholar_test_worker.isRunning():
+            return
+        if not tab.get():
+            QMessageBox.warning(self, "缺少密钥", "请先填写 EasyScholar 密钥。")
+            return
+        self._test_btn.setEnabled(False)
+        self._test_btn.setText("测试中...")
+        self._easyscholar_test_worker = _TestEasyScholarWorker(tab.get())
+        track(self._easyscholar_test_worker)
+        self._easyscholar_test_worker.finished_signal.connect(self._on_easyscholar_test_done)
+        self._easyscholar_test_worker.start()
+
+    def _on_easyscholar_test_done(self, ok: bool, msg: str):
+        if self.sender() is not self._easyscholar_test_worker:
+            return
+        self._easyscholar_test_worker = None
+        self._test_btn.setEnabled(True)
+        self._test_btn.setText("测试当前接口")
+        if ok:
+            QMessageBox.information(self, "测试成功", msg)
+        else:
+            QMessageBox.critical(self, "测试失败", msg)
+
+    def _on_openalex_test_done(self, ok: bool, msg: str):
+        if self.sender() is not self._openalex_test_worker:
+            return
+        self._openalex_test_worker = None
+        self._test_btn.setEnabled(True)
+        self._test_btn.setText("测试当前接口")
+        if ok:
+            QMessageBox.information(self, "测试成功", msg)
+        else:
+            QMessageBox.critical(self, "测试失败", msg)
+
     def _on_test_done(self, ok: bool, msg: str):
         if self.sender() is not self._test_worker:
             return
@@ -332,12 +520,13 @@ class SettingsDialog(QDialog):
             QMessageBox.critical(self, "测试失败", f"连接失败：{msg}")
 
     def _stop_test_worker(self) -> bool:
-        worker = self._test_worker
-        if worker is not None and worker.isRunning():
-            worker.requestInterruption()
-            if not worker.wait(3_000):
-                return False
-        self._test_worker = None
+        for attr in ("_test_worker", "_openalex_test_worker"):
+            worker = getattr(self, attr, None)
+            if worker is not None and worker.isRunning():
+                worker.requestInterruption()
+                if not worker.wait(3_000):
+                    return False
+            setattr(self, attr, None)
         return True
 
     def accept(self) -> None:

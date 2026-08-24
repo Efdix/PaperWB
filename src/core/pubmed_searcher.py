@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class PubMedPaper:
-    """单条文献记录（PubMed 或 arXiv 等来源）。"""
+    """单条文献记录（PubMed / arXiv / OpenAlex 等来源）。"""
     pmid: str = ""
     title: str = ""
     authors: str = ""
@@ -22,12 +22,43 @@ class PubMedPaper:
     doi: str = ""
     abstract: str = ""
     url: str = ""
-    source: str = "pubmed"   # 来源标注: pubmed / arxiv
+    source: str = "pubmed"   # 来源标注: pubmed / arxiv / openalex
     arxiv_id: str = ""       # arXiv 条目的 arxiv id（PubMed 为空）
+    cited_by: int = 0        # 被引次数（OpenAlex 提供；其余来源为 0）
 
     @property
     def citation_count(self) -> int:
-        return 0  # PubMed 不提供引用数
+        return self.cited_by
+
+
+def retry_urlopen(
+    req: urllib.request.Request,
+    timeout: float,
+    attempts: int = 3,
+    base_delay: float = 1.0,
+) -> bytes:
+    """带重试的 urlopen：仅对瞬时网络错误（连接失败/超时/HTTP 429/5xx）退避重试。
+
+    与 LLMClient 的重试策略对齐（共 3 次尝试，退避 1s/2s）；其余异常
+    （如 4xx 请求错误）直接抛出，由调用方沿用"单查询失败静默跳过"行为。
+    """
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        if attempt > 0:
+            _time.sleep(base_delay * (2 ** (attempt - 1)))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 429 or e.code >= 500:
+                last_exc = e
+                continue
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last_exc = e
+            continue
+    assert last_exc is not None
+    raise last_exc
 
 
 class PubMedSearcher:
@@ -99,8 +130,7 @@ class PubMedSearcher:
         })
         url = f"{self.ESEARCH_URL}?{params}"
         req = urllib.request.Request(url, headers={"User-Agent": self.USER_AGENT})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = _json.loads(resp.read().decode())
+        data = _json.loads(retry_urlopen(req, timeout=15).decode())
         return data.get("esearchresult", {}).get("idlist", [])
 
     def _efetch(self, pmids: list[str]) -> list[PubMedPaper]:
@@ -115,8 +145,7 @@ class PubMedSearcher:
         })
         url = f"{self.EFETCH_URL}?{params}"
         req = urllib.request.Request(url, headers={"User-Agent": self.USER_AGENT})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            root = ET.fromstring(resp.read())
+        root = ET.fromstring(retry_urlopen(req, timeout=30))
 
         papers = []
         for article in root.findall(".//PubmedArticle"):

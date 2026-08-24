@@ -1,0 +1,457 @@
+[ZoteroLibrary] 解析路径: C:\Users\13984\Zotero
+[ZoteroLibrary] 找到数据库: C:\Users\13984\Zotero\zotero.sqlite
+[ZoteroLibrary] 找到 storage: C:\Users\13984\Zotero\storage
+[ZoteroLibrary] 从 SQLite 加载: C:\Users\13984\Zotero\zotero.sqlite
+[ZoteroLibrary] 已复制数据库到临时文件
+[ZoteroLibrary] 数据库条目类型: attachment(772), journalArticle(509), book(14), preprint(11), thesis(2), note(2), manuscript(1), computerProgram(1), bookSection(1)
+[ZoteroLibrary] 数据库共有 1313 个条目
+[ZoteroLibrary] 共加载 539 条文献（从 SQLite）
+样本 26 篇（已有页缓存 26，需全新解析 0） | FAST_DOCUMENT_VERSION=9
+==============================================================================
+
+===== [1] Guo 等 - 2025 - Fast and furious The rapid turnover of microRNAs in plants.pdf
+    标题: Fast and furious: The rapid turnover of microRNAs in plants
+    卡片数: 232 | 类型分布: {'title': 1, 'authors': 2, 'affiliations': 2, 'abstract_body': 1, 'keywords': 1, 'subtitle': 19, 'body': 204, 'figure': 2}
+    最大正文卡词数: 232 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e6      Fast and furious: The rapid turnover of microRNAs in plants
+      [authors       ] p1_e7      Zhonglong Guo 1 , Yixiang Yang 1 , and Xiaozeng Yang 2 *
+      [affiliations  ] p1_e8      1 Co-Innovation Center for Sustainable Forestry in Southern 
+      [affiliations  ] p1_e9      2 State Key Laboratory of Plant Diversity and Specialty Crop
+      [abstract_body ] p1_e12     Abstract Plant miRNAs exhibit a dynamic and complex evolutio
+      [keywords      ] p1_e13     Key words: expansion, gain, loss, microRNAs, plants.
+      [subtitle      ] p1_e14     1 Introduction
+      [body          ] p1_e15     MicroRNAs (miRNAs) are a unique class of non-coding RNAs tha
+      [body          ] p1_e16     The advent of next-generation sequencing (NGS) tech-nologies
+      [body          ] p1_e19     ushering in the era of high-throughput miRNA identification.
+
+===== [2] Li 等 - 2025 - Multiple cell types guided by neurocytes orchestrate horn bud initiation in dairy goats.pdf
+    标题: Multiple cell types guided by neurocytes orchestrate horn bud initiati
+    卡片数: 207 | 类型分布: {'title': 1, 'authors': 1, 'abstract_heading': 1, 'abstract_body': 4, 'subtitle': 30, 'body': 160, 'table': 3, 'figure': 7}
+    最大正文卡词数: 497 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e3      Multiple cell types guided by neurocytes orchestrate horn bu
+      [authors       ] p1_e5      Hegang Li 1† , Mengmeng Du 1† , Xiaokun Lin 1 , Xinxin Cao 1
+      [abstract_heading] p1_e6      Abstract
+      [abstract_body ] p1_e7      Background Horn development is a key ruminant trait involvin
+      [abstract_body ] p1_e8      Results We revealed temporal and spatial differences of the 
+      [abstract_body ] p1_e9      Conclusions This study employed scRNA-seq to characterize ce
+      [abstract_body ] p1_e10     † Hegang Li and Mengmeng Du have contributed equally to this
+      [subtitle      ] p2_e1      Background
+      [body          ] p2_e2      Goat horns are skin derivatives in the morphological structu
+      [body          ] p2_e3      The embryonic period is crucial for the differentiation and 
+
+===== [3] annurev.ecolsys.37.091305.110014.pdf.pdf
+    标题: Gliding and the Functional Origins of Flight: Biomechanical Novelty or
+    卡片数: 89 | 类型分布: {'title': 1, 'authors': 1, 'affiliations': 5, 'body': 68, 'abstract_heading': 1, 'abstract_body': 1, 'subtitle': 11, 'figure': 1}
+    最大正文卡词数: 388 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e7      Gliding and the Functional Origins of Flight: Biomechanical 
+      [authors       ] p1_e8      Robert Dudley, 1 Greg Byrnes, 1 Stephen P. Yanoviak, 2 Brend
+      [affiliations  ] p1_e9      1 Department of Integrative Biology, University of Californi
+      [affiliations  ] p1_e10     2 Department of Pathology, University of T exas Medical Bran
+      [affiliations  ] p1_e11     Texas 77555, and Florida Medical Entomology Laboratory, Vero
+      [affiliations  ] p1_e12     3 Natural History Museum, Biodiversity Research Center, and 
+      [affiliations  ] p1_e13     4 Museum of Vertebrate Zoology, University of California, Be
+      [body          ] p1_e15     aerodynamics, arboreality, descent, falling, hexapod, trees,
+      [abstract_heading] p1_e16     Abstract
+      [abstract_body ] p1_e17     Abiomechanically parsimonious hypothesis for the evolution o
+
+===== [4] Schaefer 等 - 2025 - Multimodal learning enables chat-based exploration of single-cell data.pdf
+    标题: Multimodal learning enables chat-based exploration of single-cell data
+    卡片数: 253 | 类型分布: {'title': 1, 'authors': 1, 'abstract_body': 1, 'body': 197, 'subtitle': 40, 'figure': 12, 'figure_caption': 1}
+    最大正文卡词数: 387 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e3      Multimodal learning enables chat-based exploration of single
+      [authors       ] p1_e8      Moritz Schaefer 1,2,11 , Peter Peneder 3,4,11 , Daniel Malzl
+      [abstract_body ] p1_e9      Single-cell sequencing characterizes biological samples at u
+      [body          ] p1_e10     Gene expression profiling is widely used for the characteriz
+      [body          ] p1_e11     both bioinformatic skills and application-specific biologica
+      [body          ] p1_e12     A typical scRNA-seq dataset can be represented by a count ma
+      [body          ] p2_e1      CellWhisperer implements this functionality with two intertw
+      [body          ] p2_e2      In summary, we developed CellWhisperer as a proof of concept
+      [subtitle      ] p2_e3      Results
+      [subtitle      ] p2_e4      The CellWhisperer multimodal AI connects transcriptomes and 
+
+===== [5] Goldman 等 - 2025 - A single-nucleus transcriptomic atlas of the adult Aedes aegypti mosquito.pdf
+    标题: A single-nucleus transcriptomic atlas of the adult Aedes aegypti mosqu
+    卡片数: 501 | 类型分布: {'title': 1, 'subtitle': 73, 'authors': 1, 'body': 413, 'abstract_heading': 1, 'abstract_body': 1, 'figure': 10, 'table': 1}
+    最大正文卡词数: 531 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      A single-nucleus transcriptomic atlas of the adult Aedes aeg
+      [subtitle      ] p2_e2      Article
+      [subtitle      ] p2_e3      A single-nucleus transcriptomic atlas of the adult Aedes aeg
+      [authors       ] p2_e4      Olivia V. Goldman, 1,2,18, * Alexandra E. DeFoe, 1,3 Yanyan 
+      [body          ] p2_e24     20 Lead contact
+      [body          ] p2_e25     *Correspondence: ogoldman2@gmail.com (O.V.G.), hongjie.li@bc
+      [abstract_heading] p2_e26     SUMMARY
+      [abstract_body ] p2_e27     The female Aedesaegypti mosquito's remarkable ability to hun
+      [subtitle      ] p2_e28     INTRODUCTION
+      [body          ] p2_e29     Mosquito-borne diseases affect hundreds of millions of peopl
+
+===== [6] Zhao 等 - 2024 - A Metagenomic Investigation of Potential Health Ri.pdf
+    标题: A Metagenomic Investigation of Potential Health Risks and Element Cycl
+    卡片数: 69 | 类型分布: {'title': 1, 'authors': 1, 'affiliations': 2, 'abstract_body': 1, 'keywords': 1, 'subtitle': 16, 'body': 40, 'figure': 7}
+    最大正文卡词数: 817 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e4      A Metagenomic Investigation of Potential Health Risks and El
+      [authors       ] p1_e6      Haozhe Zhao 1 , Mingfei Yang 1 , Xiang Fan 1 , Qian Gui 1 , 
+      [affiliations  ] p1_e7      1 Yunnan Institute of Microbiology, School of Life Sciences,
+      [affiliations  ] p1_e8      2 College of Life Science and Technology, Beijing University
+      [abstract_body ] p1_e10     Abstract: The concentration of viruses in sewage sludge is s
+      [keywords      ] p1_e11     Keywords: wastewater treatment plants; virus; prokaryote; el
+      [subtitle      ] p1_e12     1. Introduction
+      [body          ] p1_e13     Viruses are the most abundant entities on earth, and the num
+      [body          ] p2_e2      Antibiotic resistance is a growing global public health chal
+      [body          ] p2_e3      Considering the potential importance of viruses in natural e
+
+===== [7] Liu 等 - 2026 - Single-cell and spatial transcriptomics define 20E-driven developmental reprogramming in silkworm wi.pdf
+    标题: Single-cell and spatial transcriptomics define 20E-driven developmenta
+    卡片数: 187 | 类型分布: {'title': 1, 'authors': 1, 'abstract_body': 2, 'affiliations': 1, 'body': 143, 'subtitle': 33, 'figure': 5, 'figure_caption': 1}
+    最大正文卡词数: 384 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e5      Single-cell and spatial transcriptomics define 20E-driven de
+      [authors       ] p1_e10     Qingsong Liu 1,6 , Mingmin He 2,6 , Hao Chen 1,6 , Yongfen Z
+      [abstract_body ] p1_e11     Insect wing development involves tissue patterning, cell fat
+      [abstract_body ] p1_e12     Insects are the only invertebrates that canfly, a key evolut
+      [affiliations  ] p1_e13     1 Integrative Science Center of Germplasm Creation in Wester
+      [body          ] p2_e1      Although single-cell analyses have been conducted for the wi
+      [body          ] p2_e2      Thesilkworm Bombyxmori ( B. mori ), is an important lepidopt
+      [body          ] p2_e3      In this work, we combined scRNA-seq, single-nucleus RNA sequ
+      [subtitle      ] p2_e4      Results
+      [subtitle      ] p2_e5      Temporal and spatial atlas of silkworm wing disc cells
+
+===== [8] Geng 等 - 2020 - Convergent Evolution of Locomotory Modes in Euarchontoglires.pdf
+    标题: Convergent Evolution of Locomotory Modes in Euarchontoglires
+    卡片数: 53 | 类型分布: {'title': 1, 'authors': 1, 'affiliations': 1, 'abstract_body': 1, 'keywords': 1, 'subtitle': 11, 'body': 33, 'figure': 3, 'table': 1}
+    最大正文卡词数: 369 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e27     Convergent Evolution of Locomotory Modes in Euarchontoglires
+      [authors       ] p1_e28     Wei-hang Geng 1,2,3† , Xiao-ping Wang 1† , Li-feng Che 4,5† 
+      [affiliations  ] p1_e29     1 State Key Laboratory for Conservation and Utilization of B
+      [abstract_body ] p1_e30     The research of phenotypic convergence is of increasing impo
+      [keywords      ] p1_e31     Keywords: convergent evolution, Euarchontoglires, metacarpal
+      [subtitle      ] p1_e32     INTRODUCTION
+      [body          ] p1_e33     The relationship between morphology, locomotory modes and ha
+      [body          ] p2_e1      The mammalian superorder Euarchontoglires is comprised of fi
+      [body          ] p2_e2      In the present study, we collected three phalangeal indices 
+      [body          ] p2_e3      Young and Chadwell, 2020). Our morphometric analyses based o
+
+===== [9] Khan 等 - 2024 - The evolutionary history and distribution of cactus germplasm resources, as well as potential domest.pdf
+    标题: The evolutionary history and distribution of cactus germplasm resource
+    卡片数: 301 | 类型分布: {'title': 1, 'authors': 1, 'affiliations': 7, 'abstract_body': 1, 'keywords': 1, 'subtitle': 28, 'body': 257, 'figure': 3, 'table': 2}
+    最大正文卡词数: 513 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e6      The evolutionary history and distribution of cactus germplas
+      [authors       ] p1_e8      Darya Khan 1,2 , AJ Harris 3 , Qamar U. Zaman 1,2 , Hong-Xin
+      [affiliations  ] p1_e9      1 Collaborative Innovation Center of Nanfan and High-Efficie
+      [affiliations  ] p1_e10     2 Hainan Yazhou Bay Seed Laboratory, Sanya 572025, China
+      [affiliations  ] p1_e11     3 Key Laboratory of Plant Resources Conservation and Sustain
+      [affiliations  ] p1_e12     4 Zhai Mingguo Academician Work Station, Sanya University, S
+      [affiliations  ] p1_e13     5 Department of Botany, National Museum of Natural History, 
+      [affiliations  ] p1_e14     6 School of Integrative Plant Science, Section of Plant Biol
+      [affiliations  ] p1_e15     7 BTI Computational Biology Center, Boyce Thompson Institute
+      [abstract_body ] p1_e17     Abstract The angiosperm family Cactaceae, a member of the Ca
+
+===== [10] Camacho 等 - 2009 - BLAST+ architecture and applications.pdf
+    标题: BLAST+: architecture and applications
+    卡片数: 103 | 类型分布: {'title': 1, 'authors': 1, 'affiliations': 1, 'body': 70, 'abstract_heading': 1, 'abstract_body': 3, 'subtitle': 20, 'figure': 5, 'table': 1}
+    最大正文卡词数: 324 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e3      BLAST+: architecture and applications
+      [authors       ] p1_e4      Christiam Camacho, George Coulouris, Vahram Avagyan, Ning Ma
+      [affiliations  ] p1_e5      Address: National Center for Biotechnology Information, Nati
+      [body          ] p1_e7      Vahram Avagyan-avagyanv@ncbi.nlm.nih.gov; Ning Ma-maning@ncb
+      [body          ] p1_e8      Kevin Bealer-kevinbealer@gmail.com; Thomas L Madden* - madde
+      [abstract_heading] p1_e17     Abstract
+      [abstract_body ] p1_e18     Background: Sequence similarity searching is a very importan
+      [abstract_body ] p1_e19     Results: We describe features and improvements of rewritten 
+      [abstract_body ] p1_e20     Conclusion: The new BLAST command-line applications, compare
+      [subtitle      ] p1_e21     Background
+
+===== [11] Lotfollahi 等 - 2022 - Mapping single-cell data to reference atlases by transfer learning.pdf
+    标题: Mapping single-cell data to reference atlases by transfer learning
+    卡片数: 237 | 类型分布: {'title': 1, 'authors': 1, 'abstract_body': 4, 'affiliations': 1, 'subtitle': 30, 'body': 192, 'figure': 8}
+    最大正文卡词数: 322 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e3      Mapping single-cell data to reference atlases by transfer le
+      [authors       ] p1_e4      Mohammad Lotfollahi 1,2 , Mohsen Naghipourfar 1 , Malte D. L
+      [abstract_body ] p1_e5      Large single-cell atlases are now routinely generated to ser
+      [abstract_body ] p1_e6      L arge single-cell reference atlases 1-4 comprising millions
+      [abstract_body ] p1_e7      Learning from a reference atlas requires mapping a query dat
+      [abstract_body ] p1_e8      Exploiting large reference datasets is a well-established ap
+      [affiliations  ] p1_e9      1 Helmholtz Center Munich-German Research Center for Environ
+      [subtitle      ] p2_e1      Analysis
+      [body          ] p2_e2      which is often crucial for emerging clinical datasets. Furth
+      [subtitle      ] p2_e3      Results
+
+===== [12] Fan 等 - 2018 - Single Cell and Open Chromatin Analysis Reveals Molecular Origin of Epidermal Cells of the Skin.pdf
+    标题: Single Cell and Open Chromatin Analysis Reveals Molecular Origin of Ep
+    卡片数: 233 | 类型分布: {'title': 1, 'subtitle': 44, 'authors': 1, 'body': 175, 'abstract_heading': 1, 'abstract_body': 1, 'figure': 7, 'table': 3}
+    最大正文卡词数: 425 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      Single Cell and Open Chromatin Analysis Reveals Molecular Or
+      [subtitle      ] p2_e3      Single Cell and Open Chromatin Analysis Reveals Molecular Or
+      [authors       ] p2_e4      Xiying Fan, 1 Dongmei Wang, 1 Jeremy Evan Burgmaier, 1 Yudon
+      [body          ] p2_e8      4 Lead Contact
+      [body          ] p2_e9      *Correspondence: yir@colorado.edu
+      [abstract_heading] p2_e11     SUMMARY
+      [abstract_body ] p2_e12     How embryonic progenitors coordinate cell fate specification
+      [subtitle      ] p2_e13     INTRODUCTION
+      [body          ] p2_e14     The generation of induced pluripotent stem cells (SCs) (Taka
+      [body          ] p2_e16     Mammalian skin and appendages such as hair follicles (HFs) a
+
+===== [13] Meng 等 - 2025 - Evolution of East Asian subtropical evergreen broad-leaved forests When and how.pdf
+    标题: Evolution of East Asian subtropical evergreen broad-leaved forests: Wh
+    卡片数: 250 | 类型分布: {'title': 1, 'authors': 2, 'affiliations': 8, 'abstract_body': 1, 'keywords': 1, 'subtitle': 16, 'body': 219, 'figure': 2}
+    最大正文卡词数: 515 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e6      Evolution of East Asian subtropical evergreen broad-leaved f
+      [authors       ] p1_e7      Hong-Hu Meng 1,2,3 * , Yi-Gang Song 4 , Guo-Xiong Hu 5 , Pei
+      [affiliations  ] p1_e8      1 Plant Phylogenetics and Conservation Group, Center for Int
+      [affiliations  ] p1_e9      2 Southeast Asia Biodiversity Research Institute, Chinese Ac
+      [affiliations  ] p1_e10     3 Yunnan International Joint Laboratory for the Conservation
+      [affiliations  ] p1_e11     4 Eastern China Conservation Centre for Wild Endangered Plan
+      [affiliations  ] p1_e12     5 College of Life Sciences, Guizhou University, Guiyang 5500
+      [affiliations  ] p1_e13     6 University of Chinese Academy of Sciences, Beijing 100049,
+      [affiliations  ] p1_e15     State Key Laboratory of Systematic and Evolutionary Botany, 
+      [affiliations  ] p1_e16     9 CAS Key Laboratory of Tropical Forest Ecology, Xishuangban
+
+===== [14] Xiao 等 - 2024 - CellAgent An LLM-driven Multi-Agent Framework for Automated Single-cell Data Analysis.pdf
+    标题: CellAgent: An LLM-driven Multi-Agent Framework for Automated Single-ce
+    卡片数: 94 | 类型分布: {'title': 1, 'authors': 1, 'affiliations': 2, 'abstract_heading': 1, 'abstract_body': 1, 'subtitle': 28, 'body': 56, 'figure': 4}
+    最大正文卡词数: 449 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e1      CellAgent: An LLM-driven Multi-Agent Framework for Automated
+      [authors       ] p1_e2      Yihang Xiao 1 † , Jinyi Liu 2 † , Yan Zheng 2 † , Xiaohan Xi
+      [affiliations  ] p1_e3      1* AI for Science Interdisciplinary Research Center, School 
+      [affiliations  ] p1_e4      2 College of Intelligence and Computing, Tianjin University,
+      [abstract_heading] p1_e8      Abstract
+      [abstract_body ] p1_e9      Single-cell RNA sequencing (scRNA-seq) data analysis is cruc
+      [subtitle      ] p2_e1      1 Introduction
+      [body          ] p2_e2      Single-cell RNA sequencing (scRNA-seq) techniques have trans
+      [body          ] p2_e3      However, analyzing scRNA-seq data entails considerable compl
+      [body          ] p2_e4      Recently, with the remarkable capabilities demonstrated by l
+
+===== [15] La Manno 等 - 2018 - RNA velocity of single cells.pdf
+    标题: RNA velocity of single cells
+    卡片数: 100 | 类型分布: {'title': 1, 'authors': 1, 'abstract_body': 4, 'body': 70, 'figure': 10, 'subtitle': 14}
+    最大正文卡词数: 792 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      RNA velocity of single cells
+      [authors       ] p1_e3      Gioele La Manno 1,2 , Ruslan Soldatov 3 , Amit Zeisel 1,2 , 
+      [abstract_body ] p1_e4      RNA abundance is a powerful indicator of the state of indivi
+      [abstract_body ] p1_e5      During development, differentiation occurs on a timescale of
+      [abstract_body ] p1_e6      All common single-cell RNA-seq protocols rely on oligo-dT pr
+      [abstract_body ] p1_e7      To quantify the time-dependent relationship between the abun
+      [body          ] p1_e8      During a dynamic process, an increase in the transcription r
+      [body          ] p1_e9      To demonstrate how this simple model can be used to extrapol
+      [body          ] p1_e10     Next, to demonstrate the ability to predict transcriptional 
+      [figure        ] p2_e5      
+
+===== [16] Cui 等 - 2024 - scGPT toward building a foundation model for single-cell multi-omics using generative AI.pdf
+    标题: scGPT: toward building a foundation model for single-cell multi-omics 
+    卡片数: 230 | 类型分布: {'title': 1, 'authors': 1, 'abstract_body': 3, 'body': 187, 'subtitle': 25, 'figure': 7, 'figure_caption': 6}
+    最大正文卡词数: 451 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e4      scGPT: toward building a foundation model for single-cell mu
+      [authors       ] p1_e9      Haotian Cui 1,2,3,8 , Chloe Wang 1,2,3,8 , Hassaan Maan 1,3,
+      [abstract_body ] p1_e10     Generative pretrained models have achieved remarkable succes
+      [abstract_body ] p1_e12     Single-cell RNA sequencing (scRNA-seq), by enabling intricat
+      [abstract_body ] p1_e13     One promising approach to address this challenge is the gene
+      [body          ] p1_e14     1 Peter Munk Cardiac Centre, University Health Network, Toro
+      [body          ] p2_e1      In this work, we present the single-cell foundation model sc
+      [body          ] p2_e2      Our model, scGPT, demonstrates the transformative potential 
+      [subtitle      ] p2_e3      Results
+      [subtitle      ] p2_e4      Single-cell transformer foundation model overview
+
+===== [17] Zhang 等 - 2019 - Probabilistic cell-type assignment of single-cell RNA-seq for tumor microenvironment profiling.pdf
+    标题: Probabilistic cell-type assignment of single-cell RNA-seq for tumor mi
+    卡片数: 173 | 类型分布: {'title': 1, 'authors': 1, 'abstract_body': 1, 'body': 140, 'figure': 6, 'subtitle': 24}
+    最大正文卡词数: 372 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      Probabilistic cell-type assignment of single-cell RNA-seq fo
+      [authors       ] p1_e3      Allen W. Zhang 1,2,3 , Ciara O'Flanagan 1 , Elizabeth A. Cha
+      [abstract_body ] p1_e4      Single-cell RNA sequencing has enabled the decomposition of 
+      [body          ] p1_e5      G ene expression observed at the single-cell resolution in h
+      [body          ] p1_e6      In the context of robust clustering that recapitulates biolo
+      [body          ] p1_e7      Another approach to cell-type annotation is to leverage sing
+      [body          ] p1_e8      To address the challenges inherent in existing approaches, w
+      [figure        ] p2_e1      
+      [body          ] p2_e131    We evaluated CellAssign across a range of simulations, on gr
+      [subtitle      ] p2_e132    Results
+
+===== [18] Qin 等 - 2016 - A magnetic protein biocompass.pdf
+    标题: Amagnetic protein biocompass
+    卡片数: 151 | 类型分布: {'title': 1, 'authors': 1, 'abstract_body': 2, 'body': 123, 'figure': 5, 'subtitle': 19}
+    最大正文卡词数: 344 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      Amagnetic protein biocompass
+      [authors       ] p1_e3      Siying Qin 1 † , Hang Yin 1 † , Celi Yang 1 , Yunfeng Dou 1 
+      [abstract_body ] p1_e4      The notion that animals can detect the Earth's magnetic fiel
+      [abstract_body ] p1_e5      M agnetic sensing, or the ability to detect the Earth's magn
+      [body          ] p1_e6      Several models have been proposed to explain the nature of m
+      [body          ] p1_e7      Ferrimagnetism has been proposed as an enabler of a natural 
+      [body          ] p1_e8      The magnetite-based and radical-pair-reaction-based chemical
+      [body          ] p1_e9      Here, we identified a candidate compass protein using in sil
+      [figure        ] p2_e1      
+      [subtitle      ] p2_e43     The biocompass model of magnetoreception
+
+===== [19] Ushiki 等 - 2026 - Functional characterization of bat limb regulatory elements.pdf
+    标题: Functional characterization of bat limb regulatory elements
+    卡片数: 395 | 类型分布: {'title': 1, 'abstract_heading': 1, 'abstract_body': 1, 'subtitle': 24, 'body': 360, 'figure': 6, 'figure_caption': 2}
+    最大正文卡词数: 588 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      Functional characterization of bat limb regulatory elements
+      [abstract_heading] p2_e18     Abstract
+      [abstract_body ] p2_e19     Bats are the only mammals capable of powered flight and roos
+      [subtitle      ] p3_e45     Main
+      [body          ] p3_e46     Bats are the only mammal capable of powered flight and roost
+      [body          ] p4_e32     [H3K27me3; 21 ] marks on autopods dissected from bat forelim
+      [body          ] p4_e33     We took a variety of approaches to narrow down the number of
+      [subtitle      ] p5_e45     Results
+      [subtitle      ] p5_e46     Transcriptomic comparison of embryonic bat and mouse limbs
+      [body          ] p5_e47     Previous work by our labs identified over 7,000 genes to be 
+
+===== [20] Zhong 等 - 2020 - Decoding the development of the human hippocampus.pdf
+    标题: Decoding the development of the human hippocampus
+    卡片数: 167 | 类型分布: {'title': 1, 'authors': 1, 'abstract_body': 2, 'subtitle': 50, 'body': 87, 'figure': 17, 'figure_caption': 9}
+    最大正文卡词数: 425 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      Decoding the development of the human hippocampus
+      [authors       ] p1_e7      Suijuan Zhong 1,10 , Wenyu Ding 2,10 , Le Sun 1,3,4,10 , Yuf
+      [abstract_body ] p1_e8      The hippocampus is an important part of the limbic system in
+      [abstract_body ] p1_e9      The hippocampal formation (hippocampus) is a compound struct
+      [subtitle      ] p1_e10     Hippocampus single-cell transcriptome
+      [body          ] p1_e11     To understand the molecular features of hippocampal cells du
+      [body          ] p1_e12     To study developmental differences between the hippocampus a
+      [figure        ] p2_e1      
+      [figure_caption] p2_e214    hippocampus. a-c , Visualization of eleven major classes usi
+      [subtitle      ] p2_e215    Progenitors of the developing hippocampus
+
+===== [21] Wu 等 - 2014 - Camelid genomes reveal evolution and adaptation to desert environments.pdf
+    标题: Camelid genomes reveal evolution and adaptation to desert environments
+    卡片数: 108 | 类型分布: {'title': 1, 'authors': 1, 'abstract_body': 1, 'affiliations': 3, 'body': 90, 'subtitle': 7, 'table': 1, 'figure': 4}
+    最大正文卡词数: 353 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e5      Camelid genomes reveal evolution and adaptation to desert en
+      [authors       ] p1_e6      Huiguang Wu 1, *, Xuanmin Guang 2, *, Mohamed B. Al-Fageeh 3
+      [abstract_body ] p1_e7      Bactrian camel ( Camelus bactrianus ), dromedary ( Camelus d
+      [affiliations  ] p1_e8      1 College of Life Science, Inner Mongolia Agricultural Unive
+      [affiliations  ] p1_e9      3 National Centre for Biotechnology, King Abdulaziz City for
+      [affiliations  ] p1_e10     6 King Abdulaziz University, Jeddah 21589, Saudi Arabia. * T
+      [body          ] p2_e1      T he evolution and adaptation of desert animals to their env
+      [body          ] p2_e2      Genomic research into the evolutionary history of camelid sp
+      [body          ] p2_e3      In this study we perform high-quality whole-genome sequencin
+      [subtitle      ] p2_e4      Results
+
+===== [22] Emms和Kelly - 2019 - OrthoFinder phylogenetic orthology inference for comparative genomics.pdf
+    标题: OrthoFinder: phylogenetic orthology inference for comparative genomics
+    卡片数: 149 | 类型分布: {'title': 1, 'body': 109, 'abstract_heading': 1, 'abstract_body': 2, 'subtitle': 30, 'figure': 6}
+    最大正文卡词数: 283 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      OrthoFinder: phylogenetic orthology inference for comparativ
+      [body          ] p1_e3      David M. Emms and Steven Kelly *
+      [abstract_heading] p1_e4      Abstract
+      [abstract_body ] p1_e5      Here, we present a major advance of the OrthoFinder method. 
+      [abstract_body ] p1_e6      Keywords: Ortholog inference, Gene tree inference, Gene dupl
+      [subtitle      ] p1_e7      Background
+      [body          ] p1_e8      Determining the phylogenetic relationships between gene sequ
+      [body          ] p1_e11     Heuristic analysis of pairwise sequence similarity scores ha
+      [body          ] p1_e12     A number of tree-based online databases of orthologs have be
+      [figure        ] p2_e1      
+
+===== [23] Stuart 等 - 2019 - Comprehensive Integration of Single-Cell Data.pdf
+    标题: Comprehensive Integration of Single-Cell Data
+    卡片数: 351 | 类型分布: {'title': 1, 'body': 281, 'subtitle': 57, 'authors': 1, 'figure': 10, 'table': 1}
+    最大正文卡词数: 353 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      Comprehensive Integration of Single-Cell Data
+      [body          ] p2_e2      Resource
+      [subtitle      ] p2_e3      Comprehensive Integration of Single-Cell Data
+      [authors       ] p2_e4      Tim Stuart, 1,4 Andrew Butler, 1,2,4 Paul Hoffman, 1 Christo
+      [body          ] p2_e5      1 New York Genome Center, New York, NY, USA
+      [body          ] p2_e7      3 Technology Innovation Lab, New York Genome Center, New Yor
+      [body          ] p2_e12     SUMMARY
+      [body          ] p2_e13     Single-cell transcriptomics has transformed our ability to c
+      [body          ] p2_e14     INTRODUCTION
+      [body          ] p2_e15     Recent advances in molecular biology, microfluidics, and com
+
+===== [24] Bai 等 - 2026 - Ancestral secretory programs underlie the evolution of morphological innovations across Spiralia.pdf
+    标题: Ancestral secretory programs underlie the evolution of morphological i
+    卡片数: 251 | 类型分布: {'title': 1, 'authors': 1, 'affiliations': 1, 'abstract_body': 2, 'abstract_heading': 1, 'subtitle': 39, 'body': 195, 'figure': 10, 'table': 1}
+    最大正文卡词数: 363 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e16     Ancestral secretory programs underlie the evolution of morph
+      [authors       ] p1_e17     Yitian Bai 1 , Kunyin Jiang 1 , Hong Yu 1 , Lingfeng Kong 1 
+      [affiliations  ] p1_e18     1 Key Laboratory of Mariculture, Ministry of Education, Ocea
+      [abstract_body ] p1_e20     This manuscript examines the evolution of molluscan shells u
+      [abstract_heading] p1_e22     Abstract
+      [abstract_body ] p1_e23     Understanding how morphological innovation arise from ancest
+      [subtitle      ] p1_e24     Introduction
+      [body          ] p1_e25     Morphological innovations are lineage-restricted traits that
+      [body          ] p2_e2      Spiralia is one of the most diverse bilaterian clades, encom
+      [body          ] p2_e3      Among these structures, molluscan shell represents a promine
+
+===== [25] Duvall 等 - 2022 - Single-cell transcriptome and accessible chromatin dynamics during endocrine pancreas development.pdf
+    标题: Single-cell transcriptome and accessible chromatin dynamics during end
+    卡片数: 80 | 类型分布: {'title': 1, 'abstract_heading': 1, 'abstract_body': 7, 'authors': 1, 'subtitle': 2, 'body': 62, 'figure': 6}
+    最大正文卡词数: 346 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e3      Single-cell transcriptome and accessible chromatin dynamics 
+      [abstract_heading] p1_e5      Significance
+      [abstract_body ] p1_e6      Despite decades of progress in pancreas biology, the molecul
+      [authors       ] p1_e15     Eliza Duvall a , Cecil M. Benitez b , Krissie Tellez b , Mar
+      [abstract_body ] p1_e18     Delineating gene regulatory networks that orchestrate cell-t
+      [abstract_body ] p1_e19     pancreas j Neurog3 j ATAC-seq j scRNA-seq More than 400 mill
+      [abstract_body ] p1_e21     A key event during endocrine pancreas development is express
+      [abstract_body ] p1_e22     Emerging single-cell technologies are revolutionizing develo
+      [abstract_body ] p1_e23     To address these unmet needs, we used an integrative approac
+      [abstract_body ] p2_e1      Our results demonstrate the feasibility of using a combined 
+
+===== [26] Pliner 等 - 2019 - Supervised classification enables rapid annotation of cell atlases.pdf
+    标题: Supervised classification enables rapid annotation of cell atlases
+    卡片数: 91 | 类型分布: {'title': 1, 'authors': 1, 'abstract_body': 4, 'body': 59, 'figure': 4, 'subtitle': 22}
+    最大正文卡词数: 280 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e4      Supervised classification enables rapid annotation of cell a
+      [authors       ] p1_e5      Hannah A. Pliner 1 , Jay Shendure 1,2,3,4 * and Cole Trapnel
+      [abstract_body ] p1_e6      Single-cell molecular profiling technologies are gaining rap
+      [abstract_body ] p1_e7      Single-cell transcriptional profiling (scRNA-seq) is a power
+      [abstract_body ] p1_e8      Toward addressing these challenges, we devised Garnett (http
+      [abstract_body ] p1_e9      We tested Garnett on a benchmark scRNA-seq dataset comprisin
+      [body          ] p1_e11     Garnett assigned 71% (3% incorrect, 26% unclassified) of cel
+      [body          ] p1_e12     We next evaluated Garnett's ability to classify data not see
+      [body          ] p1_e13     To assess Garnett's ability to catalog cell types in complex
+      [figure        ] p2_e1      
+
+==============================================================================
+== 汇总（CSV: 序号,文件名,卡片数,最大正文词数,混排大块数,目录污染数,秒数）
+1,Guo 等 - 2025 - Fast and furious The rapid turnover of microRNAs in plants.pdf,232,232,0,0,0.7
+2,Li 等 - 2025 - Multiple cell types guided by neurocytes orchestrate horn bud initiation in dairy goats.pdf,207,497,0,0,0.7
+3,annurev.ecolsys.37.091305.110014.pdf.pdf,89,388,0,0,0.3
+4,Schaefer 等 - 2025 - Multimodal learning enables chat-based exploration of single-cell data.pdf,253,387,0,0,7.3
+5,Goldman 等 - 2025 - A single-nucleus transcriptomic atlas of the adult Aedes aegypti mosquito.pdf,501,531,0,0,5.5
+6,Zhao 等 - 2024 - A Metagenomic Investigation of Potential Health Ri.pdf,69,817,0,0,0.3
+7,Liu 等 - 2026 - Single-cell and spatial transcriptomics define 20E-driven developmental reprogramming in silkworm wi.pdf,187,384,0,0,1.4
+8,Geng 等 - 2020 - Convergent Evolution of Locomotory Modes in Euarchontoglires.pdf,53,369,0,0,0.2
+9,Khan 等 - 2024 - The evolutionary history and distribution of cactus germplasm resources, as well as potential domest.pdf,301,513,0,0,1.3
+10,Camacho 等 - 2009 - BLAST+ architecture and applications.pdf,103,324,0,0,0.4
+11,Lotfollahi 等 - 2022 - Mapping single-cell data to reference atlases by transfer learning.pdf,237,322,0,0,9.3
+12,Fan 等 - 2018 - Single Cell and Open Chromatin Analysis Reveals Molecular Origin of Epidermal Cells of the Skin.pdf,233,425,0,0,0.9
+13,Meng 等 - 2025 - Evolution of East Asian subtropical evergreen broad-leaved forests When and how.pdf,250,515,0,0,0.7
+14,Xiao 等 - 2024 - CellAgent An LLM-driven Multi-Agent Framework for Automated Single-cell Data Analysis.pdf,94,449,0,0,3.2
+15,La Manno 等 - 2018 - RNA velocity of single cells.pdf,100,792,0,0,5.2
+16,Cui 等 - 2024 - scGPT toward building a foundation model for single-cell multi-omics using generative AI.pdf,230,451,0,0,473.2
+17,Zhang 等 - 2019 - Probabilistic cell-type assignment of single-cell RNA-seq for tumor microenvironment profiling.pdf,173,372,0,0,2.8
+18,Qin 等 - 2016 - A magnetic protein biocompass.pdf,151,344,0,0,4.9
+19,Ushiki 等 - 2026 - Functional characterization of bat limb regulatory elements.pdf,395,588,0,0,9.4
+20,Zhong 等 - 2020 - Decoding the development of the human hippocampus.pdf,167,425,0,0,20.5
+21,Wu 等 - 2014 - Camelid genomes reveal evolution and adaptation to desert environments.pdf,108,353,0,0,2.4
+22,Emms和Kelly - 2019 - OrthoFinder phylogenetic orthology inference for comparative genomics.pdf,149,283,0,0,0.4
+23,Stuart 等 - 2019 - Comprehensive Integration of Single-Cell Data.pdf,351,353,0,0,0.8
+24,Bai 等 - 2026 - Ancestral secretory programs underlie the evolution of morphological innovations across Spiralia.pdf,251,363,0,0,0.2
+25,Duvall 等 - 2022 - Single-cell transcriptome and accessible chromatin dynamics during endocrine pancreas development.pdf,80,346,0,0,2.7
+26,Pliner 等 - 2019 - Supervised classification enables rapid annotation of cell atlases.pdf,91,280,0,0,6.6
+
+报告已存: test/_eval/round8.json

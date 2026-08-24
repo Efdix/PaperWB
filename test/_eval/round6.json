@@ -1,0 +1,1408 @@
+[
+ {
+  "pdf": "Guo 等 - 2025 - Fast and furious The rapid turnover of microRNAs in plants.pdf",
+  "title": "Fast and furious: The rapid turnover of microRNAs in plants",
+  "n": 231,
+  "types": {
+   "title": 1,
+   "authors": 2,
+   "affiliations": 2,
+   "abstract_body": 1,
+   "keywords": 1,
+   "body": 204,
+   "subtitle": 18,
+   "figure": 2
+  },
+  "toc_junk": [],
+  "max_body_words": 232,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e6",
+    "s": "Fast and furious: The rapid turnover of microRNAs in plants"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e7",
+    "s": "Zhonglong Guo 1 , Yixiang Yang 1 , and Xiaozeng Yang 2 *"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e8",
+    "s": "1 Co-Innovation Center for Sustainable Forestry in Southern "
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e9",
+    "s": "2 State Key Laboratory of Plant Diversity and Specialty Crop"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e12",
+    "s": "Abstract Plant miRNAs exhibit a dynamic and complex evolutio"
+   },
+   {
+    "t": "keywords",
+    "id": "p1_e13",
+    "s": "Key words: expansion, gain, loss, microRNAs, plants."
+   },
+   {
+    "t": "body",
+    "id": "p1_e15",
+    "s": "MicroRNAs (miRNAs) are a unique class of non-coding RNAs tha"
+   },
+   {
+    "t": "body",
+    "id": "p1_e16",
+    "s": "The advent of next-generation sequencing (NGS) tech-nologies"
+   },
+   {
+    "t": "body",
+    "id": "p1_e19",
+    "s": "ushering in the era of high-throughput miRNA identification."
+   },
+   {
+    "t": "body",
+    "id": "p1_e20",
+    "s": "The evolution of plant miRNAs is a dynamic process character"
+   }
+  ],
+  "secs": 0.8
+ },
+ {
+  "pdf": "Li 等 - 2025 - Multiple cell types guided by neurocytes orchestrate horn bud initiation in dairy goats.pdf",
+  "title": "Multiple cell types guided by neurocytes orchestrate horn bud initiati",
+  "n": 206,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "body": 164,
+   "subtitle": 30,
+   "table": 3,
+   "figure": 7
+  },
+  "toc_junk": [],
+  "max_body_words": 497,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e3",
+    "s": "Multiple cell types guided by neurocytes orchestrate horn bu"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e5",
+    "s": "Hegang Li 1† , Mengmeng Du 1† , Xiaokun Lin 1 , Xinxin Cao 1"
+   },
+   {
+    "t": "body",
+    "id": "p1_e7",
+    "s": "Background Horn development is a key ruminant trait involvin"
+   },
+   {
+    "t": "body",
+    "id": "p1_e8",
+    "s": "Results We revealed temporal and spatial differences of the "
+   },
+   {
+    "t": "body",
+    "id": "p1_e9",
+    "s": "Conclusions This study employed scRNA-seq to characterize ce"
+   },
+   {
+    "t": "body",
+    "id": "p1_e10",
+    "s": "† Hegang Li and Mengmeng Du have contributed equally to this"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e1",
+    "s": "Background"
+   },
+   {
+    "t": "body",
+    "id": "p2_e2",
+    "s": "Goat horns are skin derivatives in the morphological structu"
+   },
+   {
+    "t": "body",
+    "id": "p2_e3",
+    "s": "The embryonic period is crucial for the differentiation and "
+   },
+   {
+    "t": "body",
+    "id": "p2_e4",
+    "s": "FOXL2 is found to be a gene involved in horn development and"
+   }
+  ],
+  "secs": 0.8
+ },
+ {
+  "pdf": "annurev.ecolsys.37.091305.110014.pdf.pdf",
+  "title": "Gliding and the Functional Origins of Flight: Biomechanical Novelty or",
+  "n": 89,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "affiliations": 5,
+   "body": 68,
+   "abstract_heading": 1,
+   "abstract_body": 1,
+   "subtitle": 11,
+   "figure": 1
+  },
+  "toc_junk": [],
+  "max_body_words": 388,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e7",
+    "s": "Gliding and the Functional Origins of Flight: Biomechanical "
+   },
+   {
+    "t": "authors",
+    "id": "p1_e8",
+    "s": "Robert Dudley, 1 Greg Byrnes, 1 Stephen P. Yanoviak, 2 Brend"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e9",
+    "s": "1 Department of Integrative Biology, University of Californi"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e10",
+    "s": "2 Department of Pathology, University of T exas Medical Bran"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e11",
+    "s": "Texas 77555, and Florida Medical Entomology Laboratory, Vero"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e12",
+    "s": "3 Natural History Museum, Biodiversity Research Center, and "
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e13",
+    "s": "4 Museum of Vertebrate Zoology, University of California, Be"
+   },
+   {
+    "t": "body",
+    "id": "p1_e15",
+    "s": "aerodynamics, arboreality, descent, falling, hexapod, trees,"
+   },
+   {
+    "t": "abstract_heading",
+    "id": "p1_e16",
+    "s": "Abstract"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e17",
+    "s": "Abiomechanically parsimonious hypothesis for the evolution o"
+   }
+  ],
+  "secs": 0.3
+ },
+ {
+  "pdf": "Schaefer 等 - 2025 - Multimodal learning enables chat-based exploration of single-cell data.pdf",
+  "title": "Multimodal learning enables chat-based exploration of single-cell data",
+  "n": 253,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "abstract_body": 1,
+   "body": 197,
+   "subtitle": 40,
+   "figure": 12,
+   "figure_caption": 1
+  },
+  "toc_junk": [],
+  "max_body_words": 387,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e3",
+    "s": "Multimodal learning enables chat-based exploration of single"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e8",
+    "s": "Moritz Schaefer 1,2,11 , Peter Peneder 3,4,11 , Daniel Malzl"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e9",
+    "s": "Single-cell sequencing characterizes biological samples at u"
+   },
+   {
+    "t": "body",
+    "id": "p1_e10",
+    "s": "Gene expression profiling is widely used for the characteriz"
+   },
+   {
+    "t": "body",
+    "id": "p1_e11",
+    "s": "both bioinformatic skills and application-specific biologica"
+   },
+   {
+    "t": "body",
+    "id": "p1_e12",
+    "s": "A typical scRNA-seq dataset can be represented by a count ma"
+   },
+   {
+    "t": "body",
+    "id": "p2_e1",
+    "s": "CellWhisperer implements this functionality with two intertw"
+   },
+   {
+    "t": "body",
+    "id": "p2_e2",
+    "s": "In summary, we developed CellWhisperer as a proof of concept"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e3",
+    "s": "Results"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e4",
+    "s": "The CellWhisperer multimodal AI connects transcriptomes and "
+   }
+  ],
+  "secs": 7.5
+ },
+ {
+  "pdf": "Goldman 等 - 2025 - A single-nucleus transcriptomic atlas of the adult Aedes aegypti mosquito.pdf",
+  "title": "A single-nucleus transcriptomic atlas of the adult Aedes aegypti mosqu",
+  "n": 501,
+  "types": {
+   "title": 1,
+   "subtitle": 73,
+   "authors": 1,
+   "body": 413,
+   "abstract_heading": 1,
+   "abstract_body": 1,
+   "figure": 10,
+   "table": 1
+  },
+  "toc_junk": [],
+  "max_body_words": 531,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e2",
+    "s": "A single-nucleus transcriptomic atlas of the adult Aedes aeg"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e2",
+    "s": "Article"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e3",
+    "s": "A single-nucleus transcriptomic atlas of the adult Aedes aeg"
+   },
+   {
+    "t": "authors",
+    "id": "p2_e4",
+    "s": "Olivia V. Goldman, 1,2,18, * Alexandra E. DeFoe, 1,3 Yanyan "
+   },
+   {
+    "t": "body",
+    "id": "p2_e24",
+    "s": "20 Lead contact"
+   },
+   {
+    "t": "body",
+    "id": "p2_e25",
+    "s": "*Correspondence: ogoldman2@gmail.com (O.V.G.), hongjie.li@bc"
+   },
+   {
+    "t": "abstract_heading",
+    "id": "p2_e26",
+    "s": "SUMMARY"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p2_e27",
+    "s": "The female Aedesaegypti mosquito's remarkable ability to hun"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e28",
+    "s": "INTRODUCTION"
+   },
+   {
+    "t": "body",
+    "id": "p2_e29",
+    "s": "Mosquito-borne diseases affect hundreds of millions of peopl"
+   }
+  ],
+  "secs": 5.5
+ },
+ {
+  "pdf": "Zhao 等 - 2024 - A Metagenomic Investigation of Potential Health Ri.pdf",
+  "title": "A Metagenomic Investigation of Potential Health Risks and Element Cycl",
+  "n": 68,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "affiliations": 2,
+   "abstract_body": 1,
+   "keywords": 1,
+   "body": 40,
+   "subtitle": 15,
+   "figure": 7
+  },
+  "toc_junk": [],
+  "max_body_words": 817,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e4",
+    "s": "A Metagenomic Investigation of Potential Health Risks and El"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e6",
+    "s": "Haozhe Zhao 1 , Mingfei Yang 1 , Xiang Fan 1 , Qian Gui 1 , "
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e7",
+    "s": "1 Yunnan Institute of Microbiology, School of Life Sciences,"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e8",
+    "s": "2 College of Life Science and Technology, Beijing University"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e10",
+    "s": "Abstract: The concentration of viruses in sewage sludge is s"
+   },
+   {
+    "t": "keywords",
+    "id": "p1_e11",
+    "s": "Keywords: wastewater treatment plants; virus; prokaryote; el"
+   },
+   {
+    "t": "body",
+    "id": "p1_e13",
+    "s": "Viruses are the most abundant entities on earth, and the num"
+   },
+   {
+    "t": "body",
+    "id": "p2_e2",
+    "s": "Antibiotic resistance is a growing global public health chal"
+   },
+   {
+    "t": "body",
+    "id": "p2_e3",
+    "s": "Considering the potential importance of viruses in natural e"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e4",
+    "s": "2. Materials and Methods"
+   }
+  ],
+  "secs": 0.3
+ },
+ {
+  "pdf": "Liu 等 - 2026 - Single-cell and spatial transcriptomics define 20E-driven developmental reprogramming in silkworm wi.pdf",
+  "title": "Single-cell and spatial transcriptomics define 20E-driven developmenta",
+  "n": 186,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "body": 145,
+   "subtitle": 33,
+   "figure": 5,
+   "figure_caption": 1
+  },
+  "toc_junk": [],
+  "max_body_words": 384,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e5",
+    "s": "Single-cell and spatial transcriptomics define 20E-driven de"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e10",
+    "s": "Qingsong Liu 1,6 , Mingmin He 2,6 , Hao Chen 1,6 , Yongfen Z"
+   },
+   {
+    "t": "body",
+    "id": "p1_e11",
+    "s": "Insect wing development involves tissue patterning, cell fat"
+   },
+   {
+    "t": "body",
+    "id": "p1_e12",
+    "s": "Insects are the only invertebrates that canfly, a key evolut"
+   },
+   {
+    "t": "body",
+    "id": "p2_e1",
+    "s": "Although single-cell analyses have been conducted for the wi"
+   },
+   {
+    "t": "body",
+    "id": "p2_e2",
+    "s": "Thesilkworm Bombyxmori ( B. mori ), is an important lepidopt"
+   },
+   {
+    "t": "body",
+    "id": "p2_e3",
+    "s": "In this work, we combined scRNA-seq, single-nucleus RNA sequ"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e4",
+    "s": "Results"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e5",
+    "s": "Temporal and spatial atlas of silkworm wing disc cells"
+   },
+   {
+    "t": "body",
+    "id": "p2_e6",
+    "s": "The silkworm wing disc undergoes progressive morphological t"
+   }
+  ],
+  "secs": 1.4
+ },
+ {
+  "pdf": "Geng 等 - 2020 - Convergent Evolution of Locomotory Modes in Euarchontoglires.pdf",
+  "title": "Convergent Evolution of Locomotory Modes in Euarchontoglires",
+  "n": 52,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "affiliations": 1,
+   "abstract_body": 2,
+   "keywords": 1,
+   "body": 32,
+   "subtitle": 10,
+   "figure": 3,
+   "table": 1
+  },
+  "toc_junk": [],
+  "max_body_words": 369,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e27",
+    "s": "Convergent Evolution of Locomotory Modes in Euarchontoglires"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e28",
+    "s": "Wei-hang Geng 1,2,3† , Xiao-ping Wang 1† , Li-feng Che 4,5† "
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e29",
+    "s": "1 State Key Laboratory for Conservation and Utilization of B"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e30",
+    "s": "The research of phenotypic convergence is of increasing impo"
+   },
+   {
+    "t": "keywords",
+    "id": "p1_e31",
+    "s": "Keywords: convergent evolution, Euarchontoglires, metacarpal"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e33",
+    "s": "The relationship between morphology, locomotory modes and ha"
+   },
+   {
+    "t": "body",
+    "id": "p2_e1",
+    "s": "The mammalian superorder Euarchontoglires is comprised of fi"
+   },
+   {
+    "t": "body",
+    "id": "p2_e2",
+    "s": "In the present study, we collected three phalangeal indices "
+   },
+   {
+    "t": "body",
+    "id": "p2_e3",
+    "s": "Young and Chadwell, 2020). Our morphometric analyses based o"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e4",
+    "s": "MATERIALS AND METHODS"
+   }
+  ],
+  "secs": 0.1
+ },
+ {
+  "pdf": "Khan 等 - 2024 - The evolutionary history and distribution of cactus germplasm resources, as well as potential domest.pdf",
+  "title": "The evolutionary history and distribution of cactus germplasm resource",
+  "n": 301,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "affiliations": 7,
+   "abstract_body": 1,
+   "keywords": 1,
+   "subtitle": 28,
+   "body": 257,
+   "figure": 3,
+   "table": 2
+  },
+  "toc_junk": [],
+  "max_body_words": 513,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e6",
+    "s": "The evolutionary history and distribution of cactus germplas"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e8",
+    "s": "Darya Khan 1,2 , AJ Harris 3 , Qamar U. Zaman 1,2 , Hong-Xin"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e9",
+    "s": "1 Collaborative Innovation Center of Nanfan and High-Efficie"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e10",
+    "s": "2 Hainan Yazhou Bay Seed Laboratory, Sanya 572025, China"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e11",
+    "s": "3 Key Laboratory of Plant Resources Conservation and Sustain"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e12",
+    "s": "4 Zhai Mingguo Academician Work Station, Sanya University, S"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e13",
+    "s": "5 Department of Botany, National Museum of Natural History, "
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e14",
+    "s": "6 School of Integrative Plant Science, Section of Plant Biol"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e15",
+    "s": "7 BTI Computational Biology Center, Boyce Thompson Institute"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e17",
+    "s": "Abstract The angiosperm family Cactaceae, a member of the Ca"
+   }
+  ],
+  "secs": 1.3
+ },
+ {
+  "pdf": "Camacho 等 - 2009 - BLAST+ architecture and applications.pdf",
+  "title": "BLAST+: architecture and applications",
+  "n": 103,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "affiliations": 1,
+   "body": 70,
+   "abstract_heading": 1,
+   "abstract_body": 3,
+   "subtitle": 20,
+   "figure": 5,
+   "table": 1
+  },
+  "toc_junk": [],
+  "max_body_words": 324,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e3",
+    "s": "BLAST+: architecture and applications"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e4",
+    "s": "Christiam Camacho, George Coulouris, Vahram Avagyan, Ning Ma"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e5",
+    "s": "Address: National Center for Biotechnology Information, Nati"
+   },
+   {
+    "t": "body",
+    "id": "p1_e7",
+    "s": "Vahram Avagyan-avagyanv@ncbi.nlm.nih.gov; Ning Ma-maning@ncb"
+   },
+   {
+    "t": "body",
+    "id": "p1_e8",
+    "s": "Kevin Bealer-kevinbealer@gmail.com; Thomas L Madden* - madde"
+   },
+   {
+    "t": "abstract_heading",
+    "id": "p1_e17",
+    "s": "Abstract"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e18",
+    "s": "Background: Sequence similarity searching is a very importan"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e19",
+    "s": "Results: We describe features and improvements of rewritten "
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e20",
+    "s": "Conclusion: The new BLAST command-line applications, compare"
+   },
+   {
+    "t": "subtitle",
+    "id": "p1_e21",
+    "s": "Background"
+   }
+  ],
+  "secs": 0.4
+ },
+ {
+  "pdf": "Lotfollahi 等 - 2022 - Mapping single-cell data to reference atlases by transfer learning.pdf",
+  "title": "Mapping single-cell data to reference atlases by transfer learning",
+  "n": 237,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "abstract_body": 4,
+   "affiliations": 1,
+   "subtitle": 30,
+   "body": 192,
+   "figure": 8
+  },
+  "toc_junk": [],
+  "max_body_words": 322,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e3",
+    "s": "Mapping single-cell data to reference atlases by transfer le"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e4",
+    "s": "Mohammad Lotfollahi 1,2 , Mohsen Naghipourfar 1 , Malte D. L"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e5",
+    "s": "Large single-cell atlases are now routinely generated to ser"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e6",
+    "s": "L arge single-cell reference atlases 1-4 comprising millions"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e7",
+    "s": "Learning from a reference atlas requires mapping a query dat"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e8",
+    "s": "Exploiting large reference datasets is a well-established ap"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e9",
+    "s": "1 Helmholtz Center Munich-German Research Center for Environ"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e1",
+    "s": "Analysis"
+   },
+   {
+    "t": "body",
+    "id": "p2_e2",
+    "s": "which is often crucial for emerging clinical datasets. Furth"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e3",
+    "s": "Results"
+   }
+  ],
+  "secs": 9.2
+ },
+ {
+  "pdf": "Fan 等 - 2018 - Single Cell and Open Chromatin Analysis Reveals Molecular Origin of Epidermal Cells of the Skin.pdf",
+  "title": "Single Cell and Open Chromatin Analysis Reveals Molecular Origin of Ep",
+  "n": 233,
+  "types": {
+   "title": 1,
+   "subtitle": 44,
+   "authors": 1,
+   "body": 175,
+   "abstract_heading": 1,
+   "abstract_body": 1,
+   "figure": 7,
+   "table": 3
+  },
+  "toc_junk": [],
+  "max_body_words": 425,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e2",
+    "s": "Single Cell and Open Chromatin Analysis Reveals Molecular Or"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e3",
+    "s": "Single Cell and Open Chromatin Analysis Reveals Molecular Or"
+   },
+   {
+    "t": "authors",
+    "id": "p2_e4",
+    "s": "Xiying Fan, 1 Dongmei Wang, 1 Jeremy Evan Burgmaier, 1 Yudon"
+   },
+   {
+    "t": "body",
+    "id": "p2_e8",
+    "s": "4 Lead Contact"
+   },
+   {
+    "t": "body",
+    "id": "p2_e9",
+    "s": "*Correspondence: yir@colorado.edu"
+   },
+   {
+    "t": "abstract_heading",
+    "id": "p2_e11",
+    "s": "SUMMARY"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p2_e12",
+    "s": "How embryonic progenitors coordinate cell fate specification"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e13",
+    "s": "INTRODUCTION"
+   },
+   {
+    "t": "body",
+    "id": "p2_e14",
+    "s": "The generation of induced pluripotent stem cells (SCs) (Taka"
+   },
+   {
+    "t": "body",
+    "id": "p2_e16",
+    "s": "Mammalian skin and appendages such as hair follicles (HFs) a"
+   }
+  ],
+  "secs": 1.0
+ },
+ {
+  "pdf": "Meng 等 - 2025 - Evolution of East Asian subtropical evergreen broad-leaved forests When and how.pdf",
+  "title": "Evolution of East Asian subtropical evergreen broad-leaved forests: Wh",
+  "n": 250,
+  "types": {
+   "title": 1,
+   "authors": 2,
+   "affiliations": 8,
+   "abstract_body": 1,
+   "keywords": 1,
+   "subtitle": 16,
+   "body": 219,
+   "figure": 2
+  },
+  "toc_junk": [],
+  "max_body_words": 515,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e6",
+    "s": "Evolution of East Asian subtropical evergreen broad-leaved f"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e7",
+    "s": "Hong-Hu Meng 1,2,3 * , Yi-Gang Song 4 , Guo-Xiong Hu 5 , Pei"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e8",
+    "s": "1 Plant Phylogenetics and Conservation Group, Center for Int"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e9",
+    "s": "2 Southeast Asia Biodiversity Research Institute, Chinese Ac"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e10",
+    "s": "3 Yunnan International Joint Laboratory for the Conservation"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e11",
+    "s": "4 Eastern China Conservation Centre for Wild Endangered Plan"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e12",
+    "s": "5 College of Life Sciences, Guizhou University, Guiyang 5500"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e13",
+    "s": "6 University of Chinese Academy of Sciences, Beijing 100049,"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e15",
+    "s": "State Key Laboratory of Systematic and Evolutionary Botany, "
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e16",
+    "s": "9 CAS Key Laboratory of Tropical Forest Ecology, Xishuangban"
+   }
+  ],
+  "secs": 0.7
+ },
+ {
+  "pdf": "Xiao 等 - 2024 - CellAgent An LLM-driven Multi-Agent Framework for Automated Single-cell Data Analysis.pdf",
+  "title": "CellAgent: An LLM-driven Multi-Agent Framework for Automated Single-ce",
+  "n": 93,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "affiliations": 2,
+   "abstract_body": 1,
+   "subtitle": 28,
+   "body": 56,
+   "figure": 4
+  },
+  "toc_junk": [],
+  "max_body_words": 449,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e1",
+    "s": "CellAgent: An LLM-driven Multi-Agent Framework for Automated"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e2",
+    "s": "Yihang Xiao 1 † , Jinyi Liu 2 † , Yan Zheng 2 † , Xiaohan Xi"
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e3",
+    "s": "1* AI for Science Interdisciplinary Research Center, School "
+   },
+   {
+    "t": "affiliations",
+    "id": "p1_e4",
+    "s": "2 College of Intelligence and Computing, Tianjin University,"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e9",
+    "s": "Single-cell RNA sequencing (scRNA-seq) data analysis is cruc"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e1",
+    "s": "1 Introduction"
+   },
+   {
+    "t": "body",
+    "id": "p2_e2",
+    "s": "Single-cell RNA sequencing (scRNA-seq) techniques have trans"
+   },
+   {
+    "t": "body",
+    "id": "p2_e3",
+    "s": "However, analyzing scRNA-seq data entails considerable compl"
+   },
+   {
+    "t": "body",
+    "id": "p2_e4",
+    "s": "Recently, with the remarkable capabilities demonstrated by l"
+   },
+   {
+    "t": "body",
+    "id": "p2_e5",
+    "s": "Applying LLMs directly to complex scRNA-seq data analysis po"
+   }
+  ],
+  "secs": 3.2
+ },
+ {
+  "pdf": "La Manno 等 - 2018 - RNA velocity of single cells.pdf",
+  "title": "RNA velocity of single cells",
+  "n": 100,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "abstract_body": 1,
+   "body": 73,
+   "figure": 10,
+   "subtitle": 14
+  },
+  "toc_junk": [],
+  "max_body_words": 792,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e2",
+    "s": "RNA velocity of single cells"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e3",
+    "s": "Gioele La Manno 1,2 , Ruslan Soldatov 3 , Amit Zeisel 1,2 , "
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e4",
+    "s": "RNA abundance is a powerful indicator of the state of indivi"
+   },
+   {
+    "t": "body",
+    "id": "p1_e5",
+    "s": "During development, differentiation occurs on a timescale of"
+   },
+   {
+    "t": "body",
+    "id": "p1_e6",
+    "s": "All common single-cell RNA-seq protocols rely on oligo-dT pr"
+   },
+   {
+    "t": "body",
+    "id": "p1_e7",
+    "s": "To quantify the time-dependent relationship between the abun"
+   },
+   {
+    "t": "body",
+    "id": "p1_e8",
+    "s": "During a dynamic process, an increase in the transcription r"
+   },
+   {
+    "t": "body",
+    "id": "p1_e9",
+    "s": "To demonstrate how this simple model can be used to extrapol"
+   },
+   {
+    "t": "body",
+    "id": "p1_e10",
+    "s": "Next, to demonstrate the ability to predict transcriptional "
+   },
+   {
+    "t": "figure",
+    "id": "p2_e5",
+    "s": ""
+   }
+  ],
+  "secs": 5.1
+ },
+ {
+  "pdf": "Cui 等 - 2024 - scGPT toward building a foundation model for single-cell multi-omics using generative AI.pdf",
+  "title": "scGPT: toward building a foundation model for single-cell multi-omics ",
+  "n": 230,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "body": 190,
+   "subtitle": 25,
+   "figure": 7,
+   "figure_caption": 6
+  },
+  "toc_junk": [],
+  "max_body_words": 451,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e4",
+    "s": "scGPT: toward building a foundation model for single-cell mu"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e9",
+    "s": "Haotian Cui 1,2,3,8 , Chloe Wang 1,2,3,8 , Hassaan Maan 1,3,"
+   },
+   {
+    "t": "body",
+    "id": "p1_e10",
+    "s": "Generative pretrained models have achieved remarkable succes"
+   },
+   {
+    "t": "body",
+    "id": "p1_e12",
+    "s": "Single-cell RNA sequencing (scRNA-seq), by enabling intricat"
+   },
+   {
+    "t": "body",
+    "id": "p1_e13",
+    "s": "One promising approach to address this challenge is the gene"
+   },
+   {
+    "t": "body",
+    "id": "p1_e14",
+    "s": "1 Peter Munk Cardiac Centre, University Health Network, Toro"
+   },
+   {
+    "t": "body",
+    "id": "p2_e1",
+    "s": "In this work, we present the single-cell foundation model sc"
+   },
+   {
+    "t": "body",
+    "id": "p2_e2",
+    "s": "Our model, scGPT, demonstrates the transformative potential "
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e3",
+    "s": "Results"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e4",
+    "s": "Single-cell transformer foundation model overview"
+   }
+  ],
+  "secs": 461.9
+ },
+ {
+  "pdf": "Zhang 等 - 2019 - Probabilistic cell-type assignment of single-cell RNA-seq for tumor microenvironment profiling.pdf",
+  "title": "Probabilistic cell-type assignment of single-cell RNA-seq for tumor mi",
+  "n": 173,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "abstract_body": 1,
+   "body": 140,
+   "figure": 6,
+   "subtitle": 24
+  },
+  "toc_junk": [],
+  "max_body_words": 372,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e2",
+    "s": "Probabilistic cell-type assignment of single-cell RNA-seq fo"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e3",
+    "s": "Allen W. Zhang 1,2,3 , Ciara O'Flanagan 1 , Elizabeth A. Cha"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e4",
+    "s": "Single-cell RNA sequencing has enabled the decomposition of "
+   },
+   {
+    "t": "body",
+    "id": "p1_e5",
+    "s": "G ene expression observed at the single-cell resolution in h"
+   },
+   {
+    "t": "body",
+    "id": "p1_e6",
+    "s": "In the context of robust clustering that recapitulates biolo"
+   },
+   {
+    "t": "body",
+    "id": "p1_e7",
+    "s": "Another approach to cell-type annotation is to leverage sing"
+   },
+   {
+    "t": "body",
+    "id": "p1_e8",
+    "s": "To address the challenges inherent in existing approaches, w"
+   },
+   {
+    "t": "figure",
+    "id": "p2_e1",
+    "s": ""
+   },
+   {
+    "t": "body",
+    "id": "p2_e131",
+    "s": "We evaluated CellAssign across a range of simulations, on gr"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e132",
+    "s": "Results"
+   }
+  ],
+  "secs": 2.8
+ },
+ {
+  "pdf": "Qin 等 - 2016 - A magnetic protein biocompass.pdf",
+  "title": "Amagnetic protein biocompass",
+  "n": 151,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "abstract_body": 2,
+   "body": 123,
+   "figure": 5,
+   "subtitle": 19
+  },
+  "toc_junk": [],
+  "max_body_words": 344,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e2",
+    "s": "Amagnetic protein biocompass"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e3",
+    "s": "Siying Qin 1 † , Hang Yin 1 † , Celi Yang 1 , Yunfeng Dou 1 "
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e4",
+    "s": "The notion that animals can detect the Earth's magnetic fiel"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e5",
+    "s": "M agnetic sensing, or the ability to detect the Earth's magn"
+   },
+   {
+    "t": "body",
+    "id": "p1_e6",
+    "s": "Several models have been proposed to explain the nature of m"
+   },
+   {
+    "t": "body",
+    "id": "p1_e7",
+    "s": "Ferrimagnetism has been proposed as an enabler of a natural "
+   },
+   {
+    "t": "body",
+    "id": "p1_e8",
+    "s": "The magnetite-based and radical-pair-reaction-based chemical"
+   },
+   {
+    "t": "body",
+    "id": "p1_e9",
+    "s": "Here, we identified a candidate compass protein using in sil"
+   },
+   {
+    "t": "figure",
+    "id": "p2_e1",
+    "s": ""
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e43",
+    "s": "The biocompass model of magnetoreception"
+   }
+  ],
+  "secs": 4.9
+ },
+ {
+  "pdf": "Ushiki 等 - 2026 - Functional characterization of bat limb regulatory elements.pdf",
+  "title": "Functional characterization of bat limb regulatory elements",
+  "n": 395,
+  "types": {
+   "title": 1,
+   "abstract_heading": 1,
+   "abstract_body": 1,
+   "subtitle": 24,
+   "body": 360,
+   "figure": 6,
+   "figure_caption": 2
+  },
+  "toc_junk": [],
+  "max_body_words": 588,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e2",
+    "s": "Functional characterization of bat limb regulatory elements"
+   },
+   {
+    "t": "abstract_heading",
+    "id": "p2_e18",
+    "s": "Abstract"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p2_e19",
+    "s": "Bats are the only mammals capable of powered flight and roos"
+   },
+   {
+    "t": "subtitle",
+    "id": "p3_e45",
+    "s": "Main"
+   },
+   {
+    "t": "body",
+    "id": "p3_e46",
+    "s": "Bats are the only mammal capable of powered flight and roost"
+   },
+   {
+    "t": "body",
+    "id": "p4_e32",
+    "s": "[H3K27me3; 21 ] marks on autopods dissected from bat forelim"
+   },
+   {
+    "t": "body",
+    "id": "p4_e33",
+    "s": "We took a variety of approaches to narrow down the number of"
+   },
+   {
+    "t": "subtitle",
+    "id": "p5_e45",
+    "s": "Results"
+   },
+   {
+    "t": "subtitle",
+    "id": "p5_e46",
+    "s": "Transcriptomic comparison of embryonic bat and mouse limbs"
+   },
+   {
+    "t": "body",
+    "id": "p5_e47",
+    "s": "Previous work by our labs identified over 7,000 genes to be "
+   }
+  ],
+  "secs": 9.0
+ },
+ {
+  "pdf": "Zhong 等 - 2020 - Decoding the development of the human hippocampus.pdf",
+  "title": "Decoding the development of the human hippocampus",
+  "n": 167,
+  "types": {
+   "title": 1,
+   "authors": 1,
+   "abstract_body": 2,
+   "subtitle": 50,
+   "body": 87,
+   "figure": 17,
+   "figure_caption": 9
+  },
+  "toc_junk": [],
+  "max_body_words": 425,
+  "blobs": [],
+  "front_cards": [
+   {
+    "t": "title",
+    "id": "p1_e2",
+    "s": "Decoding the development of the human hippocampus"
+   },
+   {
+    "t": "authors",
+    "id": "p1_e7",
+    "s": "Suijuan Zhong 1,10 , Wenyu Ding 2,10 , Le Sun 1,3,4,10 , Yuf"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e8",
+    "s": "The hippocampus is an important part of the limbic system in"
+   },
+   {
+    "t": "abstract_body",
+    "id": "p1_e9",
+    "s": "The hippocampal formation (hippocampus) is a compound struct"
+   },
+   {
+    "t": "subtitle",
+    "id": "p1_e10",
+    "s": "Hippocampus single-cell transcriptome"
+   },
+   {
+    "t": "body",
+    "id": "p1_e11",
+    "s": "To understand the molecular features of hippocampal cells du"
+   },
+   {
+    "t": "body",
+    "id": "p1_e12",
+    "s": "To study developmental differences between the hippocampus a"
+   },
+   {
+    "t": "figure",
+    "id": "p2_e1",
+    "s": ""
+   },
+   {
+    "t": "figure_caption",
+    "id": "p2_e214",
+    "s": "hippocampus. a-c , Visualization of eleven major classes usi"
+   },
+   {
+    "t": "subtitle",
+    "id": "p2_e215",
+    "s": "Progenitors of the developing hippocampus"
+   }
+  ],
+  "secs": 20.2
+ }
+]

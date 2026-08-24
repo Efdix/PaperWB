@@ -79,6 +79,9 @@ DEFAULT_CONFIG: dict = {
     "max_tokens": 1_000_000,
     "data_root": "",          # 空字符串 = 未设置，需首次启动弹窗
     "zotero_data_dir": "",
+    "openalex_api_key": "",   # OpenAlex 检索源密钥（可选；空 = 无 key 免费额度）
+    "easyscholar_api_key": "",  # EasyScholar 期刊影响因子密钥（可选；空 = 不显示 IF）
+    "preparse_enabled": True,  # 后台全库预解析（空闲时本地解析 Zotero PDF，零 LLM）
     "custom_writing_types": {},  # 自定义写作类型: {key: {"label": str, "system_prompt": str}}
 }
 
@@ -174,7 +177,7 @@ def get_page_cache_root_dir() -> Path:
 
 
 def get_lib_index_dir() -> Path:
-    """文献工作台全库索引目录：{data_root}/.paperwb/lib_index/"""
+    """全文献库问答索引目录：{data_root}/.paperwb/lib_index/"""
     d = _resolve_data_dir() / "lib_index"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -183,6 +186,13 @@ def get_lib_index_dir() -> Path:
 def get_scout_dir() -> Path:
     """文献巡视（定时检索）数据目录：{data_root}/.paperwb/scout/"""
     d = _resolve_data_dir() / "scout"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_stats_dir() -> Path:
+    """统计工作台数据目录：{data_root}/.paperwb/stats/"""
+    d = _resolve_data_dir() / "stats"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -311,6 +321,20 @@ def get_vision_api(config: dict) -> dict:
 
 def get_text_api(config: dict) -> dict:
     return config.get("text_api", DEFAULT_CONFIG["text_api"])
+
+
+def get_openalex_api_key(config: dict | None = None) -> str:
+    """OpenAlex 检索源密钥（可选，空字符串 = 无 key 免费额度模式）。"""
+    if config is None:
+        config = load_config()
+    return str(config.get("openalex_api_key", "") or "").strip()
+
+
+def get_easyscholar_api_key(config: dict | None = None) -> str:
+    """EasyScholar 期刊影响因子密钥（可选，空字符串 = 不启用 IF 显示）。"""
+    if config is None:
+        config = load_config()
+    return str(config.get("easyscholar_api_key", "") or "").strip()
 
 
 def _is_vision_model(model: str) -> bool:

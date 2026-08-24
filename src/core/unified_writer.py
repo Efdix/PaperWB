@@ -202,9 +202,13 @@ class UnifiedWriter:
         # result["polished_text"] + result["citation_notes"]
     """
 
+    # 单实例最多缓存的 PDF 段落索引数，超限淘汰最旧条目
+    _MAX_PDF_INDEXES = 8
+
     def __init__(self) -> None:
-        # PDF 段落索引缓存（按 pdf_path），避免同一文献多次重复建索引
-        self._pdf_indexes: dict[str, object] = {}
+        # PDF 段落索引缓存（按 pdf_path），避免同一文献多次重复建索引；
+        # 值为 (pdf_mtime, retriever)：文件 mtime 变化即重建，防止替换 PDF 后用旧索引核查
+        self._pdf_indexes: dict[str, tuple[float, object]] = {}
 
     @staticmethod
     def _sentence_around(text: str, marker: str, max_prefix: int = 200) -> str:
@@ -230,23 +234,27 @@ class UnifiedWriter:
             return "(PDF 文件缺失)"
         try:
             import fitz
-            from .retriever import Bm25Retriever
+            from .retriever import Bm25Retriever, split_paragraphs
 
-            index = self._pdf_indexes.get(pdf_path)
+            cached = self._pdf_indexes.get(pdf_path)
+            index = None
+            mtime = os.path.getmtime(pdf_path)
+            if cached is not None and cached[0] == mtime:
+                index = cached[1]
             if index is None:
                 doc = fitz.open(pdf_path)
-                paras = []
+                paras: list[str] = []
                 for page in doc:
-                    for chunk in page.get_text().split("\n\n"):
-                        c = chunk.strip()
-                        if len(c) >= 40:
-                            paras.append(c)
+                    paras.extend(split_paragraphs(page.get_text(), 40))
                 doc.close()
                 if not paras:
                     return "(PDF 无可检索文本)"
                 index = Bm25Retriever()
                 index.index([{"text": p, "section": "", "page": 0} for p in paras])
-                self._pdf_indexes[pdf_path] = index
+                # 容量上限：淘汰最旧条目（dict 按插入序，首个即最旧）
+                while len(self._pdf_indexes) >= self._MAX_PDF_INDEXES:
+                    self._pdf_indexes.pop(next(iter(self._pdf_indexes)))
+                self._pdf_indexes[pdf_path] = (mtime, index)
 
             hits = index.search(query or "", top_k=top_k)
             if not hits:

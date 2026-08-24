@@ -36,7 +36,7 @@ class ZoteroItem:
     year: str = ""
     publication: str = ""             # 期刊/会议名
     doi: str = ""
-    abstract: str = ""                # 摘要（abstractNote），供文献工作台检索
+    abstract: str = ""                # 摘要（abstractNote），供全文献库问答检索
     pdf_path: str = ""                # 本地 PDF 绝对路径
     item_type: str = ""               # journalArticle / conferencePaper / book / ...
     collection_ids: list[int] = field(default_factory=list)

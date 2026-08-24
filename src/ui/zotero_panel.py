@@ -306,24 +306,8 @@ class ZoteroPanel(QWidget):
         path = data.get("pdf_path", "")
         if not path:
             return
-        import subprocess
-        try:
-            if os.name == "nt":
-                subprocess.Popen(["explorer", "/select,", path])
-                return
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", "-R", path])
-                return
-            subprocess.Popen(["xdg-open", os.path.dirname(path) or "."])
-        except OSError:
-            dirname = os.path.dirname(path) or "."
-            try:
-                if os.name == "nt":
-                    os.startfile(dirname)  # noqa: S606
-                else:
-                    subprocess.Popen([sys.platform == "darwin" and "open" or "xdg-open", dirname])
-            except OSError as e:
-                QMessageBox.warning(self, "打开失败", f"无法打开文件位置：{e}")
+        from ..utils.files import open_file_location
+        open_file_location(path, parent=self)
 
     def _on_manual_refresh(self):
         if self._watcher is not None:

@@ -1,0 +1,97 @@
+重验 6 篇
+
+===== [1] Camacho 等 - 2009 - BLAST+ architecture and applications.pdf
+    标题: BLAST+: architecture and applications
+    卡片数: 103 | 类型分布: {'title': 1, 'authors': 1, 'affiliations': 1, 'body': 70, 'abstract_heading': 1, 'abstract_body': 3, 'subtitle': 20, 'figure': 5, 'table': 1}
+    最大正文卡词数: 324 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e3      BLAST+: architecture and applications
+      [authors       ] p1_e4      Christiam Camacho, George Coulouris, Vahram Avagyan, Ning Ma
+      [affiliations  ] p1_e5      Address: National Center for Biotechnology Information, Nati
+      [body          ] p1_e7      Vahram Avagyan-avagyanv@ncbi.nlm.nih.gov; Ning Ma-maning@ncb
+      [body          ] p1_e8      Kevin Bealer-kevinbealer@gmail.com; Thomas L Madden* - madde
+      [abstract_heading] p1_e17     Abstract
+      [abstract_body ] p1_e18     Background: Sequence similarity searching is a very importan
+      [abstract_body ] p1_e19     Results: We describe features and improvements of rewritten 
+      [abstract_body ] p1_e20     Conclusion: The new BLAST command-line applications, compare
+      [subtitle      ] p1_e21     Background
+
+===== [2] La Manno 等 - 2018 - RNA velocity of single cells.pdf
+    标题: RNA velocity of single cells
+    卡片数: 100 | 类型分布: {'title': 1, 'authors': 1, 'abstract_body': 1, 'body': 73, 'figure': 10, 'subtitle': 14}
+    最大正文卡词数: 792 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      RNA velocity of single cells
+      [authors       ] p1_e3      Gioele La Manno 1,2 , Ruslan Soldatov 3 , Amit Zeisel 1,2 , 
+      [abstract_body ] p1_e4      RNA abundance is a powerful indicator of the state of indivi
+      [body          ] p1_e5      During development, differentiation occurs on a timescale of
+      [body          ] p1_e6      All common single-cell RNA-seq protocols rely on oligo-dT pr
+      [body          ] p1_e7      To quantify the time-dependent relationship between the abun
+      [body          ] p1_e8      During a dynamic process, an increase in the transcription r
+      [body          ] p1_e9      To demonstrate how this simple model can be used to extrapol
+      [body          ] p1_e10     Next, to demonstrate the ability to predict transcriptional 
+      [figure        ] p2_e5      
+
+===== [3] Cui 等 - 2024 - scGPT toward building a foundation model for single-cell multi-omics using generative AI.pdf
+    标题: scGPT: toward building a foundation model for single-cell multi-omics 
+    卡片数: 230 | 类型分布: {'title': 1, 'authors': 1, 'body': 190, 'subtitle': 25, 'figure': 7, 'figure_caption': 6}
+    最大正文卡词数: 451 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e4      scGPT: toward building a foundation model for single-cell mu
+      [authors       ] p1_e9      Haotian Cui 1,2,3,8 , Chloe Wang 1,2,3,8 , Hassaan Maan 1,3,
+      [body          ] p1_e10     Generative pretrained models have achieved remarkable succes
+      [body          ] p1_e12     Single-cell RNA sequencing (scRNA-seq), by enabling intricat
+      [body          ] p1_e13     One promising approach to address this challenge is the gene
+      [body          ] p1_e14     1 Peter Munk Cardiac Centre, University Health Network, Toro
+      [body          ] p2_e1      In this work, we present the single-cell foundation model sc
+      [body          ] p2_e2      Our model, scGPT, demonstrates the transformative potential 
+      [subtitle      ] p2_e3      Results
+      [subtitle      ] p2_e4      Single-cell transformer foundation model overview
+
+===== [4] Emms和Kelly - 2019 - OrthoFinder phylogenetic orthology inference for comparative genomics.pdf
+    标题: OrthoFinder: phylogenetic orthology inference for comparative genomics
+    卡片数: 149 | 类型分布: {'title': 1, 'body': 109, 'abstract_heading': 1, 'abstract_body': 2, 'subtitle': 30, 'figure': 6}
+    最大正文卡词数: 283 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      OrthoFinder: phylogenetic orthology inference for comparativ
+      [body          ] p1_e3      David M. Emms and Steven Kelly *
+      [abstract_heading] p1_e4      Abstract
+      [abstract_body ] p1_e5      Here, we present a major advance of the OrthoFinder method. 
+      [abstract_body ] p1_e6      Keywords: Ortholog inference, Gene tree inference, Gene dupl
+      [subtitle      ] p1_e7      Background
+      [body          ] p1_e8      Determining the phylogenetic relationships between gene sequ
+      [body          ] p1_e11     Heuristic analysis of pairwise sequence similarity scores ha
+      [body          ] p1_e12     A number of tree-based online databases of orthologs have be
+      [figure        ] p2_e1      
+
+===== [5] Stuart 等 - 2019 - Comprehensive Integration of Single-Cell Data.pdf
+    标题: Comprehensive Integration of Single-Cell Data
+    卡片数: 351 | 类型分布: {'title': 1, 'body': 281, 'subtitle': 57, 'authors': 1, 'figure': 10, 'table': 1}
+    最大正文卡词数: 353 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e2      Comprehensive Integration of Single-Cell Data
+      [body          ] p2_e2      Resource
+      [subtitle      ] p2_e3      Comprehensive Integration of Single-Cell Data
+      [authors       ] p2_e4      Tim Stuart, 1,4 Andrew Butler, 1,2,4 Paul Hoffman, 1 Christo
+      [body          ] p2_e5      1 New York Genome Center, New York, NY, USA
+      [body          ] p2_e7      3 Technology Innovation Lab, New York Genome Center, New Yor
+      [body          ] p2_e12     SUMMARY
+      [body          ] p2_e13     Single-cell transcriptomics has transformed our ability to c
+      [body          ] p2_e14     INTRODUCTION
+      [body          ] p2_e15     Recent advances in molecular biology, microfluidics, and com
+
+===== [6] Han 等 - 2018 - Mapping the Mouse Cell Atlas by Microwell-Seq.pdf
+    标题: Mapping the Mouse Cell Atlas by Microwell-Seq
+    卡片数: 251 | 类型分布: {'title': 1, 'body': 195, 'subtitle': 38, 'authors': 1, 'figure': 14, 'table': 2}
+    最大正文卡词数: 530 | 混排大块: 无
+    目录污染: 无
+      [title         ] p1_e3      Mapping the Mouse Cell Atlas by Microwell-Seq
+      [body          ] p2_e2      Resource
+      [subtitle      ] p2_e3      Mapping the Mouse Cell Atlas by Microwell-Seq
+      [authors       ] p2_e4      Xiaoping Han, 1,12,13, * Renying Wang, 1,12,13 Yincong Zhou,
+      [body          ] p2_e17     13 These authors contributed equally 14 Lead Contact *Corres
+      [body          ] p2_e20     SUMMARY
+      [body          ] p2_e21     Single-cell RNA sequencing (scRNA-seq) technologies are pois
+      [body          ] p2_e22     INTRODUCTION
+      [body          ] p2_e23     Cellular identity is defined by a unique combination of expr
+      [body          ] p2_e25     Recent advances in single-cell gene expression analysis offe

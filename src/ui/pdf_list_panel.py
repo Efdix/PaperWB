@@ -20,6 +20,7 @@ from ..utils.config import (
     add_pdf_to_library, get_library_folders,
     load_doc_state, get_library_dir,
 )
+from ..utils.files import open_file_location
 from .zotero_panel import ZoteroPanel
 
 
@@ -230,7 +231,7 @@ class PDFListPanel(QWidget):
                     "imported_at": datetime.now().isoformat(),
                 })
                 imported_paths.append(dest)
-            except OSError as e:
+            except Exception as e:  # 拷贝/入库/配置写盘任一失败都不应中断批量导入
                 QMessageBox.warning(self, "导入失败", str(e))
         self._refresh()
         # 导入后自动触发分析（后台进行）
@@ -379,25 +380,7 @@ class PDFListPanel(QWidget):
 
     def _open_file_location(self, path: str):
         """在资源管理器中打开文件所在位置并选中该文件。"""
-        import subprocess
-        import sys
-        try:
-            if os.name == "nt":
-                subprocess.Popen(["explorer", "/select,", path])
-                return
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", "-R", path])
-                return
-            subprocess.Popen(["xdg-open", os.path.dirname(path) or "."])
-        except OSError:
-            dirname = os.path.dirname(path) or "."
-            try:
-                if os.name == "nt":
-                    os.startfile(dirname)  # noqa: S606
-                else:
-                    subprocess.Popen([sys.platform == "darwin" and "open" or "xdg-open", dirname])
-            except OSError as e:
-                QMessageBox.warning(self, "打开失败", f"无法打开文件位置：{e}")
+        open_file_location(path, parent=self)
 
     def _remove_pdf(self, path: str):
         r = QMessageBox.question(self, "确认",
@@ -477,18 +460,24 @@ class PDFListPanel(QWidget):
     # ========== 拖拽导入 ==========
 
     def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
-            for url in event.mimeData().urls():
-                if url.toLocalFile().lower().endswith(".pdf"):
-                    event.acceptProposedAction()
-                    return
+        try:
+            if event.mimeData().hasUrls():
+                for url in event.mimeData().urls():
+                    if url.toLocalFile().lower().endswith(".pdf"):
+                        event.acceptProposedAction()
+                        return
+        except Exception:
+            pass  # 异常 MIME 数据按"不接受拖入"处理
         event.ignore()
 
     def dropEvent(self, event: QDropEvent):
-        paths = []
-        for url in event.mimeData().urls():
-            p = url.toLocalFile()
-            if p.lower().endswith(".pdf"):
-                paths.append(p)
-        if paths:
-            self._import_files(paths)
+        try:
+            paths = []
+            for url in event.mimeData().urls():
+                p = url.toLocalFile()
+                if p.lower().endswith(".pdf"):
+                    paths.append(p)
+            if paths:
+                self._import_files(paths)
+        except Exception as e:
+            QMessageBox.warning(self, "导入失败", f"处理拖入文件时出错：{e}")

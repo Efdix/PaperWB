@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import weakref
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal as QtSignal
 from PySide6.QtGui import QAction
@@ -14,12 +15,16 @@ from PySide6.QtWidgets import (
 )
 
 from .core.context_manager import ContextManager
+from .core.library_preparser import LibraryPreparser
 from .core.llm_client import LLMClient
+from .core.stats_tracker import StatsTracker
 from .core.zotero_parser import ZoteroLibrary
 from .core.zotero_watcher import ZoteroWatcher
 from .ui.chat_panel import ChatPanel
+from .ui.library_qa_panel import LibraryQAPanel
 from .ui.pdf_list_panel import PDFListPanel
 from .ui.pdf_viewer import PDFViewerPanel
+from .ui.stats_panel import StatsPanel
 from .ui.workbench_panel import WorkbenchPanel
 from .ui.writing_panel import WritingPanel
 from .ui.settings_dialog import DirectorySettingDialog, SettingsDialog
@@ -30,6 +35,9 @@ from .utils.config import (
     save_config,
 )
 from .utils.threads import track
+
+# 单窗口常驻后台处理器的数量上限：超量时淘汰最旧的闲置处理器（正在解析/整合的除外）
+_MAX_PROCESSORS = 8
 
 
 class LLMWorker(QThread):
@@ -184,17 +192,47 @@ class MainWindow(QMainWindow):
         self._current_pdf_path: str = ""
 
         self._processors: dict[str, object] = {}
-        self._app_progress_connected: set[int] = set()
+        self._app_progress_connected: weakref.WeakSet = weakref.WeakSet()
         self._zotero: ZoteroLibrary | None = None
         self._zotero_watcher: ZoteroWatcher | None = None
         self._feed_bridge_connected = False
+        self._preparser: LibraryPreparser | None = None
+        self._preparse_flush_count = 0
 
         self._setup_ui()
         self._apply_styles()
         self._init_all_clients()
         self._init_write()
+        self._init_stats()
         self._validate_data_root()
         QTimer.singleShot(800, self._start_docling_warmup)
+        self._init_preparser()
+
+    def _init_preparser(self) -> None:
+        """后台全库预解析：与阅读共用缓存，索引就绪/启动延时后自动开跑。"""
+        self._preparser = LibraryPreparser(
+            should_yield=self._preparse_should_yield, parent=self)
+        self._preparser.progress.connect(self._on_preparse_progress)
+        self._preparser.item_done.connect(self._on_preparse_item_done)
+        self._preparser.state_changed.connect(self._on_preparse_state_changed)
+        self.library_qa_panel.index_built.connect(self._maybe_start_preparse)
+        self.library_qa_panel.preparse_toggled.connect(self._on_preparse_toggled)
+        QTimer.singleShot(60_000, self._maybe_start_preparse)
+
+    def _init_stats(self) -> None:
+        """统计工作台：活动埋点接线（阅读/问答/检索/巡视/写作）。"""
+        self._stats_tracker = self._stats_panel._tracker
+        # 面板信号 → 统计
+        self._workbench_panel.search_completed.connect(
+            lambda _n: self._stats_tracker.record_search())
+        self._workbench_panel.scout_completed.connect(
+            lambda _name, _n: self._stats_tracker.record_scout())
+        self._writing_panel.draft_saved.connect(self._stats_tracker.record_draft)
+        self._writing_panel.polish_accepted.connect(self._stats_tracker.record_polish)
+        self._writing_panel.lit_search_completed.connect(
+            lambda _n: self._stats_tracker.record_search())
+        self.library_qa_panel.qa_asked.connect(
+            lambda: self._stats_tracker.record_qa())
 
     def _setup_ui(self):
         self.setWindowTitle("PaperWB · AI 论文研究工作台")
@@ -259,12 +297,19 @@ class MainWindow(QMainWindow):
         self.pdf_viewer.follow_up_question.connect(self._on_follow_up_from_reader)
 
         self.chat_panel = ChatPanel()
-        self.chat_panel.setMinimumWidth(250)
         self.chat_panel.send_message.connect(self._on_user_message)
         self.chat_panel.clear_requested.connect(self._on_clear_chat)
+        self.library_qa_panel = LibraryQAPanel()
+        self.library_qa_panel.open_pdf_requested.connect(self._on_zotero_pdf_selected)
+
+        self.chat_tabs = QTabWidget()
+        self.chat_tabs.setDocumentMode(True)
+        self.chat_tabs.setMinimumWidth(280)
+        self.chat_tabs.addTab(self.chat_panel, "本篇论文")
+        self.chat_tabs.addTab(self.library_qa_panel, "全文献库")
 
         inner_splitter.addWidget(self.pdf_viewer)
-        inner_splitter.addWidget(self.chat_panel)
+        inner_splitter.addWidget(self.chat_tabs)
         inner_splitter.setSizes([550, 450])
         inner_splitter.setStretchFactor(0, 2)
         inner_splitter.setStretchFactor(1, 1)
@@ -280,8 +325,6 @@ class MainWindow(QMainWindow):
         outer_splitter.setCollapsible(0, True)
         outer_splitter.setCollapsible(1, False)
         self._reader_outer_splitter = outer_splitter
-        self.pdf_viewer.toggle_library_requested.connect(self._set_reader_library_visible)
-        self.pdf_viewer.toggle_chat_requested.connect(self._set_reader_chat_visible)
 
         reader_surface = QWidget()
         reader_surface.setObjectName("workspaceSurface")
@@ -302,22 +345,43 @@ class MainWindow(QMainWindow):
         reader_title.setObjectName("titleLabel")
         reader_title_box.addWidget(reader_title)
         reader_header_layout.addLayout(reader_title_box)
-        reader_subtitle = QLabel("结构化阅读、段落翻译与单篇论文问答")
+        reader_subtitle = QLabel("结构化阅读、段落翻译与论文问答（本篇 / 全库）")
         reader_subtitle.setObjectName("subtitleLabel")
         reader_header_layout.addWidget(reader_subtitle)
         reader_header_layout.addStretch()
+
+        self._reader_library_toggle_btn = QPushButton("文献列表")
+        self._reader_library_toggle_btn.setObjectName("paneToggle")
+        self._reader_library_toggle_btn.setCheckable(True)
+        self._reader_library_toggle_btn.setChecked(True)
+        self._reader_library_toggle_btn.setToolTip("显示或隐藏左侧文献列表")
+        reader_header_layout.addWidget(self._reader_library_toggle_btn)
+
+        self._reader_chat_toggle_btn = QPushButton("论文问答")
+        self._reader_chat_toggle_btn.setObjectName("paneToggle")
+        self._reader_chat_toggle_btn.setCheckable(True)
+        self._reader_chat_toggle_btn.setChecked(True)
+        self._reader_chat_toggle_btn.setToolTip(
+            "显示或隐藏右侧论文问答（本篇论文 / 全文献库 两个页签）")
+        reader_header_layout.addWidget(self._reader_chat_toggle_btn)
+
+        self._reader_library_toggle_btn.toggled.connect(self._set_reader_library_visible)
+        self._reader_chat_toggle_btn.toggled.connect(self._set_reader_chat_visible)
         reader_layout.addWidget(reader_header)
         reader_layout.addWidget(outer_splitter, 1)
         self._main_tabs.addTab(reader_surface, "阅读工作台")
 
-        # Tab 1: 写作
+        # Tab 1: 检索工作台（AI 检索 + 按库推荐 + 定时文献巡视）
+        self._workbench_panel = WorkbenchPanel()
+        self._main_tabs.addTab(self._workbench_panel, "检索工作台")
+
+        # Tab 2: 写作
         self._writing_panel = WritingPanel()
         self._main_tabs.addTab(self._writing_panel, "写作工作台")
 
-        # Tab 2: 文献工作台（库内跨文献问答 + 定时文献巡视）
-        self._workbench_panel = WorkbenchPanel()
-        self._workbench_panel.open_pdf_requested.connect(self._on_workbench_open_pdf)
-        self._main_tabs.addTab(self._workbench_panel, "文献工作台")
+        # Tab 3: 统计（面板在 _init_stats 中创建并注入 tracker）
+        self._stats_panel = StatsPanel(StatsTracker(parent=self))
+        self._main_tabs.addTab(self._stats_panel, "统计工作台")
 
         # 顶部应用栏：把工作区切换和高频操作从传统标签页中提出来。
         shell = QWidget()
@@ -367,17 +431,23 @@ class MainWindow(QMainWindow):
         self._read_nav.clicked.connect(lambda _checked=False: self._switch_workspace(0))
         header_layout.addWidget(self._read_nav)
 
+        self._scout_nav = QPushButton("检索工作台")
+        self._scout_nav.setObjectName("workspaceNav")
+        self._scout_nav.setCheckable(True)
+        self._scout_nav.clicked.connect(lambda _checked=False: self._switch_workspace(1))
+        header_layout.addWidget(self._scout_nav)
+
         self._write_nav = QPushButton("写作工作台")
         self._write_nav.setObjectName("workspaceNav")
         self._write_nav.setCheckable(True)
-        self._write_nav.clicked.connect(lambda _checked=False: self._switch_workspace(1))
+        self._write_nav.clicked.connect(lambda _checked=False: self._switch_workspace(2))
         header_layout.addWidget(self._write_nav)
 
-        self._scout_nav = QPushButton("文献工作台")
-        self._scout_nav.setObjectName("workspaceNav")
-        self._scout_nav.setCheckable(True)
-        self._scout_nav.clicked.connect(lambda _checked=False: self._switch_workspace(2))
-        header_layout.addWidget(self._scout_nav)
+        self._stats_nav = QPushButton("统计工作台")
+        self._stats_nav.setObjectName("workspaceNav")
+        self._stats_nav.setCheckable(True)
+        self._stats_nav.clicked.connect(lambda _checked=False: self._switch_workspace(3))
+        header_layout.addWidget(self._stats_nav)
 
         header_layout.addStretch()
 
@@ -400,12 +470,19 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self._status_text_label)
 
     def _switch_workspace(self, index: int) -> None:
-        """切换阅读/写作/文献工作区，并同步顶部导航状态。"""
-        names = ("阅读工作台", "写作工作台", "文献工作台")
+        """切换阅读/检索/写作/统计工作区，并同步顶部导航状态。"""
+        names = ("阅读工作台", "检索工作台", "写作工作台", "统计工作台")
         self._main_tabs.setCurrentIndex(index)
         self._read_nav.setChecked(index == 0)
-        self._write_nav.setChecked(index == 1)
-        self._scout_nav.setChecked(index == 2)
+        self._scout_nav.setChecked(index == 1)
+        self._write_nav.setChecked(index == 2)
+        self._stats_nav.setChecked(index == 3)
+        # 阅读时长统计：离开阅读台结算，回到阅读台且当前有文献时续计
+        if index != 0:
+            self._stats_tracker.stop_reading()
+        elif self._current_pdf_path:
+            self._stats_tracker.start_reading(
+                self._current_pdf_path, self._current_reading_title())
         if 0 <= index < len(names):
             self.status_bar.showMessage(f"已切换到{names[index]}")
 
@@ -419,7 +496,7 @@ class MainWindow(QMainWindow):
 
     def _set_reader_chat_visible(self, visible: bool) -> None:
         """阅读工作台问答栏可收起，避免三栏同时挤压正文。"""
-        self.chat_panel.setVisible(bool(visible))
+        self.chat_tabs.setVisible(bool(visible))
         if visible:
             self._reader_inner_splitter.setSizes([max(500, self.width() - 470), 420])
         else:
@@ -432,8 +509,11 @@ class MainWindow(QMainWindow):
         """界面显示后再后台预热，避免拖慢窗口创建过程。"""
         if self._docling_warmup is not None and self._docling_warmup.isRunning():
             return
-        self._docling_warmup = DoclingWarmupWorker(self)
-        self._docling_warmup.start()
+        # 无 parent：窗口销毁不连带销毁运行中的线程；由 track() 注册表保活到导入完成
+        warmup = DoclingWarmupWorker()
+        track(warmup)
+        self._docling_warmup = warmup
+        warmup.start()
 
     def _on_pdf_loaded(self, text: str):
         if self._current_pdf_path:
@@ -441,6 +521,9 @@ class MainWindow(QMainWindow):
         self._current_pdf_path = self.pdf_viewer.get_current_path()
         self._context_manager.load_pdf_text(text)
         self.pdf_list.refresh_state_badge(self._current_pdf_path)
+        # 统计：开始/续计当前文献阅读时长
+        self._stats_tracker.start_reading(
+            self._current_pdf_path, self._current_reading_title())
 
         # 加载结构化文档到上下文
         doc = self.pdf_viewer.structured_document
@@ -464,6 +547,13 @@ class MainWindow(QMainWindow):
             self._llm_text is not None and self._context_manager.has_pdf
         )
 
+    def _current_reading_title(self) -> str:
+        """当前文献的展示标题（结构化文档标题优先，否则用文件名）。"""
+        doc = self.pdf_viewer.structured_document
+        if doc is not None and getattr(doc, "title", ""):
+            return doc.title
+        return os.path.basename(self._current_pdf_path) if self._current_pdf_path else ""
+
     def _on_structured_document_updated(self, path: str) -> None:
         """跨页合并后只更新检索文档，不重置当前对话。"""
         if path != self._current_pdf_path:
@@ -473,6 +563,10 @@ class MainWindow(QMainWindow):
             return
         text = "\n\n".join(e.text for e in doc.display_elements if e.text)
         self._context_manager.update_document(text, doc)
+        # 阅读侧接缝定稿（LLM 精修完成）：库问答索引跟进该篇最终版段落
+        key = self.library_qa_panel.item_key_for_pdf(path)
+        if key and self.library_qa_panel.refresh_engine_item(key):
+            self.library_qa_panel.flush_engine()
 
     def _save_current_chat(self):
         if self._current_pdf_path:
@@ -482,6 +576,7 @@ class MainWindow(QMainWindow):
         """切换文献前立即清空当前会话，避免上一篇论文的问答残留。"""
         if self._current_pdf_path:
             self._save_current_chat()
+        self._stats_tracker.stop_reading()
         self._cancel_llm_worker()
         self._current_pdf_path = ""
         self._context_manager.load_pdf_text("")
@@ -527,6 +622,7 @@ class MainWindow(QMainWindow):
     def _on_pdf_imported(self, path: str):
         if not path:
             return
+        self._stats_tracker.record_import()
         self._begin_pdf_switch(path)
         self._load_pdf_into_viewer(path)
 
@@ -556,9 +652,13 @@ class MainWindow(QMainWindow):
     def _load_pdf_into_viewer(self, path: str) -> None:
         """统一入口：复用/创建处理器 → 注入客户端 → 加载 PDF → 登记进度回调。
 
-        不再取消其它论文的后台处理器：切换文献后，后台解析/整合继续运行并自动落盘。
+        切换文献不取消其它论文的后台处理器（后台解析/整合继续运行并自动落盘），
+        仅在超过 _MAX_PROCESSORS 时淘汰最旧的闲置处理器。
         """
         existing = self._processors.get(path)
+        if existing is None and self._preparser is not None:
+            # 后台建库正在解析同一文献：直接接管在途处理器，不重复解析
+            existing = self._preparser.active_processor(path)
         if existing is not None:
             try:
                 manifest = existing.manifest
@@ -577,18 +677,130 @@ class MainWindow(QMainWindow):
             proc.set_llm_client(self._llm_text)  # 后台处理器也同步最新纯文本接口
             self._processors[path] = proc
             # viewer.load_pdf 每次都先 detach（断开全部连接）再 attach，
-            # 故旧处理器（含同路径重载）的连接已被清除，这里按 id 幂等重连
+            # 故旧处理器（含同路径重载）的连接已被清除，这里按对象幂等重连
             if old_proc is not None:
-                self._app_progress_connected.discard(id(old_proc))
-            if id(proc) not in self._app_progress_connected:
+                self._app_progress_connected.discard(old_proc)
+            if proc not in self._app_progress_connected:
                 proc.stage1_progress.connect(self._on_processor_progress)
-                self._app_progress_connected.add(id(proc))
+                self._app_progress_connected.add(proc)
+            self._evict_idle_processors(keep_path=path)
+
+    def _evict_idle_processors(self, keep_path: str) -> None:
+        """超过上限时淘汰最旧的闲置处理器，避免长会话内存无界增长。
+
+        dict 按插入序遍历（最旧在前）；当前正在阅读的文献与忙碌（Stage1/2
+        在途）的处理器跳过，本轮挑不出受害者则等下次打开再试。
+        """
+        while len(self._processors) > _MAX_PROCESSORS:
+            victim = None
+            for path, proc in self._processors.items():
+                if path in (keep_path, self._current_pdf_path):
+                    continue
+                if getattr(proc, "is_busy", lambda: False)():
+                    continue
+                victim = path
+                break
+            if victim is None:
+                return
+            self._cancel_processor(victim)
+
+    # ---- 后台全库预解析 ----
+
+    def _maybe_start_preparse(self) -> None:
+        """库问答索引就绪（或启动 60 秒兜底）后启动后台建库解析。"""
+        if self._preparser is None:
+            return
+        if os.environ.get("PAPERWB_DISABLE_PREPARSE"):
+            return  # 自测/冒烟脚本用环境变量禁用真实解析
+        if not load_config().get("preparse_enabled", True):
+            return
+        if self._preparser.state == "running":
+            return
+        self._refresh_preparse_queue()
+        if self._preparser.state == "paused":
+            self._preparser.resume()
+        else:
+            self._preparser.start()
+
+    def _refresh_preparse_queue(self) -> None:
+        """以当前 Zotero 库重建预解析队列（已解析篇目自动跳过）。"""
+        if self._preparser is None:
+            return
+        items: list = []
+        if self._zotero is not None and self._zotero.is_available:
+            try:
+                items = self._zotero.get_all_items()
+            except Exception:  # noqa: BLE001
+                items = []
+        self._preparser.set_queue(
+            [it.pdf_path for it in items if getattr(it, "pdf_path", "")])
+
+    def _preparse_should_yield(self) -> bool:
+        """用户侧有解析/整合在途时后台建库让路（预解析自己的处理器除外）。"""
+        if self._preparser is None:
+            return False
+        mine = self._preparser.current_processor
+        viewer_proc = getattr(self.pdf_viewer, "_processor", None)
+        if viewer_proc is not None and viewer_proc is not mine \
+                and getattr(viewer_proc, "is_busy", lambda: False)():
+            return True
+        for proc in self._processors.values():
+            if proc is not mine and getattr(proc, "is_busy", lambda: False)():
+                return True
+        return False
+
+    def _on_preparse_progress(self, done: int, total: int, name: str) -> None:
+        text = f"后台建库解析：{done}/{total}"
+        if name:
+            text += f" · {name}"
+        self.library_qa_panel.set_preparse_status(text)
+
+    def _on_preparse_state_changed(self, state: str) -> None:
+        if state == "idle":
+            self._flush_preparse()
+            self.library_qa_panel.set_preparse_status("")
+        elif state == "paused":
+            self._flush_preparse()
+            self.library_qa_panel.set_preparse_status("后台建库解析：已暂停")
+
+    def _flush_preparse(self) -> None:
+        """收口单篇索引刷新：落盘并重建全文检索器。"""
+        self._preparse_flush_count = 0
+        self.library_qa_panel.flush_engine(reindex=True)
+
+    def _on_preparse_item_done(self, path: str) -> None:
+        """预解析完成一篇：升级库问答全文索引（每 10 篇节流落盘一次）。"""
+        key = self.library_qa_panel.item_key_for_pdf(path)
+        if not key:
+            return
+        self.library_qa_panel.refresh_engine_item(key)
+        self._preparse_flush_count += 1
+        if self._preparse_flush_count >= 10:
+            self.library_qa_panel.flush_engine(reindex=False)
+            self._preparse_flush_count = 0
+
+    def _on_preparse_toggled(self, enabled: bool) -> None:
+        config = load_config()
+        config["preparse_enabled"] = enabled
+        save_config(config)
+        self._config = config
+        if self._preparser is None:
+            return
+        if enabled:
+            self._maybe_start_preparse()
+        else:
+            self._preparser.stop()
+            self._flush_preparse()
+            self.library_qa_panel.set_preparse_status("")
 
     def _cancel_processor(self, path: str) -> None:
-        """取消并移除指定文献的后台处理器（显式重跑/删除时使用）。"""
+        """取消并移除指定文献的后台处理器（显式重跑/删除/超量淘汰时使用）。"""
         proc = self._processors.pop(path, None)
+        if self._preparser is not None:
+            # 该文献可能正被后台建库预解析：一并取消，避免旧线程回写已删缓存
+            self._preparser.cancel_if_active(path)
         if proc is not None:
-            self._app_progress_connected.discard(id(proc))
+            self._app_progress_connected.discard(proc)
             if hasattr(proc, 'cancel'):
                 proc.cancel()
 
@@ -601,6 +813,8 @@ class MainWindow(QMainWindow):
         state = load_doc_state(path)
         state.pop("structured_document", None)
         state.pop("merged_seams", None)
+        state.pop("merged_seams_prelim", None)
+        state.pop("seams_final", None)
         state.pop("pdf_mtime", None)
         save_doc_state(path, state)
         self._begin_pdf_switch(path)
@@ -613,6 +827,8 @@ class MainWindow(QMainWindow):
         state = load_doc_state(path)
         state.pop("structured_document", None)
         state.pop("merged_seams", None)
+        state.pop("merged_seams_prelim", None)
+        state.pop("seams_final", None)
         save_doc_state(path, state)
         self._begin_pdf_switch(path)
         self._load_pdf_into_viewer(path)
@@ -656,6 +872,7 @@ class MainWindow(QMainWindow):
         if self._llm_worker and self._llm_worker.isRunning():
             self.status_bar.showMessage("已有问题正在回答，请等待当前回答完成")
             return
+        self._stats_tracker.record_qa()
         self.chat_panel.set_input_enabled(True)
         self.chat_panel.add_user_message(question)
         self._context_manager.add_to_history("user", question)
@@ -713,6 +930,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("已有问题正在回答，请等待当前回答完成")
             return
 
+        self._stats_tracker.record_qa()
         self.chat_panel.add_user_message(text)
         self._context_manager.add_to_history("user", text)
         messages = self._context_manager.build_messages(text)
@@ -784,6 +1002,9 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Zotero 文献库路径已更新")
         else:
             self._cancel_llm_worker()
+            if self._preparser is not None:
+                # 数据根目录已换：停掉旧缓存上的预解析，索引随新引擎重建
+                self._preparser.stop()
             for path in list(self._processors):
                 self._cancel_processor(path)
             self._app_progress_connected.clear()
@@ -794,13 +1015,16 @@ class MainWindow(QMainWindow):
             self.chat_panel.set_token_count(0)
             self.chat_panel.set_input_enabled(False)
             self.pdf_list._refresh()
+            self._stats_tracker.flush()  # 旧目录状态先落盘
+            self._stats_panel.reload_storage()
             self._writing_panel.reload_storage()
             workbench_reloaded = self._workbench_panel.reload_storage()
+            qa_reloaded = self.library_qa_panel.reload_storage()
             self.setWindowTitle("PaperWB · AI 论文研究工作台")
-            if workbench_reloaded:
+            if workbench_reloaded and qa_reloaded:
                 self.status_bar.showMessage("缓存文件存储路径已更新")
             else:
-                self.status_bar.showMessage("缓存路径已更新，文献巡视任务退出后再刷新工作台")
+                self.status_bar.showMessage("缓存路径已更新，后台任务退出后再刷新工作台")
         return True
 
     def _on_change_zotero_dir(self):
@@ -817,9 +1041,10 @@ class MainWindow(QMainWindow):
             "<h3>PaperWB</h3>"
             "<p>AI 论文解读助手 v1.0.0</p>"
             "<p>支持 DeepSeek、Mimo、OpenCode 及所有 OpenAI 兼容接口。</p>"
-             "<p>两套接口：多模态（图表问答）+ 纯文本（论文问答/翻译/写作/文献工作台）</p>"
+             "<p>两套接口：多模态（图表问答）+ 纯文本（论文问答/翻译/写作/文献检索）</p>"
              "<p>本地版式解析 · 结构化阅读视图 · 知识库驱动写作辅助 · Zotero 引文核查 · PubMed 文献检索</p>"
-             "<p>文献工作台：库内跨文献综合问答（BM25 全库索引）+ 定向文献巡视（定时检索 PubMed，自动过滤库内已有）</p>"
+             "<p>论文问答双页签：本篇论文问答 + 全文献库跨文献问答（BM25 全库索引）；"
+             "检索工作台：自然语言 AI 检索（OpenAlex / PubMed / arXiv 三源两轮）+ 按库推荐 + 定向文献巡视（自动过滤库内已有）</p>"
         )
 
     def closeEvent(self, event) -> None:
@@ -827,7 +1052,13 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._save_current_chat()
+        self._stats_tracker.stop_reading()
+        self._stats_panel.shutdown()
         self._workbench_panel.shutdown()
+        self.library_qa_panel.shutdown()
+        if self._preparser is not None:
+            self._preparser.stop()
+            self.library_qa_panel.flush_engine()
         if self._zotero_watcher is not None:
             self._zotero_watcher.stop()
         for proc in self._processors.values():
@@ -836,8 +1067,9 @@ class MainWindow(QMainWindow):
         if self._llm_worker and self._llm_worker.isRunning():
             self._llm_worker.requestInterruption()
         if self._docling_warmup and self._docling_warmup.isRunning():
-            # 导入阶段无法安全中断，等待其自然完成，避免 QThread 被销毁时崩溃。
-            self._docling_warmup.wait()
+            # 导入阶段无法安全中断：有界等待，超时后放行关窗。
+            # 线程由 track() 注册表保活到自然退出，卡死的模块导入不该冻住窗口。
+            self._docling_warmup.wait(10_000)
         # 有界等待剩余后台线程自然退出（LLM 调用中的线程由注册表保活，
         # 最多等待 15 秒；空闲时立即返回，不拖慢正常关窗）。
         deadline = time.monotonic() + 15.0
@@ -848,7 +1080,8 @@ class MainWindow(QMainWindow):
             )
             llm_busy = self._llm_worker is not None and self._llm_worker.isRunning()
             wb_busy = self._workbench_panel.has_busy_workers()
-            if not pending and not llm_busy and not wb_busy:
+            qa_busy = self.library_qa_panel.has_busy_workers()
+            if not pending and not llm_busy and not wb_busy and not qa_busy:
                 break
             QApplication.processEvents()
             time.sleep(0.1)
@@ -868,6 +1101,7 @@ class MainWindow(QMainWindow):
 
         self.pdf_viewer.set_text_client(self._llm_text)
         self.chat_panel.set_input_enabled(self._llm_text is not None)
+        self.library_qa_panel.set_text_client(self._llm_text)
         self._workbench_panel.set_text_client(self._llm_text)
 
         def _label(client, prefix):
@@ -911,7 +1145,7 @@ class MainWindow(QMainWindow):
             )
         self._writing_panel.set_text_client(self._llm_text)
         self._writing_panel.set_zotero_library(self._zotero)
-        # 写作「文献补充」的检索结果统一推送到文献工作台推荐流
+        # 写作「文献补充」的检索结果统一推送到检索工作台推荐流
         if not self._feed_bridge_connected:
             self._writing_panel.feed_requested.connect(
                 lambda papers, label: self._workbench_panel.add_to_feed(papers, label))
@@ -924,6 +1158,7 @@ class MainWindow(QMainWindow):
             self._zotero_watcher.start()
         self.pdf_list.zotero_panel.set_library(self._zotero)
         self.pdf_list.zotero_panel.set_watcher(self._zotero_watcher)
+        self.library_qa_panel.set_zotero_library(self._zotero)
         self._workbench_panel.set_zotero_library(self._zotero)
 
     def _on_zotero_pdf_selected(self, path: str) -> None:
@@ -936,15 +1171,15 @@ class MainWindow(QMainWindow):
         self._begin_pdf_switch(path)
         self._load_pdf_into_viewer(path)
 
-    def _on_workbench_open_pdf(self, path: str) -> None:
-        """文献工作台引用跳转 → 切到阅读工作台并按两阶段管线打开该 PDF。"""
-        self._switch_workspace(0)
-        self._on_zotero_pdf_selected(path)
-
     def _on_zotero_changed(self, diff: dict) -> None:
-        """Zotero 侧增删改 → 刷新写作面板状态 + 文献工作台索引。"""
+        """Zotero 侧增删改 → 刷新写作面板状态 + 全库问答索引 + 巡视比对池。"""
         self._writing_panel.refresh_zotero_status()
+        self.library_qa_panel.on_zotero_changed()
         self._workbench_panel.on_zotero_changed()
+        # 新入库的 PDF 纳入后台预解析（已解析的自动跳过）
+        self._refresh_preparse_queue()
+        if self._preparser is not None and self._preparser.state == "idle":
+            self._maybe_start_preparse()
 
     def _validate_data_root(self) -> None:
         """启动时校验缓存文件存储路径是否可访问。"""

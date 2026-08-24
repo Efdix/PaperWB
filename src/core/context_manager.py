@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import re
 
+# 引用/文献类问题关键词：命中才附带完整参考文献列表（每问省 3-8k token）
+_REFERENCE_QUERY_RE = re.compile(
+    r"引用|引文|参考文献|references?|citations?|cite|et\s+al\.?|\[\d+\]",
+    re.IGNORECASE,
+)
+
 
 class ContextManager:
     """管理 PDF 文本和对话上下文，按 token 预算自动截断。
@@ -85,8 +91,8 @@ class ContextManager:
         used = self.estimate_tokens(system_prompt) + self.estimate_tokens(user_query)
         budget = self.max_tokens - used - 4000
 
-        # 构建完整上下文
-        full_context = self._build_full_context()
+        # 构建完整上下文（兜底路径也按问题决定是否附完整参考文献）
+        full_context = self._build_full_context(user_query)
         pdf_section = self._build_pdf_section(user_query, full_context, budget)
         messages.append({"role": "user", "content": pdf_section})
 
@@ -110,8 +116,8 @@ class ContextManager:
                 for c in hits
             )
             chunks_text = "【检索到的论文相关段落】\n" + chunks_text
-            # 预算允许时附带元信息/图表/参考文献，便于引文与元信息类问题
-            extra = self._build_aux_context()
+            # 预算允许时附带元信息/图表（+引用类问题的参考文献），便于引文与元信息类问题
+            extra = self._build_aux_context(user_query)
             if extra and self.estimate_tokens(chunks_text) + self.estimate_tokens(extra) < budget:
                 chunks_text += "\n\n" + extra
             if self.estimate_tokens(chunks_text) < budget:
@@ -130,7 +136,7 @@ class ContextManager:
         key = id(doc) if doc is not None else ("text", id(self._pdf_text))
         if self._retriever is not None and self._retriever_key == key:
             return self._retriever
-        from .retriever import Bm25Retriever
+        from .retriever import Bm25Retriever, split_paragraphs
         chunks = []
         if doc is not None:
             cur_section = ""
@@ -144,10 +150,8 @@ class ContextManager:
                         "page": e.page,
                     })
         elif self._pdf_text:
-            for para in re.split(r"\n\s*\n", self._pdf_text):
-                p = para.strip()
-                if len(p) >= 20:
-                    chunks.append({"text": p, "section": "", "page": 0})
+            for p in split_paragraphs(self._pdf_text, 20):
+                chunks.append({"text": p, "section": "", "page": 0})
         retriever = Bm25Retriever()
         retriever.index(chunks)
         self._retriever = retriever
@@ -160,7 +164,7 @@ class ContextManager:
             return []
         return retriever.search(query, top_k=top_k)
 
-    def _build_full_context(self) -> str:
+    def _build_full_context(self, user_query: str = "") -> str:
         """构建完整的论文上下文：正文 + 元信息 + 图表 + 参考文献。"""
         parts = []
 
@@ -176,7 +180,7 @@ class ContextManager:
             if display_text:
                 parts.append("【论文正文】\n" + display_text)
 
-        aux = self._build_aux_context()
+        aux = self._build_aux_context(user_query)
         if aux:
             parts.append(aux)
 
@@ -185,11 +189,16 @@ class ContextManager:
 
         return "\n\n".join(parts)
 
-    def _build_aux_context(self) -> str:
-        """构建元信息 + 图表描述 + 参考文献（结构化文档的非正文部分）。"""
+    def _build_aux_context(self, user_query: str = "") -> str:
+        """构建元信息 + 图表描述 + 参考文献（结构化文档的非正文部分）。
+
+        完整参考文献列表通常 3-8k token，仅在问题涉及引用/文献时附带；
+        其余问题以一行说明代替，模型可提示用户换用引用类问法索取。
+        """
         doc = self._structured_doc
         if doc is None:
             return ""
+        include_refs = bool(_REFERENCE_QUERY_RE.search(user_query or ""))
         parts = []
 
         # 元信息（作者、单位、出版信息等）
@@ -213,12 +222,17 @@ class ContextManager:
 
         # 参考文献
         if doc.references:
-            ref_text = "\n".join(
-                f"[{i+1}] {r.text}"
-                for i, r in enumerate(doc.references) if r.text
-            )
-            if ref_text:
-                parts.append("【参考文献】\n" + ref_text)
+            if include_refs:
+                ref_text = "\n".join(
+                    f"[{i+1}] {r.text}"
+                    for i, r in enumerate(doc.references) if r.text
+                )
+                if ref_text:
+                    parts.append("【参考文献】\n" + ref_text)
+            else:
+                parts.append(
+                    "【参考文献】\n（完整参考文献列表本次未附；"
+                    "如需引用/文献核查类回答，请在问题中说明）")
 
         return "\n\n".join(parts)
 

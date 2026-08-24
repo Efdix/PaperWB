@@ -91,22 +91,24 @@
 | 功能 | 说明 |
 |------|------|
 | 多 API 预设 | DeepSeek / GLM（智谱）/ Mimo / OpenCode Go / OpenCode Zen / Ollama / 自定义，共 7 个预设、近 50 个模型 |
-| 两套独立 API | 多模态接口负责图表问答；纯文本接口负责论文问答、翻译、写作和文献工作台，可分别配置 API Key、Base URL、模型 |
+| 两套独立 API | 多模态接口负责图表问答；纯文本接口负责论文问答、翻译、写作和文献检索，可分别配置 API Key、Base URL、模型 |
+| 全文献库问答 | 阅读侧「论文问答」双页签：本篇论文问答之外，可对整个 Zotero 库提问（元数据+全文混合 BM25 检索，答案带 `[n]` 来源角标） |
 | Zotero 集成 | 左侧「Zotero」标签页只读镜像集合树，**周期同步**（启动加载 + 每 30 分钟后台重载 + 手动刷新）；引文核查提取 PDF 相关段落 |
 | 流式对话 | AI 回复实时逐字显示，Markdown 渲染，上下文自动管理（1M token 窗口） |
 | 论文库 | 拖拽导入 PDF，文件夹分类管理，对话和解析状态按文档持久化 |
 | 轻量主题 | 浅灰工作区、白色内容面板、石墨文字和蓝色主操作色，全组件自定义 QSS 样式 |
 | 任务栏多窗口 | 润色/文献补充对话框各自独立显示在任务栏分组中 |
 
-### 文献工作台（库内问答 + 定向巡视）
+### 检索工作台（自然语言检索 + 按库推荐 + 定向巡视）
 
 | 功能 | 说明 |
 |------|------|
-| 库内跨文献问答 | 对**整个 Zotero 库**提问：元数据 + PDF 全文（PyMuPDF 按页抽段）混合 BM25 检索，点名某篇时元数据命中加权优先；答案标注 `[n]` 来源角标，点击参考文献卡片直接切到阅读工作台打开对应 PDF |
-| 全库自动索引 | 后台构建/增量刷新全文索引（不到 2 分钟可覆盖几百篇），PDF 变更按 mtime 自动失效；「只问库」开关可跳过全文只做元数据级问答 |
-| 定向文献巡视 | 为每个研究方向配置 PubMed 检索式，独立定时器到点自动检索；两级去重（本地 DOI/标题精确匹配 + 可选 LLM 模糊比对），已推送文献跨启动记忆不重复推荐 |
+| AI 检索（三源） | 自然语言描述需求，LLM 生成 OpenAlex / PubMed / arXiv 三源检索式（含年份、综述/研究论文过滤与同义词扩展），自动滤除库内已有 |
+| 两轮闭环 | 初检后 AI 分析缺口（缺综述？缺方法学？术语偏差？）并剔除不切题命中，必要时自动补充第二轮检索 |
+| 按库推荐 | 勾选「📚 按库推荐」切换模式（与自然语言检索互斥）；级联选择 Zotero 集合（任一级即含其全部子级）作推荐源：OpenAlex 引文图谱推荐（不耗 LLM，标注关联种子数）+ AI 集合画像检索，两路合并去重 |
+| 定向文献巡视 | 为每个研究方向配置检索式，独立定时器到点自动检索；两级去重（本地 DOI/标题精确匹配 + 可选 LLM 模糊比对），已推送文献跨启动记忆不重复推荐 |
 | 结果落地三条路 | Zotero 只读不能直写，推荐结果支持导出 RIS（Zotero 可导入）/ 导出 CSV / 复制引文，或一键生成检索式跳转 PubMed 网页 |
-| 推荐流 | 最近 200 条推荐跨启动保留，卡片可点击「忽略」后不再出现 |
+| 巡视结果 | 巡视方向与结果同栏相邻展示；最近 200 条推荐跨启动保留，卡片带被引数标注，可「忽略」后不再出现 |
 
 ---
 
@@ -158,7 +160,7 @@ pip install -r requirements.txt
 | 自定义 | 任意 OpenAI 兼容 URL | — |
 
 - **多模态接口**：负责图表内容问答，会把渲染图作为多模态消息发送给模型；不使用图表解读时可以不配置
-- **纯文本接口**：负责论文问答、段落翻译、写作、文献工作台问答与巡视；写作和复杂核查建议使用强推理模型
+- **纯文本接口**：负责论文问答（本篇论文/全文献库）、段落翻译、写作、文献检索与巡视；写作和复杂核查建议使用强推理模型
 
 ### 启动
 
@@ -255,12 +257,13 @@ Compress-Archive -Path dist\PaperWB\* -DestinationPath build\PaperWB-portable.zi
    - **补充参考文献** → LLM 推荐已知文献 + PubMed 检索
 7. 工具检查器可以隐藏，正文会自动扩展；阅读工作台的文献列表和论文问答也可以独立收起。
 
-### 文献工作台
+### 全文献库问答与检索工作台
 
-1. 切换到 **"文献工作台"** 标签页（三栏：检索方向 / 库内问答 / 文献推荐流）
-2. **库内问答**：底部输入框对全库提问，答案中的 `[n]` 角标即来源文献；点击参考资料卡片直接打开该 PDF 阅读
-3. **定向巡视**：左侧「+ 新建方向」填写方向名与英文检索式（可限定某个 Zotero 集合），周期到点自动检索 PubMed 新文献，也可点「立即巡视」手动触发
-4. 推荐流中的卡片可导出 RIS/CSV 或复制引文再导入你的 Zotero 库
+1. **全文献库问答**：阅读工作台右侧「论文问答」切换到 **"全文献库"** 页签，对整个 Zotero 库提问（后台自动构建全文索引），答案中的 `[n]` 角标即来源文献，点击参考文献卡片直接打开该 PDF 阅读；「只问库」开关可跳过全文只做元数据级问答
+2. **AI 检索**：切换到 **"检索工作台"**（顶部导航顺序：阅读 → 检索 → 写作），左侧用自然语言描述需求：LLM 生成三源检索式（OpenAlex / PubMed / arXiv）初检 → AI 缺口分析 → 必要时自动补充第二轮
+3. **按库推荐**：勾选检索面板右上「📚 按库推荐」切换到推荐模式（取消勾选回到自然语言检索），逐级选择 Zotero 集合——先展示最上级，选中任一级即以该级及其全部子级文献为种子（也可继续下钻缩小范围）→ OpenAlex 引文图谱推荐 + AI 集合画像检索
+4. **定向巡视**：右侧巡视面板上半「+ 新方向」填写方向名与英文检索式（可限定某个 Zotero 集合），周期到点自动检索新文献，也可点「立即巡视」手动触发；巡视结果展示在方向正下方
+5. 巡视结果中的卡片可导出 RIS/CSV 或复制引文再导入你的 Zotero 库
 
 ### 润色对话框操作
 
@@ -276,9 +279,9 @@ Compress-Archive -Path dist\PaperWB\* -DestinationPath build\PaperWB-portable.zi
 
 PaperWB 使用统一的浅灰工作区、白色内容面板和蓝色主操作色。三个工作台都以中央内容为主，次要信息放在可收起的侧栏或检查器中：
 
-- 阅读：左侧文献列表、中央结构化阅读、右侧论文问答可分别隐藏。
+- 阅读：左侧文献列表、中央结构化阅读、右侧论文问答（本篇论文/全文献库双页签）可分别隐藏。
 - 写作：编辑器优先，知识库、Zotero、批注和 AI 辅助按页签分组。
-- 文献：检索方向和推荐流可隐藏，中央库内问答和 AI 检索保持主要宽度。
+- 检索：AI 检索与按库推荐为主区，右侧巡视面板（方向+结果同栏）可整体收起。
 
 ---
 
@@ -308,7 +311,7 @@ PaperWB 使用统一的浅灰工作区、白色内容面板和蓝色主操作色
     │       └── journal_papers/     # 期刊范文文本
     ├── drafts/                     # 编辑器草稿自动保存（每 30 秒）
     ├── polish_history/             # 润色结果历史（最多 20 条）
-    ├── lib_index/                  # 文献工作台全库全文索引（键=Zotero 条目 key，PDF mtime 失效）
+    ├── lib_index/                  # 全文献库问答的全库全文索引（键=Zotero 条目 key，PDF mtime 失效）
     └── scout/                      # 文献巡视: topics.json（方向）/ seen.json（去重记忆）/ feed.json（推荐流）
 ```
 
@@ -341,33 +344,47 @@ PaperWB/
 │   │   ├── retriever.py         # 轻量本地检索器: Retriever 接口 + Bm25Retriever
 │   │   ├── zotero_parser.py     # Zotero SQLite 解析器: 集合层级/文献/附件 + reload()
 │   │   ├── zotero_watcher.py    # Zotero 周期同步: 每 30 分钟后台重载 + 手动刷新
-│   │   ├── library_qa.py        # 文献工作台·库内 RAG: 元数据+全文混合检索 + LLM 消息组装
-│   │   ├── literature_scout.py  # 文献工作台·定向巡视: 方向 CRUD + 定时 PubMed/arXiv 检索 + 两级滤重
+│   │   ├── library_qa.py        # 全文献库问答·库内 RAG: 元数据+全文混合检索 + LLM 消息组装
+│   │   ├── literature_search.py # 统一文献检索核心: 三源检索(PubMed/arXiv/OpenAlex) + LLM 检索式生成(年份/类型过滤) + 两轮闭环反思 + 加权排序
+│   │   ├── openalex.py          # OpenAlex 客户端: 关键词检索 + 种子解析 + 引文图谱推荐
+│   │   ├── library_recommender.py # 按库推荐: Zotero 集合种子 → 引文推荐 + LLM 画像检索
+│   │   ├── literature_scout.py  # 检索工作台·定向巡视: 方向 CRUD + 定时 PubMed/arXiv 检索 + 两级滤重
 │   │   ├── reference_match.py   # 文献匹配公共口径: DOI/标题归一化 + 库内查重 + 可选 LLM 模糊比对
 │   │   ├── unified_writer.py    # 统一润色+引文核查: 证据检索化 + JSON 多层容错
 │   │   ├── draft_reviewer.py    # 草稿评审
 │   │   ├── writing_coach.py     # 写作教练: 知识库/风格分析/引用密度
 │   │   ├── writing_prompts.py   # 四种写作类型系统提示词
-│   │   ├── pubmed_searcher.py   # PubMed E-utilities 检索客户端
+│   │   ├── docx_io.py           # Word (.docx) 读写: 段落级读写 + 审阅批注解析 + 修订检测
+│   │   ├── doc_diff.py          # QTextEdit 内联 diff 控制器: 渲染/锚点/导航/接受拒绝（润色对话框与写作编辑器共用）
+│   │   ├── pubmed_searcher.py   # PubMed E-utilities 检索客户端 + 网络重试
 │   │   └── ai_words.py / json_utils.py  # AI 词汇库 / JSON 容错工具
 │   ├── ui/
 │   │   ├── pdf_viewer.py        # 结构化阅读面板: ParagraphCard 按 element_type 渲染 + 中英翻译（标题/摘要/图表注可译）+ I 形光标
 │   │   ├── pdf_list_panel.py    # 左侧面板: Tab1 Zotero 文献库 + Tab2 其它文献
 │   │   ├── zotero_panel.py      # Zotero 树形视图: 集合树+文献+PDF 附件，watcher 实时刷新
-│   │   ├── workbench_panel.py   # 文献工作台(三栏): 检索方向 / 库内问答 / 文献推荐流
-│   │   ├── chat_panel.py        # 聊天面板: Markdown 气泡/流式渲染
+│   │   ├── workbench_panel.py   # 检索工作台(两栏): 左·AI 检索主区 / 右·巡视面板(方向卡片+巡视结果同栏相邻)
+│   │   ├── chat_panel.py        # 聊天面板: Markdown 气泡/流式渲染（阅读侧栏「本篇论文」页签）
+│   │   ├── library_qa_panel.py  # 库内问答面板（阅读侧栏「全文献库」页签）: 索引构建+跨文献 RAG 问答
 │   │   ├── writing_panel.py     # 写作面板: 编辑器优先+可收起工具检查器+自动保存+字数统计
 │   │   ├── diff_dialog.py       # 润色对比对话框: 内联 diff + 导航 + 逐项接受/拒绝 + AI 对话
 │   │   ├── review_dialog.py     # 评审对话框
 │   │   ├── polish_history_dialog.py  # 润色历史对话框
 │   │   ├── lit_search_dialog.py # 文献补充对话框: LLM 推荐 + PubMed/arXiv 检索（非模态）
-│   │   ├── settings_dialog.py   # API 接口设置: 多模态/纯文本标签页 + 连接测试（Zotero/缓存路径为独立菜单项）
+│   │   ├── settings_dialog.py   # API 接口设置: 多模态/纯文本/文献检索源(OpenAlex 密钥可选) + 连接测试（Zotero/缓存路径为独立菜单项）
 │   │   └── styles.py            # 轻量浅灰/白色研究工作台主题 QSS
 │   └── utils/
 │       ├── config.py            # 持久化层: 配置/图书馆/聊天/缓存/草稿/润色历史 读写
 │       ├── layout.py            # 递归布局高度计算
 │       └── threads.py           # 运行中 QThread 全局保活注册表
-├── test/                        # 测试数据 + 验收脚本（validate_zotero / capture_zotero_screenshots）
+├── test/                        # 测试数据 + 自测/验收脚本
+│   ├── validate_zotero.py       #   Zotero 文献两阶段整合验收（--count 可调，输出 JSON 报告）
+│   ├── capture_zotero_screenshots.py  #   UI 截图验收（--count 可调，输出 PNG）
+│   ├── selftest_bugfixes.py     #   纯逻辑回归自测
+│   ├── selftest_workbench.py    #   检索工作台与库内问答核心逻辑自测（假 PubMed，无 LLM 无网络）
+│   ├── selftest_docx.py         #   Word 读写自测
+│   ├── selftest_docdiff.py      #   内联 diff 自测
+│   ├── selftest_workbench_app.py / smoke_workbench_app.py  #   offscreen 工作台集成自测/全窗口冒烟
+│   └── debug_parse.py           #   解析调试工具
 └── .opencode/                   # opencode 开发辅助配置
 ```
 
@@ -385,7 +402,7 @@ PaperWB/
 
 **Zotero 文献怎么同步到软件？** 左侧面板切换到「Zotero」标签页，启动时自动加载，此后每 30 分钟后台自动同步一次（不监听文件事件），也可点面板「刷新」按钮立即手动同步；点击带 PDF 的文献直接用两阶段管线阅读（只读，不会改动你的 Zotero 库）。
 
-**文献工作台和阅读工作台有什么区别？** 阅读工作台针对单篇论文的结构化阅读与问答；文献工作台面向**整个 Zotero 库**——支持库内跨文献问答（答案带 `[n]` 来源角标，点击直接打开对应 PDF 阅读）和按方向定时巡视 PubMed 的文献推荐（导出 RIS 可导入 Zotero）。
+**检索工作台和阅读工作台有什么区别？** 阅读工作台负责读与问：单篇论文的结构化阅读问答，以及「全文献库」页签的跨文献综合问答（答案带 `[n]` 来源角标，点击直接打开对应 PDF 阅读）；检索工作台只负责找文献：自然语言 AI 检索（OpenAlex / PubMed / arXiv 三源两轮）、以 Zotero 集合为种子的按库推荐、以及按方向定时巡视（导出 RIS 可导入 Zotero）。
 
 **引文核查匹配不上文献？** 确保 Zotero 中该文献已附加 PDF 附件。引文年份带字母后缀（如 `2025a`）会被自动去后缀匹配。支持 Author-Year 和 [1] 编号两种引用格式。
 

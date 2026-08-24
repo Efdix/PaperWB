@@ -621,7 +621,7 @@ QFrame#chatInput {
     border-top: 1px solid #e5e5ea;
 }
 
-/* ============================== 文献工作台 ============================== */
+/* ============================== 检索工作台 / 库内问答 ============================== */
 QWidget#workbenchPanel {
     background-color: #f5f5f7;
 }
@@ -634,6 +634,7 @@ QFrame#workspaceHeader {
 
 QFrame#topicPanel,
 QFrame#qaPanel,
+QWidget#qaPanel,
 QFrame#aiSearchPanel,
 QFrame#feedPanel {
     background-color: #ffffff;
@@ -707,6 +708,12 @@ QLabel#feedChip[kind="topic"] {
     border-color: #f2d2a3;
 }
 
+QLabel#feedChip[kind="library"] {
+    background-color: #e9f7ec;
+    color: #1d7a3f;
+    border-color: #bfe6c9;
+}
+
 QFrame#qaInput {
     background-color: #ffffff;
     border-top: 1px solid #e5e5ea;
@@ -726,5 +733,66 @@ QTabWidget#writingInspectorTabs QTabBar::tab {
     padding: 7px 10px;
     margin-right: 2px;
     font-size: 11px;
+}
+
+/* ============================== 统计工作台 ============================== */
+QWidget#statsPanel {
+    background-color: #f5f5f7;
+}
+
+QFrame#statsDataPanel,
+QFrame#todayCard,
+QFrame#heatmapCard,
+QFrame#topPapersCard,
+QFrame#planCard {
+    background-color: #ffffff;
+    border: 1px solid #e5e5ea;
+    border-radius: 14px;
+}
+
+QFrame#todayCell {
+    background-color: #f5f8ff;
+    border: 1px solid #d9e5ff;
+    border-radius: 10px;
+}
+
+QLabel#todayValue {
+    color: #1d1d1f;
+    font-size: 17px;
+    font-weight: 700;
+}
+
+QLabel#streakChip {
+    background-color: #fff4e5;
+    color: #9a5a00;
+    border: 1px solid #f2d2a3;
+    border-radius: 9px;
+    padding: 2px 9px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+QLabel#topRow {
+    background-color: #fafafc;
+    border: 1px solid #eef0f3;
+    border-radius: 8px;
+    padding: 5px 8px;
+    font-size: 12px;
+    color: #1d1d1f;
+}
+
+QCheckBox#planTask {
+    font-size: 13px;
+    color: #1d1d1f;
+    padding: 3px 2px;
+}
+
+QCheckBox#planTask:checked {
+    color: #9a9aa0;
+    text-decoration: line-through;
+}
+
+QLabel#sectionLabel[overdue="true"] {
+    color: #b42318;
 }
 """
