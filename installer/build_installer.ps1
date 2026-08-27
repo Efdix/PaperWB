@@ -138,7 +138,7 @@ try {
     $Mb = [math]::Round((Get-Item $Out).Length / 1MB)
     $Sw.Stop()
     Write-Host ""
-    Write-Host ("DONE in {0:mm\ min}: {1} ({2} MB)" -f $Sw.Elapsed, $Out, $Mb) -ForegroundColor Green
+    Write-Host ("DONE in {0:mm} min: {1} ({2} MB)" -f $Sw.Elapsed, $Out, $Mb) -ForegroundColor Green
     exit 0
 } finally {
     Pop-Location

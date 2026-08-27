@@ -25,7 +25,7 @@ LICENSE                    # MIT
 PaperWB.jpg               # 应用图标源图（make_icon.py 自动裁切图形主体）
 assets/                    # 应用图标（installer/make_icon.py 生成，exe/安装向导/窗口共用）
 installer/                 # 安装向导构建
-├── PaperWB.iss            # Inno Setup 脚本: 许可/组件(可选预置模型)/目录/完成页自检/卸载询问配置清理
+├── PaperWB.iss            # Inno Setup 脚本: 许可/组件(可选预置模型)/目录/数据目录选择页(写入 config.json 的 data_root)/完成页自检/卸载询问配置清理
 ├── build_installer.ps1    # 一条龙: 补装 PyInstaller → pyinstaller → 模型 staging → dist selftest 验收门 → ISCC 出包
 ├── stage_models.py        # Docling 模型 staging: 本机 HF 缓存 → installer/models_cache/hub（约 505 MB）
 ├── make_icon.py           # 从项目根目录 PaperWB.jpg 生成 assets/PaperWB.ico/png
@@ -182,7 +182,7 @@ src/
 
 ### 安装包分发与预置离线模型
 
-- 正式分发物 = Inno Setup 安装向导（`installer/PaperWB.iss`）：许可(MIT)/组件选择（「预置离线解析模型」默认勾选）/目录（默认 `%LOCALAPPDATA%\Programs\PaperWB`，免管理员，PrivilegesRequiredOverridesAllowed 可改全局）/完成页可选「安装自检」（[Code] Exec `--selftest` 按退出码弹窗）
+- 正式分发物 = Inno Setup 安装向导（`installer/PaperWB.iss`）：许可(MIT)/安装位置（默认 `%LOCALAPPDATA%\Programs\PaperWB`，免管理员，PrivilegesRequiredOverridesAllowed 可改全局）/数据与缓存目录选择页（[Code] 写入 `%APPDATA%\PaperWB\config.json` 的 `data_root`，重装预填旧值，首次启动不再弹窗）/组件选择（「预置离线解析模型」默认勾选，主程序必装不显示）/完成页可选「安装自检」（[Code] Exec `--selftest` 按退出码弹窗）
 - **预置模型原理**：安装包把两个 HF 模型缓存目录（`models--docling-project--docling-layout-heron` 版式 + `models--docling-project--docling-models` TableFormer，共约 505 MB）装入 `<安装目录>\models\hub\`；`docling_parser.py` 导入时检测两目录齐全 → `HF_HUB_CACHE`/`HF_HUB_OFFLINE=1` 重定向（setdefault，用户显式设置优先）→ 首次解析完全离线；不齐全则回退在线下载（hf-mirror）。**不用** docling `artifacts_path`（会强制要求 RapidOcr 目录，否则扫描版 PDF 解析抛错）；RapidOCR 小模型已随 rapidocr wheel 收进主程序
 - 模型 staging（`stage_models.py`）从本机 `~/.cache/huggingface/hub` 复制：copytree 解引用符号链接、剔除 blobs/.lock，保留 refs+snapshots 标准 HF 缓存布局；本机无缓存时先运行应用解析一次预热
 - 构建入口 `installer/build_installer.ps1`：PyInstaller(onedir) → staging → **dist selftest 验收门**（任一 FAIL 中止出包）→ ISCC（版本号从 main.py `setApplicationVersion` 抓取）→ `installer/Output/PaperWB-Setup-<版本>.exe`

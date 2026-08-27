@@ -53,9 +53,10 @@ Name: "chinesesimplified"; MessagesFile: "lang\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
-chinesesimplified.MainDesc=PaperWB 主程序（必装）
 chinesesimplified.ModelsDesc=预置离线解析模型（约 500 MB，推荐；取消后首次解析 PDF 时联网下载）
 chinesesimplified.ModelsGroup=解析模型
+chinesesimplified.DataDirTitle=数据与缓存目录
+chinesesimplified.DataDirDesc=论文、阅读缓存、写作知识库和草稿将集中保存在该目录，后续可在应用设置中更改。
 chinesesimplified.LaunchNow=立即运行 PaperWB(&L)
 chinesesimplified.SelftestCheckbox=运行安装自检（验证核心组件与离线模型，约 1 分钟）
 chinesesimplified.SelftestRunning=正在运行安装自检，请稍候……
@@ -63,9 +64,10 @@ chinesesimplified.SelftestPass=安装自检通过，PaperWB 已就绪！
 chinesesimplified.SelftestFailFmt=安装自检未通过（退出码 %d）。
 chinesesimplified.SelftestLogHint=请把以下日志发给开发者远程排查：
 chinesesimplified.UninstallConfigQuestion=是否同时删除配置与日志（含 API Key）？选"否"保留，下次安装无需重新配置。
-english.MainDesc=PaperWB main program (required)
 english.ModelsDesc=Bundle offline parsing models (~500 MB, recommended; uncheck to download on first parse)
 english.ModelsGroup=Parsing models
+english.DataDirTitle=Data & cache directory
+english.DataDirDesc=Papers, reading caches, writing knowledge base and drafts will be stored here. Can be changed later in app settings.
 english.LaunchNow=Launch PaperWB(&L)
 english.SelftestCheckbox=Run installation self-test (verify core components, ~1 min)
 english.SelftestRunning=Running installation self-test, please wait...
@@ -75,7 +77,6 @@ english.SelftestLogHint=Please send the following logs to the developer:
 english.UninstallConfigQuestion=Also delete settings and logs (including API keys)? Choose No to keep them for the next installation.
 
 [Components]
-Name: "main"; Description: "{cm:MainDesc}"; Flags: fixed
 Name: "models"; Description: "{cm:ModelsDesc}"
 
 [Tasks]
@@ -97,12 +98,95 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchNow}"; Flags: nowait 
 var
   SelftestCheckbox: TNewCheckbox;
   OriginalNextClick: TNotifyEvent;
+  DataDirPage: TInputDirWizardPage;
 
 // 前置声明：InitializeWizard 中先引用，过程体在下方定义
 procedure NextClickHook(Sender: TObject); forward;
 
+// 读取 %APPDATA%\PaperWB\config.json 中的 data_root 字段（未设置返回空串）
+function GetConfiguredDataRoot(): String;
+var
+  ConfigPath: String;
+  AnsiContent: AnsiString;
+  Content: String;
+  KeyPos, ValueStart, ValueEnd: Integer;
+begin
+  Result := '';
+  ConfigPath := ExpandConstant('{userappdata}\PaperWB\config.json');
+  if not FileExists(ConfigPath) then
+    exit;
+  if not LoadStringFromFile(ConfigPath, AnsiContent) then
+    exit;
+  Content := Utf8Decode(AnsiContent);
+  KeyPos := Pos('"data_root"', Content);
+  if KeyPos = 0 then
+    exit;
+  ValueStart := Pos('"', Copy(Content, KeyPos + 11, MaxInt));
+  if ValueStart = 0 then
+    exit;
+  ValueStart := KeyPos + 10 + ValueStart;
+  ValueEnd := Pos('"', Copy(Content, ValueStart + 1, MaxInt));
+  if ValueEnd = 0 then
+    exit;
+  Result := Copy(Content, ValueStart + 1, ValueEnd - 1);
+end;
+
+// 把 data_root 写入 %APPDATA%\PaperWB\config.json（保留其它字段）
+procedure SetConfiguredDataRoot(const DataRoot: String);
+var
+  ConfigPath: String;
+  AnsiContent: AnsiString;
+  Content: String;
+  KeyPos, ValueStart, ValueEnd: Integer;
+  Escaped: String;
+begin
+  ConfigPath := ExpandConstant('{userappdata}\PaperWB\config.json');
+  Escaped := DataRoot;
+  StringChangeEx(Escaped, '\', '\\', True);
+  StringChangeEx(Escaped, '"', '\"', True);
+  if not FileExists(ConfigPath) then
+  begin
+    Content := '{' + #13#10 + '  "data_root": "' + Escaped + '"' + #13#10 + '}' + #13#10;
+    SaveStringToFile(ConfigPath, Utf8Encode(Content), False);
+    exit;
+  end;
+  if not LoadStringFromFile(ConfigPath, AnsiContent) then
+    exit;
+  Content := Utf8Decode(AnsiContent);
+  KeyPos := Pos('"data_root"', Content);
+  if KeyPos = 0 then
+  begin
+    // 无该字段：在文件末尾补一行（文件以 } 结尾）
+    Content := TrimRight(Content);
+    if Copy(Content, Length(Content), 1) = '}' then
+      Content := Copy(Content, 1, Length(Content) - 1) + ',' + #13#10 +
+                 '  "data_root": "' + Escaped + '"' + #13#10 + '}';
+    SaveStringToFile(ConfigPath, Utf8Encode(Content), False);
+    exit;
+  end;
+  ValueStart := Pos('"', Copy(Content, KeyPos + 11, MaxInt));
+  if ValueStart = 0 then
+    exit;
+  ValueStart := KeyPos + 10 + ValueStart;
+  ValueEnd := Pos('"', Copy(Content, ValueStart + 1, MaxInt));
+  if ValueEnd = 0 then
+    exit;
+  Content := Copy(Content, 1, ValueStart) + Escaped + Copy(Content, ValueStart + ValueEnd, MaxInt);
+  SaveStringToFile(ConfigPath, Utf8Encode(Content), False);
+end;
+
 procedure InitializeWizard();
 begin
+  // 数据与缓存目录选择页（位于安装位置页之后）
+  DataDirPage := CreateInputDirPage(wpSelectDir,
+    ExpandConstant('{cm:DataDirTitle}'),
+    ExpandConstant('{cm:DataDirDesc}'),
+    '数据目录：', False, '');
+  DataDirPage.Add('');
+  DataDirPage.Values[0] := GetConfiguredDataRoot();
+  if DataDirPage.Values[0] = '' then
+    DataDirPage.Values[0] := ExpandConstant('{userdocs}\PaperWB_Data');
+
   // 完成页追加「运行安装自检」勾选框（位于 RunList 下方）
   SelftestCheckbox := TNewCheckbox.Create(WizardForm);
   SelftestCheckbox.Parent := WizardForm.FinishedPage;
@@ -116,6 +200,12 @@ begin
   // 拦截「完成」点击：先按勾选执行自检，再走原逻辑（关闭向导/启动应用）
   OriginalNextClick := WizardForm.NextButton.OnClick;
   WizardForm.NextButton.OnClick := @NextClickHook;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    SetConfiguredDataRoot(DataDirPage.Values[0]);
 end;
 
 procedure RunSelftest();
