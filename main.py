@@ -324,6 +324,13 @@ if __name__ == "__main__":
 
     from src.app import MainWindow
 
+    if os.name == "nt":
+        # 显式 AppUserModelID（与 PaperWB.iss [Setup] AppUserModelID 一致）：
+        # 任务栏按钮/固定图标固定关联本应用，避免沿用快捷方式位置上的缓存图标，
+        # 更换应用图标后任务栏不再出现新旧不一致
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Efdix.PaperWB")
+
     app = QApplication(sys.argv)
     app.setApplicationName("PaperWB")
     app.setApplicationVersion("0.1.0")

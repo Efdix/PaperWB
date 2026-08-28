@@ -25,6 +25,9 @@
 
 [Setup]
 AppId={#MyAppId}
+; 与 main.py 的 SetCurrentProcessExplicitAppUserModelID 保持一致，
+; 保证任务栏/固定快捷方式与运行中窗口始终归组到同一应用图标
+AppUserModelID=Efdix.PaperWB
 AppName={#MyAppNameZh}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
