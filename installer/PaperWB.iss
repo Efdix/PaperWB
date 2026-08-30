@@ -25,9 +25,6 @@
 
 [Setup]
 AppId={#MyAppId}
-; 与 main.py 的 SetCurrentProcessExplicitAppUserModelID 保持一致，
-; 保证任务栏/固定快捷方式与运行中窗口始终归组到同一应用图标
-AppUserModelID=Efdix.PaperWB
 AppName={#MyAppNameZh}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -90,9 +87,12 @@ Source: "..\dist\PaperWB\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdi
 Source: "models_cache\hub\*"; DestDir: "{app}\models\hub"; Components: models; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+; 快捷方式带 AppUserModelID（Inno 6 [Icons] 参数，非 [Setup] 指令），
+; 与 main.py 的 SetCurrentProcessExplicitAppUserModelID 保持一致，
+; 保证任务栏/固定快捷方式与运行中窗口始终归组到同一应用图标
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; AppUserModelID: "Efdix.PaperWB"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; AppUserModelID: "Efdix.PaperWB"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchNow}"; Flags: nowait postinstall skipifsilent

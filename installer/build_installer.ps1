@@ -17,7 +17,7 @@
 #   -SkipSelftest   skip step 4 (not recommended for release)
 
 param(
-    [string]$PythonExe = "D:\science\miniforge3\envs\PaperWB\python.exe",
+    [string]$PythonExe = "",
     [string]$SamplePdf = "",
     [switch]$SkipBuild,
     [switch]$SkipModels,
@@ -40,8 +40,26 @@ function Step([string]$Msg) {
 try {
     # ---------- 0. environment ----------
     Step "Check python environment"
-    if (-not (Test-Path $PythonExe)) { Die "python not found: $PythonExe" }
+    if (-not $PythonExe) {
+        $Candidates = @()
+        # 1) explicit env var PAPERWB_PYTHON wins (immune to profile re-init)
+        if ($env:PAPERWB_PYTHON) { $Candidates += $env:PAPERWB_PYTHON }
+        # 2) running inside `conda activate PaperWB` -> use the active env.
+        #    (`powershell -File` re-runs the user profile, whose conda init
+        #    resets CONDA_PREFIX to base, so require the env name to match)
+        if ($env:CONDA_PREFIX -and $env:CONDA_DEFAULT_ENV -eq "PaperWB") {
+            $Candidates += (Join-Path $env:CONDA_PREFIX "python.exe")
+        }
+        # 3) fall back to the known default env location
+        $Candidates += "D:\science\miniforge\envs\PaperWB\python.exe"
+        $PythonExe = $Candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    }
+    if (-not $PythonExe -or -not (Test-Path $PythonExe)) { Die "python not found; pass -PythonExe or activate the PaperWB env first" }
     Write-Host "python: $PythonExe"
+
+    # the two PowerShell launches (icon step re-runs conda hooks) can clobber
+    # inherited env vars, so pin every child call to the resolved interpreter
+    $env:PAPERWB_PYTHON = $PythonExe
 
     try {
         & $PythonExe -c "import PyInstaller" 2>&1 | Out-Null

@@ -1,0 +1,29 @@
+requests\__init__.py:92: RequestsDependencyWarning: Unable to find acceptable character detection dependency (chardet or charset_normalizer).
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+[ZoteroLibrary] 解析路径: C:\Users\13984\Zotero
+[ZoteroLibrary] 找到数据库: C:\Users\13984\Zotero\zotero.sqlite
+[ZoteroLibrary] 找到 storage: C:\Users\13984\Zotero\storage
+[ZoteroLibrary] 从 SQLite 加载: C:\Users\13984\Zotero\zotero.sqlite
+[ZoteroLibrary] 已复制数据库到临时文件
+[ZoteroLibrary] 数据库条目类型: attachment(772), journalArticle(509), book(14), preprint(11), thesis(2), note(2), manuscript(1), computerProgram(1), bookSection(1)
+[ZoteroLibrary] 数据库共有 1313 个条目
+[ZoteroLibrary] 共加载 539 条文献（从 SQLite）
+Loading weights:   0%|          | 0/770 [00:00<?, ?it/s]Loading weights:  91%|█████████ | 698/770 [00:00<00:00, 6219.57it/s]Loading weights: 100%|██████████| 770/770 [00:00<00:00, 6861.13it/s]
+[Docling] 第 7 页按位图区域补 1 个缺失图片
+[PASS] frozen(_MEIPASS=_internal, sqlite3.dll=True, torchlib_in_PATH=False)
+[PASS] argv=['D:\\System\\Documents\\GitHub\\PaperWB\\dist\\PaperWB\\PaperWB.exe', '--selftest', 'test/阅读-test.pdf']
+[PASS] extract[sqlite3.dll] = ['sqlite3.dll']
+[PASS] extract[pydantic_core] = ['pydantic_core']
+[PASS] extract[PySide6] = ['PySide6']
+[PASS] extract[PySide6/QtGui.pyd] = []
+[PASS] extract[numpy/_core/_multiarray_umath*] = ['_multiarray_umath.cp311-win_amd64.lib', '_multiarray_umath.cp311-win_amd64.pyd']
+[PASS] extract-file-count=10914
+[PASS] sqlite3-import
+[PASS] heavy-libs-eager
+[PASS] ctypes-load-sqlite3dll
+[PASS] modules-import
+[PASS] bundled-models(none, hf_cache=default)
+[PASS] config-load
+[PASS] zotero-load(539 items, 75 collections)
+[PASS] docling-parse(7 pages)
+SELFTEST PASS
