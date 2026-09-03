@@ -2,7 +2,7 @@
 
 ## 运行环境
 
-- Python 环境: `D:\science\miniforge\envs\PaperWB`（conda env，Python 3.11）
+- Python 环境: conda env `PaperWB`（Python 3.11；本机位于 `D:\science\miniforge3\envs\PaperWB`，构建脚本通过 `conda env list` 自动发现，无需硬编码路径）
 - 所有 Python 命令前需激活: `conda activate PaperWB`
 - 包管理: pip + `requirements.txt`
 - 依赖（requirements.txt）: `PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3` `docling==2.118.0` `rank_bm25==0.2.2` `hf_transfer==0.1.9` `python-docx==1.2.0` `Pillow==12.3.0`

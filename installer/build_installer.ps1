@@ -18,6 +18,7 @@
 
 param(
     [string]$PythonExe = "",
+    [string]$Iscc = "",
     [string]$SamplePdf = "",
     [switch]$SkipBuild,
     [switch]$SkipModels,
@@ -50,8 +51,28 @@ try {
         if ($env:CONDA_PREFIX -and $env:CONDA_DEFAULT_ENV -eq "PaperWB") {
             $Candidates += (Join-Path $env:CONDA_PREFIX "python.exe")
         }
-        # 3) fall back to the known default env location
-        $Candidates += "D:\science\miniforge\envs\PaperWB\python.exe"
+        # 3) discover the PaperWB env via conda (no hardcoded install paths)
+        $Conda = Get-Command conda -ErrorAction SilentlyContinue
+        if ($Conda) {
+            try {
+                $EnvList = & conda env list --json 2>$null | ConvertFrom-Json
+                $Candidates += $EnvList.envs |
+                    Where-Object { (Split-Path $_ -Leaf) -eq "PaperWB" } |
+                    ForEach-Object { Join-Path $_ "python.exe" }
+            } catch {
+                Write-Host "conda env discovery failed, falling back to common locations" -ForegroundColor Yellow
+            }
+        }
+        # 4) fall back to common conda install locations (user-scope, no drive letters)
+        $CommonRoots = @(
+            (Join-Path $HOME "miniforge3"),
+            (Join-Path $HOME "miniconda3"),
+            (Join-Path $HOME "anaconda3"),
+            (Join-Path $env:ProgramData "miniforge3"),
+            (Join-Path $env:ProgramData "miniconda3"),
+            (Join-Path $env:ProgramData "anaconda3")
+        )
+        $Candidates += $CommonRoots | ForEach-Object { Join-Path $_ "envs\PaperWB\python.exe" }
         $PythonExe = $Candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
     }
     if (-not $PythonExe -or -not (Test-Path $PythonExe)) { Die "python not found; pass -PythonExe or activate the PaperWB env first" }
@@ -130,17 +151,36 @@ try {
 
     # ---------- 4. locate Inno Setup ----------
     Step "Locate Inno Setup compiler (ISCC.exe)"
-    $IsccCandidates = @(
+    $IsccCandidates = @()
+    # 1) ISCC on PATH (e.g. installed with "Add to PATH" or a portable copy)
+    $IsccOnPath = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($IsccOnPath) { $IsccCandidates += $IsccOnPath.Source }
+    # 2) Inno Setup uninstall registry entry (both 32/64-bit views)
+    $UninstallRoots = @(
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+    )
+    foreach ($Root in $UninstallRoots) {
+        Get-ChildItem $Root -ErrorAction SilentlyContinue | ForEach-Object {
+            $Entry = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+            if ($Entry.DisplayName -like "Inno Setup*" -and $Entry.InstallLocation) {
+                $IsccCandidates += (Join-Path $Entry.InstallLocation "ISCC.exe")
+            }
+        }
+    }
+    # 3) common install locations (user-scope, no drive letters)
+    $IsccCandidates += @(
         (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
         (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
-        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
-        "D:\tools\Inno Setup 6\ISCC.exe"
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
     )
     $Iscc = $IsccCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
     if (-not $Iscc) {
         Die ("Inno Setup 6 not found. Install it (one time), then re-run with -SkipBuild -SkipModels -SkipSelftest:`n" +
              "  winget install -e --id JRSoftware.InnoSetup`n" +
-             "  or download from https://jrsoftware.org/isdl.php")
+             "  or download from https://jrsoftware.org/isdl.php`n" +
+             "  (or pass the ISCC.exe path via -Iscc)")
     }
     Write-Host "ISCC: $Iscc"
 
