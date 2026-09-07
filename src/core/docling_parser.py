@@ -5,6 +5,8 @@
 - HF_ENDPOINT / HF_HUB_DISABLE_XET           模型下载走国内镜像（可被 PAPERWB_HF_MIRROR=0 关闭）
 - HF_HUB_CACHE / HF_HUB_OFFLINE              安装包预置模型目录 <安装目录>/models/hub 存在时
                                              自动重定向并离线加载（见 bundled_models_hub_dir）
+- HF_HOME                                    无预置模型时重定向到 {data_root}/.paperwb/hf_home，
+                                             运行时下载的模型缓存随数据目录走（便携化）
 - 需要 UTF-8 模式（PYTHONUTF8），由 main.py 启动引导保证
 
 输出格式与 pdf_processor._normalize_page_result 兼容（元素键名为 id/type/text/bbox/caption/
@@ -62,6 +64,16 @@ if _BUNDLED_HUB:
     # setdefault 语义：用户显式设置的 HF_HUB_CACHE / HF_HUB_OFFLINE 永远优先。
     os.environ.setdefault("HF_HUB_CACHE", _BUNDLED_HUB)
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
+else:
+    # 无预置模型（精简包/开发环境）：运行时联网下载的模型缓存落到数据目录
+    # （HF_HOME 同时管 hub 与 xet 子目录），便携化后不再散落 ~/.cache/huggingface。
+    # config.py 仅依赖标准库，此处反向导入无环；失败则保持 HF 默认缓存位置。
+    try:
+        from ..utils.config import get_hf_home_dir
+
+        os.environ.setdefault("HF_HOME", get_hf_home_dir())
+    except Exception:  # noqa: BLE001
+        pass
 
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter

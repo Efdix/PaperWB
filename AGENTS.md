@@ -2,11 +2,11 @@
 
 ## 运行环境
 
-- Python 环境: conda env `PaperWB`（Python 3.11；本机位于 `D:\science\miniforge3\envs\PaperWB`，构建脚本通过 `conda env list` 自动发现，无需硬编码路径）
+- Python 环境: conda env `PaperWB`（Python 3.11；本机位于 `D:\science\Miniforge\envs\PaperWB`，构建脚本通过 `conda env list` 自动发现，无需硬编码路径）
 - 所有 Python 命令前需激活: `conda activate PaperWB`
 - 包管理: pip + `requirements.txt`
 - 依赖（requirements.txt）: `PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3` `docling==2.118.0` `rank_bm25==0.2.2` `hf_transfer==0.1.9` `python-docx==1.2.0` `Pillow==12.3.0`
-- 构建：`PyInstaller`（已装入该环境）+ Inno Setup 6（系统级，`winget install -e --id JRSoftware.InnoSetup`）
+- 构建：`PyInstaller`（已装入该环境）+ Inno Setup 7（本机 `D:\science\Inno Setup 7`，兼容 6.4+；`winget install -e --id JRSoftware.InnoSetup.7`）
 
 ## 项目入口
 
@@ -25,12 +25,12 @@ LICENSE                    # MIT
 PaperWB.jpg               # 应用图标源图（make_icon.py 自动裁切图形主体）
 assets/                    # 应用图标（installer/make_icon.py 生成，exe/安装向导/窗口共用）
 installer/                 # 安装向导构建
-├── PaperWB.iss            # Inno Setup 脚本: 许可/组件(可选预置模型)/目录/数据目录选择页(写入 config.json 的 data_root)/完成页自检/卸载询问配置清理
-├── build_installer.ps1    # 一条龙: 补装 PyInstaller → pyinstaller → 模型 staging → dist selftest 验收门 → ISCC 出包
-├── stage_models.py        # Docling 模型 staging: 本机 HF 缓存 → installer/models_cache/hub（约 505 MB）
+├── PaperWB.iss            # Inno Setup 7 脚本: 许可/组件(可选预置模型)/目录/数据目录选择页(默认 {app}\data，写入 {app}\config.json 的 data_root，{app} 不可写退 %APPDATA%)/完成页自检/卸载按需清理便携运行时；/DLite 条件编译出精简版（剔除模型组件）
+├── build_installer.ps1    # 一条龙: 补装 PyInstaller → pyinstaller → 模型 staging → dist selftest 验收门（Start-Process -Wait 等待 windowed exe，`&` 对 GUI 程序不等待、$LASTEXITCODE 不可靠）+ bundled 离线布局模拟门 → 清理 dist 便携运行时残留 → ISCC 双连出包（full + lite）
+├── stage_models.py        # Docling 模型 staging: HF 缓存 → installer/models_cache/hub（约 505 MB；HF_HUB_CACHE > 项目内 models/hf_cache/hub > HF_HOME > 默认缓存）；按 docling 源码钉扎 revision 过滤 refs（从已安装 docling 正则提取，兜底硬编码表）、剔除运行时不可达 ref 与快照、终检 ref→快照+关键文件（离线解析靠 refs/<revision> 定位快照，缺 ref 则安装版 HF_HUB_OFFLINE=1 首次解析在 TableFormer 报 LocalEntryNotFoundError）
 ├── make_icon.py           # 从项目根目录 PaperWB.jpg 生成 assets/PaperWB.ico/png
 ├── lang/ChineseSimplified.isl  # 向导简体中文语言文件（官方非官方翻译库）
-└── Output/                # 产物 PaperWB-Setup-<版本>.exe（gitignore）
+└── Output/                # 产物 PaperWB-Setup-<版本>.exe + PaperWB-Setup-<版本>-lite.exe（gitignore）
 src/
 ├── app.py                 # MainWindow — 首次启动弹窗(FirstLaunchDialog) + 信号枢纽 + 多模态/纯文本 LLMClient + Zotero watcher + 三工作台切换(阅读/检索/写作)；阅读侧「论文问答」双页签(本篇论文/全文献库)；LibraryPreparser 后台建库接线(启动/入队/索引刷新/处理器共享，PAPERWB_DISABLE_PREPARSE 可禁用)
 ├── core/
@@ -38,7 +38,7 @@ src/
 │   ├── pdf_processor.py   # 核心！两阶段管线:
 │   │                      #   Stage 1: Docling 本地布局解析 → JSON → 缓存
 │   │                      #   Stage 2: 读缓存 → 本地规则组装 → StructuredDocument → UI（跨页接缝合并可调 LLM，失败自动规则兜底；两级接缝缓存 merged_seams 定稿 / merged_seams_prelim 后台建库初步 + seams_final 标记，打开初步整合文献时后台 LLM 精修一次并定稿）
-│   ├── docling_parser.py  # Docling 本地解析器: PDF → 与视觉管线兼容的逐页元素（设置 HF 镜像/禁用编译；检测 <安装目录>/models/hub 预置模型 → 重定向 HF_HUB_CACHE+离线模式）
+│   ├── docling_parser.py  # Docling 本地解析器: PDF → 与视觉管线兼容的逐页元素（设置 HF 镜像/禁用编译；检测 <安装目录>/models/hub 预置模型 → 重定向 HF_HUB_CACHE+离线模式；无预置模型时 HF_HOME 重定向到 {data_root}/.paperwb/hf_home，运行时下载的模型缓存随数据目录走）
 │   ├── llm_client.py      # OpenAI 兼容 API 客户端 + json_mode(response_format) + 7 个提供商预设（DeepSeek/GLM智谱/Mimo/OpenCode Go/Zen/Ollama/自定义；GLM 与 Zen 含免费模型）
 │   ├── context_manager.py # Token 预算管理: 长文档走 BM25 检索增强（只发相关段落），短文档用"前70%+后30%"；完整参考文献列表仅引用类问题附带（每问省 3-8k token）
 │   ├── retriever.py       # 轻量本地检索器: Retriever 接口 + Bm25Retriever（预留向量升级；index_text 可选评分字段；小语料 IDF 退化时按词面重叠兜底）
@@ -68,20 +68,21 @@ src/
 │   ├── settings_dialog.py # 设置对话框: API接口设置(多模态/纯文本/文献检索源-OpenAlex密钥可选,密钥用于三源检索与按库推荐)+连接测试（Zotero/缓存路径在独立 DirectorySettingDialog，与 API 设置平级菜单）
 │   └── styles.py          # 轻量浅灰/白色研究工作台主题 QSS
 └── utils/
-    ├── config.py          # 持久化层: 配置(含多接口/数据根目录/Zotero)+图书馆+聊天+缓存+草稿+润色历史+lib_index/scout 目录
+    ├── config.py          # 持久化层（便携化）: 配置目录便携优先（exe/仓库根同级，不可写回退 AppData）+默认 data_root/get_tmp_dir/get_log_dir/get_hf_home_dir+图书馆+聊天+缓存+草稿+润色历史+lib_index/scout 目录
     ├── layout.py          # 递归布局高度计算（heightForWidth）
     └── threads.py         # 运行中 QThread 全局保活注册表（track/sweep），杜绝运行中销毁崩溃
 ```
 
 ## 架构说明
 
-### 数据存储架构
+### 数据存储架构（便携化）
 
-- 配置文件: `%APPDATA%/PaperWB/config.json`（固定路径）
-- 数据根目录: 首次启动弹窗选择，存储在 config 的 `data_root` 字段
-- 所有用户数据在 `{data_root}/.paperwb/` 下，包括 library.json、chats、states、page_cache、writing_kb、drafts、polish_history、lib_index（全文献库问答索引）、scout（巡视方向/去重记忆/推荐流）
+- **便携模式**：配置与日志贴着程序走——打包版 `config.json` 与 `logs/`（error/faulthandler/selftest 日志）在安装目录（exe 同级），开发模式在仓库根（均 gitignore）；exe/仓库根不可写（如装进 Program Files）才回退 `%APPDATA%/PaperWB/`。首次便携运行自动迁移 %APPDATA% 旧配置（含 PDFasker 时代），保住 API Key 与 data_root；安装向导在 ssPostInstall 把 data_root 写入 `{app}\config.json`（升级时先整体拷入 %APPDATA% 旧配置）
+- 数据根目录 data_root: 默认 `<安装目录>/data`（开发模式 `<仓库根>/data`；exe 位置不可写退 `%LOCALAPPDATA%\PaperWB\data`），安装向导「数据与缓存目录」页或首次启动弹窗可改，存储在 config 的 `data_root` 字段
+- 所有用户数据在 `{data_root}/.paperwb/` 下，包括 library.json、chats、states、page_cache、writing_kb、drafts、polish_history、reviews、lib_index（全文献库问答索引）、scout（巡视方向/去重记忆/推荐流）、tmp（短命临时文件：Zotero sqlite 副本等，`get_tmp_dir()`，data_root 不可用退系统 %TEMP%）、hf_home（无预置模型时运行时联网下载的 HF 模型缓存，docling_parser 以 HF_HOME 重定向；hub 与 xet 都在其下）
 - PDF 文件存储在 `{data_root}/library/` 下
 - 菜单「设置 → 缓存文件存储路径设置...」可随时更改 data_root；Zotero 路径也在同一菜单中与 API 设置平级
+- 模型预置（完整版安装包）在 `<安装目录>\models\hub`，只读使用
 
 ### 两阶段解析管线（阅读）
 
@@ -164,7 +165,7 @@ src/
 
 - 左侧面板 Tab1「Zotero 文献库」: 只读镜像 Zotero 集合树（集合→文献→PDF 附件），点击文献直接用两阶段管线阅读（不导入本地库）
 - 周期同步: 启动时加载一次，此后 `ZoteroWatcher` 每 30 分钟由 QTimer 后台 `reload()` 一次并按 key 做差异刷新 UI；**不做文件事件监听**（避免 Windows 高 I/O 自激循环）；面板「刷新」按钮可立即手动同步
-- **只读铁律**: 所有访问通过系统临时目录的数据库副本（`tempfile`），绝不写 Zotero 数据目录；PDF 只读打开
+- **只读铁律**: 所有访问通过 `{data_root}/.paperwb/tmp/` 下的数据库副本（`get_tmp_dir()`，data_root 不可用退系统临时目录），绝不写 Zotero 数据目录；PDF 只读打开
 - Zotero 数据目录在「设置」菜单中与「API 接口设置」平级配置（「Zotero 文献库路径设置」），阅读与写作共用；「缓存文件存储路径设置」同样独立
 - 用户显式指定路径时，仅在该目录下搜索 zotero.sqlite（不全局探测）
 - 年份后缀自动去字母（`2025a` → `2025`）匹配 Zotero
@@ -182,11 +183,12 @@ src/
 
 ### 安装包分发与预置离线模型
 
-- 正式分发物 = Inno Setup 安装向导（`installer/PaperWB.iss`）：许可(MIT)/安装位置（默认 `%LOCALAPPDATA%\Programs\PaperWB`，免管理员，PrivilegesRequiredOverridesAllowed 可改全局）/数据与缓存目录选择页（[Code] 写入 `%APPDATA%\PaperWB\config.json` 的 `data_root`，重装预填旧值，首次启动不再弹窗）/组件选择（「预置离线解析模型」默认勾选，主程序必装不显示）/完成页可选「安装自检」（[Code] Exec `--selftest` 按退出码弹窗）
-- **预置模型原理**：安装包把两个 HF 模型缓存目录（`models--docling-project--docling-layout-heron` 版式 + `models--docling-project--docling-models` TableFormer，共约 505 MB）装入 `<安装目录>\models\hub\`；`docling_parser.py` 导入时检测两目录齐全 → `HF_HUB_CACHE`/`HF_HUB_OFFLINE=1` 重定向（setdefault，用户显式设置优先）→ 首次解析完全离线；不齐全则回退在线下载（hf-mirror）。**不用** docling `artifacts_path`（会强制要求 RapidOcr 目录，否则扫描版 PDF 解析抛错）；RapidOCR 小模型已随 rapidocr wheel 收进主程序
-- 模型 staging（`stage_models.py`）从本机 `~/.cache/huggingface/hub` 复制：copytree 解引用符号链接、剔除 blobs/.lock，保留 refs+snapshots 标准 HF 缓存布局；本机无缓存时先运行应用解析一次预热
-- 构建入口 `installer/build_installer.ps1`：PyInstaller(onedir) → staging → **dist selftest 验收门**（任一 FAIL 中止出包）→ ISCC（版本号从 main.py `setApplicationVersion` 抓取）→ `installer/Output/PaperWB-Setup-<版本>.exe`
-- 远程排查日志：`%TEMP%\paperwb_selftest.log`（自检，含 bundled-models 项）+ `%APPDATA%\PaperWB\error.log`（excepthook）+ `faulthandler.log` + Inno `%TEMP%\Setup Log*.txt`；SmartScreen 拦截见 README「下载与安装」
+- 正式分发物 = Inno Setup 安装向导（`installer/PaperWB.iss`，**双版本**）：许可(MIT)/安装位置（默认 `%LOCALAPPDATA%\Programs\PaperWB`，免管理员，PrivilegesRequiredOverridesAllowed 可改全局）/数据与缓存目录选择页（默认 `{app}\data` 随安装目录走，可改；离开安装位置页时若未自定义则跟随真实 `{app}` 刷新，`{app}` 不可写退 `%LOCALAPPDATA%\PaperWB\data`；[Code] 把 `data_root` 写入 `{app}\config.json`，重装预填旧值，首次启动不再弹窗）/组件选择（完整版：「预置离线解析模型」默认勾选）/完成页可选「安装自检」（[Code] Exec `--selftest` 按退出码弹窗）
+- **双版本产物**：`PaperWB-Setup-<版本>.exe`（预置模型完整版）+ `PaperWB-Setup-<版本>-lite.exe`（`ISCC /DLite` 编译，剔除模型组件，安装后首次解析由应用经 hf-mirror 联网下载，模型缓存落 `{data_root}/.paperwb/hf_home`）；精简版自检文案不含「离线模型」
+- **预置模型原理**：安装包把两个 HF 模型缓存目录（`models--docling-project--docling-layout-heron` 版式 + `models--docling-project--docling-models` TableFormer，共约 505 MB）装入 `<安装目录>\models\hub\`；`docling_parser.py` 导入时检测两目录齐全 → `HF_HUB_CACHE`/`HF_HUB_OFFLINE=1` 重定向（setdefault，用户显式设置优先）→ 首次解析完全离线；不齐全则回退在线下载（hf-mirror，HF_HOME 指 `{data_root}/.paperwb/hf_home`）。**不用** docling `artifacts_path`（会强制要求 RapidOcr 目录，否则扫描版 PDF 解析抛错）；RapidOCR 小模型已随 rapidocr wheel 收进主程序
+- 模型预热（打包机一次性备料，**无需跑应用**）：`_gen_prewarm_models.py`（gitignore）用 `huggingface_hub.snapshot_download` 直接下载两仓到项目内 `models/hf_cache/hub`（HF_ENDPOINT=hf-mirror，HF_HUB_DISABLE_XET=1；强制复制模式避免 Windows 无符号链接权限时 WinError 1314）；模型 staging（`stage_models.py`）再从该缓存 copytree 解引用、剔除 blobs/.lock、保留 refs+snapshots 标准布局
+- 构建入口 `installer/build_installer.ps1`：PyInstaller(onedir) → staging → **dist selftest 验收门**（Start-Process -Wait 取真实退出码，任一 FAIL 中止出包；自检时 HF_HUB_CACHE 指向 `models/hf_cache/hub` 免重复下载）→ **bundled 离线布局模拟门**（staged 模型拷入 `dist\PaperWB\models\hub` 触发 bundled 检测 + HF_HUB_OFFLINE=1，验证安装版离线解析，跑完剔除）→ 清理 dist 便携运行时残留（config.json/logs/data/models，防打进安装包）→ ISCC 双连（版本号从 main.py `setApplicationVersion` 抓取）→ `installer/Output/PaperWB-Setup-<版本>.exe` + `-lite.exe`
+- 远程排查日志（便携化后都在 `{安装目录}\logs\`，用户直接在安装目录取）：`paperwb_selftest.log`（自检，含 bundled-models 项）+ `error.log`（excepthook）+ `faulthandler.log`；Inno `%TEMP%\Setup Log*.txt` 保留；SmartScreen 拦截见 README「下载与安装」
 
 ## 测试
 

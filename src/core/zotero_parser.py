@@ -12,6 +12,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..utils.config import get_tmp_dir
+
 
 @dataclass
 class ZoteroCollection:
@@ -381,7 +383,12 @@ class ZoteroLibrary:
         sqlite_path = self._sqlite_path
         print(f"[ZoteroLibrary] 从 SQLite 加载: {sqlite_path}")
 
-        tmp_dir = tempfile.mkdtemp(prefix="paperwb_zotero_")
+        # 便携化：临时副本放数据目录 tmp/ 下（数据库可能上百 MB，避免撑爆系统盘）
+        try:
+            tmp_root = str(get_tmp_dir())
+        except Exception:  # noqa: BLE001
+            tmp_root = tempfile.gettempdir()
+        tmp_dir = tempfile.mkdtemp(prefix="paperwb_zotero_", dir=tmp_root)
         tmp_db = os.path.join(tmp_dir, "zotero_copy.sqlite")
         db_conn = None
 

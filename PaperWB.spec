@@ -27,6 +27,20 @@ for _pkg in ("docling", "docling_core", "docling_ibm_models", "docling_parse", "
 _binaries += collect_dynamic_libs("torch")
 _binaries += collect_dynamic_libs("torchvision")
 
+# torchvision ≥0.29 把原生扩展改名 _C_stable.pyd/image_stable.pyd（stable ABI），
+# hooks-contrib 的 hook 与 collect_dynamic_libs 都收不到 → frozen 下
+# "operator torchvision::nms does not exist"。按包目录实际存在的 .pyd 动态补收。
+try:
+    import torchvision as _tvmod
+
+    _tv_dir = _os.path.dirname(_tvmod.__file__)
+    for _pyd in _os.listdir(_tv_dir):
+        if _pyd.endswith(".pyd"):
+            _hiddenimports.append("torchvision." + _pyd[:-4])
+    del _tvmod
+except Exception:  # noqa: BLE001
+    pass
+
 # conda sqlite3.dll（_sqlite3 扩展的运行时依赖，conda 布局在 Library/bin 下）
 _env_root = _os.path.dirname(_sys.executable)
 for _cand in (_os.path.join(_env_root, "Library", "bin", "sqlite3.dll"),
@@ -44,6 +58,13 @@ _hiddenimports += [
     'PySide6.QtWidgets',
     'PySide6.QtGui',
 ]
+
+# 排除 conda base 借 PATH 混入的 ICU：Qt6Core.dll 依赖系统 icuuc.dll（Windows 10+
+# 自带，开发模式即用系统版），PyInstaller 会从 conda base Library/bin 抓旧版
+# icuuc/icudt 进包，其缺 Qt 所需导出，导致 frozen 下 QtCore 报"找不到指定的程序"
+import re as _re
+
+_ICU_DLL_RE = _re.compile(r'icu(c|dt)\d*\.dll$', _re.IGNORECASE)
 
 # 应用图标：exe 资源图标 + Qt 窗口图标（main.py 从 _MEIPASS/assets 加载）
 # 图标是正式分发物的一部分，缺失时直接失败，避免生成无图标安装包
@@ -69,6 +90,8 @@ a = Analysis(
     ],
     noarchive=False,
 )
+
+a.binaries = [b for b in a.binaries if not _ICU_DLL_RE.search(b[0])]
 
 pyz = PYZ(a.pure)
 

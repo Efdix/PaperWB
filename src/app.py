@@ -30,6 +30,7 @@ from .ui.writing_panel import WritingPanel
 from .ui.settings_dialog import DirectorySettingDialog, SettingsDialog
 from .ui.styles import STYLESHEET
 from .utils.config import (
+    _default_data_root,
     delete_chat_history, get_text_api, get_vision_api,
     has_data_root, load_chat_history, load_config, save_chat_history,
     save_config,
@@ -114,8 +115,7 @@ class FirstLaunchDialog(QDialog):
         form = QFormLayout()
         form.setSpacing(8)
 
-        from pathlib import Path
-        default_path = str(Path.home() / "Documents" / "PaperWB_Data")
+        default_path = str(_default_data_root())
 
         self._path_edit = QLineEdit(default_path)
         browse_btn = QPushButton("浏览...")

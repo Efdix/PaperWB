@@ -37,6 +37,12 @@ env/
 .env
 *.secret
 
+# 便携模式运行时（开发模式下直接落在仓库根：config.json、数据目录、日志）
+/config.json
+/data/
+/logs/
+.paperwb_write_probe
+
 # 系统文件
 .DS_Store
 Thumbs.db

@@ -8,8 +8,10 @@
 #   2. pyinstaller --noconfirm --clean PaperWB.spec   -> dist\PaperWB\
 #   3. python installer\stage_models.py               -> installer\models_cache\hub\
 #   4. dist\PaperWB\PaperWB.exe --selftest <sample pdf>  (acceptance gate)
-#   5. locate ISCC.exe (Inno Setup 6) and compile installer\PaperWB.iss
-# Output: installer\Output\PaperWB-Setup-<version>.exe
+#   5. locate ISCC.exe (Inno Setup 7, 兼容 6.4+) and compile installer\PaperWB.iss
+#      5a. clean portable runtime artifacts (config.json/logs/data) from dist
+#      5b. compile full + lite (/DLite, no bundled models)
+# Output: installer\Output\PaperWB-Setup-<version>.exe + PaperWB-Setup-<version>-lite.exe
 #
 # Switches:
 #   -SkipBuild      reuse existing dist\ (skip step 2)
@@ -36,6 +38,17 @@ function Die([string]$Msg) {
 }
 function Step([string]$Msg) {
     Write-Host "`n==> $Msg" -ForegroundColor Cyan
+}
+function RunSelftestExe([string]$Pdf) {
+    # windowed exe（console=False）：PowerShell `&` 对 GUI 程序不等待，
+    # $LASTEXITCODE 残留旧值导致验收门形同虚设，还会让后续清理/ISCC 与仍在
+    # 运行的自检进程竞态（faulthandler.log 句柄未释放 → ISCC sharing violation）。
+    # 必须 Start-Process -Wait 拿真实退出码。
+    $SelftestArgs = @("--selftest")
+    if ($Pdf) { $SelftestArgs += ('"' + $Pdf + '"') }
+    $Proc = Start-Process -FilePath "dist\PaperWB\PaperWB.exe" `
+        -ArgumentList $SelftestArgs -Wait -PassThru -NoNewWindow
+    return $Proc.ExitCode
 }
 
 try {
@@ -128,15 +141,16 @@ try {
                      Select-Object -First 1
             $SamplePdf = if ($found) { $found.FullName } else { "" }
         }
+        # 指向本机已预热的模型缓存（models/hf_cache/hub），自检不重新下载 500MB 模型
+        $HubCache = Join-Path $Repo "models\hf_cache\hub"
+        if (Test-Path $HubCache) { $env:HF_HUB_CACHE = $HubCache }
         Step "Selftest dist build$(if ($SamplePdf) { " with sample: $SamplePdf" })"
-        if ($SamplePdf) {
-            & "dist\PaperWB\PaperWB.exe" --selftest $SamplePdf
-        } else {
-            Write-Host "no sample pdf found under test\ - running module-level selftest only"
-            & "dist\PaperWB\PaperWB.exe" --selftest
+        $Ec = RunSelftestExe $SamplePdf
+        # 便携化后自检日志在 exe 同级 logs/ 下；%TEMP% 兼容旧包排查
+        $Log = "dist\PaperWB\logs\paperwb_selftest.log"
+        if (-not (Test-Path $Log)) {
+            $Log = Join-Path $env:TEMP "paperwb_selftest.log"
         }
-        $Ec = $LASTEXITCODE
-        $Log = Join-Path $env:TEMP "paperwb_selftest.log"
         if (Test-Path $Log) {
             Write-Host "----- $Log -----"
             Get-Content $Log | ForEach-Object {
@@ -145,6 +159,37 @@ try {
             }
         }
         if ($Ec -ne 0) { Die "selftest failed (exit $Ec) - see log above" }
+
+        # ---- 3b. 完整版安装布局离线自检（bundled models 模拟） ----
+        # dist 本身没有 models/hub，正常自检走在线缓存路径，测不到安装版
+        # HF_HUB_OFFLINE=1 的离线加载。把 staged 模型拷进 dist 触发 bundled
+        # 检测（docling_parser 重定向 HF_HUB_CACHE 并强制离线），确保离线 refs
+        # 齐全（docling 按 tag 请求模型仓，staging 必须带 refs/<tag>）。
+        $StagedHub = "installer\models_cache\hub"
+        if (Test-Path $StagedHub) {
+            Step "Selftest bundled-models offline layout (simulates installed full version)"
+            if (Test-Path "dist\PaperWB\models") { Remove-Item "dist\PaperWB\models" -Recurse -Force }
+            Copy-Item $StagedHub "dist\PaperWB\models\hub" -Recurse -Force
+            # 清掉上一步注入的 HF 环境变量：bundled 检测用 setdefault 重定向，
+            # 显式 env 会压过它，导致测的仍是外部缓存而非预置布局
+            Remove-Item Env:HF_HUB_CACHE -ErrorAction SilentlyContinue
+            Remove-Item Env:HF_HUB_OFFLINE -ErrorAction SilentlyContinue
+            $EcOffline = RunSelftestExe $SamplePdf
+            $LogOffline = "dist\PaperWB\logs\paperwb_selftest.log"
+            if (Test-Path $LogOffline) {
+                Write-Host "----- $LogOffline -----"
+                Get-Content $LogOffline | ForEach-Object {
+                    if ($_.StartsWith("[FAIL]")) { Write-Host $_ -ForegroundColor Red }
+                    else { Write-Host $_ }
+                }
+            }
+            Remove-Item "dist\PaperWB\models" -Recurse -Force
+            if ($EcOffline -ne 0) {
+                Die "bundled-models offline selftest failed (exit $EcOffline) - staging refs/layout broken"
+            }
+        } else {
+            Write-Host "installer\models_cache\hub missing - skip offline selftest (stage_models first)"
+        }
     } else {
         Write-Host "skipped (-SkipSelftest)"
     }
@@ -155,7 +200,7 @@ try {
     # 1) ISCC on PATH (e.g. installed with "Add to PATH" or a portable copy)
     $IsccOnPath = Get-Command ISCC.exe -ErrorAction SilentlyContinue
     if ($IsccOnPath) { $IsccCandidates += $IsccOnPath.Source }
-    # 2) Inno Setup uninstall registry entry (both 32/64-bit views)
+    # 2) Inno Setup uninstall registry entry (both 32/64-bit views, matches 6.x and 7.x)
     $UninstallRoots = @(
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
@@ -169,34 +214,56 @@ try {
             }
         }
     }
-    # 3) common install locations (user-scope, no drive letters)
+    # 3) common install locations (Inno Setup 7 优先，兼容 6；user-scope, no drive letters)
     $IsccCandidates += @(
+        (Join-Path ${env:ProgramFiles} "Inno Setup 7\ISCC.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 7\ISCC.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 7\ISCC.exe"),
         (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
         (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
         (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
     )
     $Iscc = $IsccCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
     if (-not $Iscc) {
-        Die ("Inno Setup 6 not found. Install it (one time), then re-run with -SkipBuild -SkipModels -SkipSelftest:`n" +
-             "  winget install -e --id JRSoftware.InnoSetup`n" +
+        Die ("Inno Setup (6.4+ / 7) not found. Install it (one time), then re-run with -SkipBuild -SkipModels -SkipSelftest:`n" +
+             "  winget install -e --id JRSoftware.InnoSetup.7`n" +
              "  or download from https://jrsoftware.org/isdl.php`n" +
              "  (or pass the ISCC.exe path via -Iscc)")
     }
     Write-Host "ISCC: $Iscc"
 
-    # ---------- 5. compile installer ----------
+    # ---------- 4.5 clean portable runtime artifacts from dist ----------
+    # 自检会在 exe 同级生成 config.json/logs/data（便携化布局），不能打进安装包；
+    # models/hub 属安装器组件（ISS 从 models_cache 单独收），dist 内临时拷贝同样剔除
+    Step "Clean portable runtime artifacts from dist"
+    foreach ($Rt in @("dist\PaperWB\config.json", "dist\PaperWB\logs", "dist\PaperWB\data",
+                      "dist\PaperWB\models", "dist\PaperWB\.paperwb_write_probe")) {
+        if (Test-Path $Rt) { Remove-Item $Rt -Recurse -Force }
+    }
+
+    # ---------- 5. compile installers (full + lite) ----------
     $Ver = (Select-String -Path main.py -Pattern 'setApplicationVersion\("([^"]+)"\)')[0].
            Matches[0].Groups[1].Value
-    Step "Compile installer (version $Ver, LZMA2 compression may take a while)"
+    Step "Compile full installer (version $Ver, LZMA2 compression may take a while)"
     & $Iscc "/DMyAppVersion=$Ver" (Join-Path $PSScriptRoot "PaperWB.iss")
     if ($LASTEXITCODE -ne 0) { Die "ISCC failed (exit $LASTEXITCODE)" }
 
     $Out = Join-Path $PSScriptRoot "Output\PaperWB-Setup-$Ver.exe"
     if (-not (Test-Path $Out)) { Die "installer output missing: $Out" }
     $Mb = [math]::Round((Get-Item $Out).Length / 1MB)
+
+    Step "Compile lite installer (no bundled models)"
+    & $Iscc "/DMyAppVersion=$Ver" "/DLite" (Join-Path $PSScriptRoot "PaperWB.iss")
+    if ($LASTEXITCODE -ne 0) { Die "ISCC (lite) failed (exit $LASTEXITCODE)" }
+    $OutLite = Join-Path $PSScriptRoot "Output\PaperWB-Setup-$Ver-lite.exe"
+    if (-not (Test-Path $OutLite)) { Die "lite installer output missing: $OutLite" }
+    $MbLite = [math]::Round((Get-Item $OutLite).Length / 1MB)
+
     $Sw.Stop()
     Write-Host ""
-    Write-Host ("DONE in {0:mm} min: {1} ({2} MB)" -f $Sw.Elapsed, $Out, $Mb) -ForegroundColor Green
+    Write-Host ("DONE in {0:mm} min:" -f $Sw.Elapsed) -ForegroundColor Green
+    Write-Host ("  full: {0} ({1} MB)" -f $Out, $Mb) -ForegroundColor Green
+    Write-Host ("  lite: {0} ({1} MB)" -f $OutLite, $MbLite) -ForegroundColor Green
     exit 0
 } finally {
     Pop-Location

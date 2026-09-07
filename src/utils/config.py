@@ -1,26 +1,27 @@
 """
-配置管理 —— 所有数据存储在用户设定的数据根目录下。
+配置管理 —— 便携化布局：配置与日志贴着程序（exe/仓库根），数据挂在用户可改的 data_root 下。
 
-配置文件位置::
+配置文件位置（便携优先，不可写才回退系统 AppData）::
 
-    %APPDATA%/PaperWB/config.json   (Windows)
-    ~/.config/PaperWB/config.json   (Linux)
-    ~/Library/Application Support/PaperWB/config.json  (macOS)
+    打包版:  <安装目录>/config.json        （安装向导写入 data_root；装进只读目录时回退 %APPDATA%/PaperWB/）
+    开发版:  <仓库根>/config.json
+    回退:    %APPDATA%/PaperWB/config.json （Windows；Linux/macOS 对应 XDG/Application Support）
 
 数据目录结构::
 
-    {data_root}/
+    {data_root}/                          # 默认 <安装目录>/data（开发版 <仓库根>/data），安装时可选
       ├── library/                  # 导入的 PDF 文件
       │   └── *.pdf
-       ├── .paperwb/
-      │   ├── config.json           # (不存这里，存 %APPDATA%)
+      ├── .paperwb/
       │   ├── library.json          # PDF 图书列表
       │   ├── chats/                # 对话历史
       │   ├── states/               # 排版/翻译状态
       │   ├── page_cache/           # 逐页解析缓存（Stage 1）
       │   ├── writing_kb/           # 写作知识库
       │   ├── drafts/               # 编辑器草稿自动保存
-      │   └── polish_history/       # 润色结果历史
+      │   ├── polish_history/       # 润色结果历史
+      │   ├── tmp/                  # 短命临时文件（Zotero sqlite 副本等）
+      │   └── hf_home/              # 运行时联网下载的 HF 模型缓存（无预置模型时）
 """
 
 from __future__ import annotations
@@ -30,32 +31,73 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
-# ---- 应用配置目录（固定位置，存放 config.json） ----
+# ---- 应用配置目录（便携优先，存放 config.json） ----
 
-def _app_config_dir() -> Path:
-    """跨平台的 AppData 配置目录。"""
+def _portable_base_dir() -> Path | None:
+    """便携模式基准目录：打包版为 exe 所在目录，开发模式为仓库根；不可写返回 None。"""
+    if getattr(sys, "frozen", False):
+        base = Path(sys.executable).resolve().parent
+    else:
+        # src/utils/config.py → 仓库根
+        base = Path(__file__).resolve().parents[2]
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        probe = base / ".paperwb_write_probe"
+        probe.touch()
+        probe.unlink()
+        return base
+    except OSError:
+        return None
+
+
+def _appdata_config_dir() -> Path:
+    """系统 AppData 配置目录（回退位置，也是旧版配置的迁移源）。"""
     if sys.platform == "win32":
-        base = os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")
+        base = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
     elif sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
     else:
-        base = os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
-    d = Path(base) / "PaperWB"
+        base = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    return Path(base) / "PaperWB"
+
+
+def _app_config_dir() -> Path:
+    """应用配置目录：便携优先（exe/仓库根同级），不可写回退 AppData。
+
+    首次在便携位置运行时自动迁移 %APPDATA% 旧配置（含 PDFasker 时代），
+    保住 API key 与 data_root，旧用户升级无感。
+    """
+    portable = _portable_base_dir()
+    if portable is not None:
+        portable.mkdir(parents=True, exist_ok=True)
+        new_config = portable / "config.json"
+        if not new_config.exists():
+            appdata = _appdata_config_dir()
+            for legacy_dir in (appdata, appdata.parent / "PDFasker"):
+                old_config = legacy_dir / "config.json"
+                if old_config.exists():
+                    try:
+                        shutil.copy2(old_config, new_config)
+                        break
+                    except OSError:
+                        pass
+        return portable
+    d = _appdata_config_dir()
     d.mkdir(parents=True, exist_ok=True)
-    legacy = Path(base) / "PDFasker"
-    new_config = d / "config.json"
-    old_config = legacy / "config.json"
-    if not new_config.exists() and old_config.exists():
-        try:
-            shutil.copy2(old_config, new_config)
-        except OSError:
-            pass
     return d
 
 
 def _default_data_root() -> Path:
+    """数据根目录默认值：跟安装目录/仓库根走（便携化）；基准目录不可写时退 %LOCALAPPDATA%。"""
+    base = _portable_base_dir()
+    if base is not None:
+        return base / "data"
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
+        return Path(local) / "PaperWB" / "data"
     return Path.home() / "Documents" / "PaperWB_Data"
 
 
@@ -202,6 +244,37 @@ def get_page_cache_dir(pdf_path: str) -> Path:
     d = get_page_cache_root_dir() / _doc_id(pdf_path)
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def get_tmp_dir() -> Path:
+    """短命临时文件目录：{data_root}/.paperwb/tmp/（便携化，避免散落系统 %TEMP%）。
+
+    data_root 不可用（未设置且默认位置不可写）时退回系统临时目录。
+    """
+    try:
+        d = _resolve_data_dir() / "tmp"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except OSError:
+        return Path(tempfile.gettempdir())
+
+
+def get_log_dir() -> Path:
+    """日志目录：{配置目录}/logs/（便携模式=安装目录/仓库根下 logs，随程序走）。"""
+    d = _app_config_dir() / "logs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_hf_home_dir() -> str:
+    """HuggingFace 缓存根（HF_HOME）：{data_root}/.paperwb/hf_home/。
+
+    用于无预置模型时运行时联网下载的模型缓存（hub 与 xet 子目录都在其下），
+    便携化后不再散落 ~/.cache/huggingface。
+    """
+    d = _resolve_data_dir() / "hf_home"
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d)
 
 
 # ========== 配置读写 ==========

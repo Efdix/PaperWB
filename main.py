@@ -129,6 +129,20 @@ def _preload_docling() -> None:
         pass
 
 
+def _log_dir() -> str:
+    """日志目录：配置目录下 logs/（便携模式=安装目录/仓库根随程序走）。
+
+    极端情况（连 AppData 都不可写）才退系统临时目录，属错误兜底而非默认行为。
+    """
+    try:
+        from src.utils.config import get_log_dir
+        return str(get_log_dir())
+    except Exception:
+        d = os.path.join(tempfile.gettempdir(), "PaperWB")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+
 def _install_faulthandler() -> None:
     """启用 faulthandler：原生层崩溃（qFatal/abort）时把全线程 Python 栈写入日志。
 
@@ -140,7 +154,7 @@ def _install_faulthandler() -> None:
     except ImportError:
         return
     try:
-        log_dir = os.path.join(os.environ.get("APPDATA", ""), "PaperWB")
+        log_dir = _log_dir()
         os.makedirs(log_dir, exist_ok=True)
         faulthandler.enable(
             open(os.path.join(log_dir, "faulthandler.log"), "a", encoding="utf-8")
@@ -150,10 +164,10 @@ def _install_faulthandler() -> None:
 
 
 def _install_excepthook() -> None:
-    """全局未捕获异常处理器：写入 %APPDATA%/PaperWB/error.log 并打印到终端。
+    """全局未捕获异常处理器：写入 <日志目录>/error.log 并打印到终端。
 
     避免线程/槽回调中的异常只出现在 stdout 而难以定位；日志含时间戳与完整
-    traceback，路径与配置文件同目录，便于打包版用户反馈。
+    traceback，路径与配置文件同目录（便携模式下随安装目录），便于打包版用户反馈。
     """
     import datetime
     import traceback as _traceback
@@ -163,7 +177,7 @@ def _install_excepthook() -> None:
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         text = f"\n===== {ts} =====\n" + "".join(lines)
         try:
-            log_dir = os.path.join(os.environ.get("APPDATA", ""), "PaperWB")
+            log_dir = _log_dir()
             os.makedirs(log_dir, exist_ok=True)
             with open(os.path.join(log_dir, "error.log"), "a", encoding="utf-8") as f:
                 f.write(text)
@@ -174,13 +188,27 @@ def _install_excepthook() -> None:
     sys.excepthook = _hook
 
 
+def _exc_chain(e: BaseException) -> str:
+    """把异常的 __cause__/__context__ 链拼成一行，frozen 下远程排障关键
+    （transformers 等库常把底层 ImportError 包进自定义异常，str() 只剩外壳）。"""
+    parts = [f"[{type(e).__name__}] {e}"]
+    seen = {id(e)}
+    cause = e.__cause__ or e.__context__
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        parts.append(f"<- [{type(cause).__name__}] {cause}")
+        cause = cause.__cause__ or cause.__context__
+    return " | ".join(parts)
+
+
 def _run_selftest() -> int:
     """无头自检：导入全部模块 + 配置 + Zotero 只读加载 +（可选）Docling 解析样例。
 
     用法: PaperWB --selftest [sample.pdf]
-    结果写入 %TEMP%/paperwb_selftest.log（供打包产物验证）。
+    结果写入 <日志目录>/paperwb_selftest.log（便携模式=安装目录下 logs/，
+    供打包产物验证，用户反馈时直接在安装目录取）。
     """
-    log_path = os.path.join(tempfile.gettempdir(), "paperwb_selftest.log")
+    log_path = os.path.join(_log_dir(), "paperwb_selftest.log")
     results: list[tuple[str, bool, str]] = []
 
     def _ok(name: str):
@@ -232,7 +260,7 @@ def _run_selftest() -> int:
         import src.ui.zotero_panel  # noqa: F401
         _ok("modules-import")
     except Exception as e:  # noqa: BLE001
-        _fail("modules-import", str(e))
+        _fail("modules-import", _exc_chain(e))
 
     # 1.5 预置离线模型（安装包分发排查关键项：确认 HF 缓存重定向是否生效）
     try:
@@ -274,7 +302,7 @@ def _run_selftest() -> int:
             pages = parse_pdf(pdf_arg)
             _ok(f"docling-parse({len(pages)} pages)")
         except Exception as e:  # noqa: BLE001
-            _fail("docling-parse", str(e))
+            _fail("docling-parse", _exc_chain(e))
     elif pdf_arg:
         _ok(f"docling-skip(pdf not found: {pdf_arg})")
 
