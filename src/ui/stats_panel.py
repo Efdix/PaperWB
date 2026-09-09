@@ -49,30 +49,73 @@ def _fmt_value(field: str, value: int) -> str:
 
 
 class HeatmapWidget(QWidget):
-    """GitHub 风格热力图：最近 N 天 × 7 行周网格，自绘。"""
+    """GitHub 风格热力图：最近 N 天 × 7 行周网格，自绘。
+
+    单元格随面板宽度自适应放大（上限 22px），顶部预留月份标签条，
+    标签按绘制宽度避让，不再互相重叠或被裁切。
+    """
 
     date_picked = Signal(str)  # "2026-08-24"
 
-    CELL = 12
-    GAP = 3
-    MARGIN = 6
+    GAP = 4
+    MARGIN = 8
+    LABEL_H = 16       # 顶部月份标签条高度（含间距）
+    MAX_CELL = 22      # 单元格上限：热力图过宽时不再继续放大
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._series: list[tuple[str, int]] = []
         self._field = "read_minutes"
         self.setMouseTracking(True)
-        self.setMinimumHeight(7 * (self.CELL + self.GAP) + 2 * self.MARGIN + 18)
+        self._update_min_height()
+
+    # ---------- 几何 ----------
+
+    def _cell_size(self) -> int:
+        """按当前宽度算出能放下的最大单元格边长（10 ~ MAX_CELL）。"""
+        if not self._series:
+            return 12
+        weeks = (len(self._series) + 6) // 7
+        avail = max(self.width() - 2 * self.MARGIN, weeks)
+        cell = (avail - (weeks - 1) * self.GAP) // weeks
+        return int(max(10, min(self.MAX_CELL, cell)))
+
+    def _geometry(self) -> tuple[int, int]:
+        """返回 (cell, step)；原点 x = MARGIN，y = LABEL_H。"""
+        cell = self._cell_size()
+        return cell, cell + self.GAP
+
+    def _update_min_height(self) -> None:
+        cell, step = self._geometry()
+        self.setMinimumHeight(self.LABEL_H + 7 * step + self.MARGIN)
 
     def set_data(self, series: list[tuple[str, int]], field: str) -> None:
         self._series = series
         self._field = field
+        self._update_min_height()
+        self.update()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_min_height()  # 宽度变化 → 单元格尺寸变化
         self.update()
 
     def _cell_rect(self, col: int, row: int) -> QRect:
-        x = self.MARGIN + col * (self.CELL + self.GAP)
-        y = self.MARGIN + row * (self.CELL + self.GAP)
-        return QRect(x, y, self.CELL, self.CELL)
+        _cell, step = self._geometry()
+        x = self.MARGIN + col * step
+        y = self.LABEL_H + row * step
+        return QRect(x, y, self._cell_size(), self._cell_size())
+
+    def _layout_cells(self) -> list[tuple[int, int, str, int]]:
+        """把序列铺成 [(col, row, day_str, value)]。"""
+        if not self._series:
+            return []
+        first = date.fromisoformat(self._series[0][0])
+        offset = (first.weekday() + 1) % 7  # 首日所在行（列 = 周，行 = 星期）
+        return [
+            ((offset + i) // 7, (offset + i) % 7, day_str, value)
+            for i, (day_str, value) in enumerate(self._series)
+        ]
 
     def _level(self, value: int) -> int:
         if value <= 0:
@@ -92,39 +135,39 @@ class HeatmapWidget(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        today = date.today()
-        weeks = (len(self._series) + 6) // 7
-        # 首列对齐到周日（GitHub 布局：列 = 周，行 = 星期）
-        first = date.fromisoformat(self._series[0][0])
-        offset = (first.weekday() + 1) % 7  # 首日所在行
-        for i, (day_str, value) in enumerate(self._series):
-            col = (offset + i) // 7
-            row = (offset + i) % 7
+        today = date.today().isoformat()
+        cells = self._layout_cells()
+        for col, row, day_str, value in cells:
             rect = self._cell_rect(col, row)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(HEAT_LEVELS[self._level(value)]))
             painter.drawRect(rect)
-            if day_str == today.isoformat():
+            if day_str == today:
                 painter.setPen(QPen(QColor("#3478f6"), 1.5))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawRect(rect.adjusted(-1, -1, 0, 0))
-        # 月份标签（每列首行上方）
-        painter.setPen(QColor("#6e6e73"))
+        # 月份标签：每月首个单元格所在列上方绘制，按像素宽度避让不重叠
         font = painter.font()
-        font.setPointSize(8)
+        font.setPointSize(9)
         painter.setFont(font)
+        fm = painter.fontMetrics()
+        painter.setPen(QColor("#6e6e73"))
         last_month = ""
-        for i, (day_str, _value) in enumerate(self._series):
-            col = (offset + i) // 7
-            if i % 7 != (7 - offset) % 7:
-                continue
+        last_right = -1
+        for col, row, day_str, _value in cells:
+            if row != 0:
+                continue  # 只看每列首行
             d = date.fromisoformat(day_str)
             month = d.strftime("%Y-%m")
-            if month != last_month:
-                last_month = month
-                painter.drawText(
-                    self.MARGIN + col * (self.CELL + self.GAP),
-                    self.MARGIN - 3, d.strftime("%Y-%m"))
+            if month == last_month:
+                continue
+            last_month = month
+            text = d.strftime("%Y-%m")
+            x = self._cell_rect(col, 0).x()
+            if x <= last_right + 6:
+                continue  # 与上一个标签放不下：跳过这个月（下个月再看）
+            painter.drawText(x, self.LABEL_H - 4, text)
+            last_right = x + fm.horizontalAdvance(text)
         painter.end()
 
     def _index_at(self, pos: QPoint) -> int | None:
@@ -168,6 +211,7 @@ class PlanPage(QWidget):
         self._scope = scope
         self._cursor = date.today()
         self._task_rows: list[tuple[str, QCheckBox, QPushButton]] = []
+        self._edit_editor: QLineEdit | None = None
 
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -301,7 +345,59 @@ class PlanPage(QWidget):
         self._tracker.delete_plan(self._scope, plan_id)
         self._refresh()
 
+    # ---------- 任务编辑 ----------
+
+    def _begin_edit(self, plan_id: str, text: str, cb: QCheckBox) -> None:
+        """把任务行切换为行内编辑框（Enter 确认，Esc 取消）。"""
+        if self._edit_editor is not None:
+            self._end_edit()
+            self._refresh()
+            return
+        row = cb.parentWidget()
+        if row is None:
+            return
+        editor = QLineEdit(text)
+        editor.setToolTip("回车保存，Esc 取消")
+        lay = row.layout()
+        idx = lay.indexOf(cb)
+        cb.setVisible(False)
+        lay.insertWidget(idx, editor, 1)
+        self._edit_editor = editor
+        editor.returnPressed.connect(
+            lambda: self._commit_edit(plan_id, editor.text()))
+        editor.installEventFilter(self)
+        editor.setFocus()
+        editor.selectAll()
+
+    def _commit_edit(self, plan_id: str, text: str) -> None:
+        self._end_edit()
+        if text.strip():
+            self._tracker.edit_plan(self._scope, plan_id, text)
+        self._refresh()
+
+    def _end_edit(self) -> None:
+        if self._edit_editor is not None:
+            self._edit_editor.setParent(None)
+            self._edit_editor.deleteLater()
+            self._edit_editor = None
+
+    def eventFilter(self, obj, event):
+        """编辑框 Esc 取消；任务文本双击进入编辑。"""
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.Type.KeyPress and obj is self._edit_editor:
+            if event.key() == Qt.Key.Key_Escape:
+                self._end_edit()
+                self._refresh()
+                return True
+        elif event.type() == QEvent.Type.MouseButtonDblClick \
+                and isinstance(obj, QCheckBox) \
+                and hasattr(obj, "_plan_id"):
+            self._begin_edit(obj._plan_id, obj.text(), obj)
+            return True
+        return super().eventFilter(obj, event)
+
     def _refresh(self) -> None:
+        self._edit_editor = None  # 行将整体重建，编辑框引用一并作废
         for _pid, cb, btn in self._task_rows:
             cb.setParent(None)
             cb.deleteLater()
@@ -339,9 +435,20 @@ class PlanPage(QWidget):
             cb = QCheckBox(p["text"])
             cb.setChecked(bool(p.get("done")))
             cb.setObjectName("planTask")
+            cb.setToolTip("双击文字可修改任务")
+            cb._plan_id = p["id"]
+            cb.installEventFilter(self)
             cb.toggled.connect(
                 lambda _c, pid=p["id"]: self._toggle_task(pid, _c))
             row_layout.addWidget(cb, 1)
+            edit_btn = QPushButton("✎")
+            edit_btn.setObjectName("iconBtn")
+            edit_btn.setFixedWidth(26)
+            edit_btn.setToolTip("编辑任务（回车保存，Esc 取消）")
+            edit_btn.clicked.connect(
+                lambda _c=False, pid=p["id"], txt=p["text"], box=cb:
+                self._begin_edit(pid, txt, box))
+            row_layout.addWidget(edit_btn)
             del_btn = QPushButton("✕")
             del_btn.setObjectName("iconBtn")
             del_btn.setFixedWidth(26)

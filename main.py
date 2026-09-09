@@ -12,6 +12,10 @@ def _ensure_utf8_mode() -> None:
     - 打包模式（PyInstaller）：bootloader 无法识别 `-X utf8`，改用环境变量
       PYTHONUTF8=1 重启 exe；若 bootloader 不认该环境变量，靠重入保护退出，
       避免无限循环（此时应用继续以默认编码运行，功能不受影响）
+
+    Windows 的 os.execv 是spawn新进程且不传递退出码（--selftest 的 FAIL 会被
+    吞成 0，安装包验收门失效），因此统一走 subprocess 等待并把子进程退出码
+    原样作为本进程退出码返回。
     """
     if os.name != "nt" or sys.flags.utf8_mode:
         return
@@ -21,7 +25,8 @@ def _ensure_utf8_mode() -> None:
     os.environ["PAPERWB_UTF8_REEXEC"] = "1"
     frozen = getattr(sys, "frozen", False)
     cmd = [sys.executable] + ([] if frozen else ["-X", "utf8"]) + sys.argv
-    os.execv(sys.executable, cmd)
+    import subprocess
+    sys.exit(subprocess.call(cmd))
 
 
 # 保存 frozen 下 add_dll_directory 的句柄，防止被 GC 导致搜索路径失效

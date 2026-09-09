@@ -7,7 +7,7 @@ import time
 import weakref
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal as QtSignal
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
@@ -246,6 +246,10 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        # 全局一键全屏（F11）：任何工作台可用，Esc 退出
+        fs_shortcut = QShortcut(QKeySequence("F11"), self)
+        fs_shortcut.activated.connect(self._toggle_fullscreen)
+
         settings_menu = menubar.addMenu("设置")
         api_action = QAction("API 接口设置...", self)
         api_action.setShortcut("Ctrl+,")
@@ -468,6 +472,22 @@ class MainWindow(QMainWindow):
         self._status_text_label = QLabel("纯文本：未配置")
         self._status_text_label.setObjectName("statusChip")
         self.status_bar.addPermanentWidget(self._status_text_label)
+
+    def _toggle_fullscreen(self) -> None:
+        """F11 全屏切换：与阅读工具栏「⛶ 全屏阅读」按钮共用状态。"""
+        if self.isFullScreen():
+            self.showNormal()
+            self.pdf_viewer.fullscreen_btn.setText("⛶ 全屏阅读")
+        else:
+            self.showFullScreen()
+            self.pdf_viewer.fullscreen_btn.setText("⛶ 退出全屏")
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape and self.isFullScreen():
+            self.showNormal()
+            self.pdf_viewer.fullscreen_btn.setText("⛶ 全屏阅读")
+            return
+        super().keyPressEvent(event)
 
     def _switch_workspace(self, index: int) -> None:
         """切换阅读/检索/写作/统计工作区，并同步顶部导航状态。"""

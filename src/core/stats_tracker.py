@@ -278,6 +278,17 @@ class StatsTracker(QObject):
                 self._mark_dirty()
                 return
 
+    def edit_plan(self, scope: str, plan_id: str, text: str) -> None:
+        """修改任务文本（空白文本视为取消，不改动）。"""
+        text = text.strip()
+        if not text:
+            return
+        for p in self._plans.get(scope, []):
+            if p["id"] == plan_id:
+                p["text"] = text
+                self._mark_dirty()
+                return
+
     def delete_plan(self, scope: str, plan_id: str) -> None:
         items = self._plans.get(scope, [])
         for i, p in enumerate(items):

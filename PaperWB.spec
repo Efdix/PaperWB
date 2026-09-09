@@ -61,10 +61,11 @@ _hiddenimports += [
 
 # 排除 conda base 借 PATH 混入的 ICU：Qt6Core.dll 依赖系统 icuuc.dll（Windows 10+
 # 自带，开发模式即用系统版），PyInstaller 会从 conda base Library/bin 抓旧版
-# icuuc/icudt 进包，其缺 Qt 所需导出，导致 frozen 下 QtCore 报"找不到指定的程序"
+# icuuc/icudt 进包，其缺 Qt 所需导出，导致 frozen 下 QtCore 报"找不到指定的程序"。
+# 正则须覆盖 icuuc（icu+uc）：只写 icu(c|dt) 匹配不到 icuuc.dll，实测踩坑
 import re as _re
 
-_ICU_DLL_RE = _re.compile(r'icu(c|dt)\d*\.dll$', _re.IGNORECASE)
+_ICU_DLL_RE = _re.compile(r'icu(?:uc|c|dt)\d*\.dll$', _re.IGNORECASE)
 
 # 应用图标：exe 资源图标 + Qt 窗口图标（main.py 从 _MEIPASS/assets 加载）
 # 图标是正式分发物的一部分，缺失时直接失败，避免生成无图标安装包

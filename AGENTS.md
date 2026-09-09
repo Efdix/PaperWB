@@ -25,7 +25,7 @@ LICENSE                    # MIT
 PaperWB.jpg               # 应用图标源图（make_icon.py 自动裁切图形主体）
 assets/                    # 应用图标（installer/make_icon.py 生成，exe/安装向导/窗口共用）
 installer/                 # 安装向导构建
-├── PaperWB.iss            # Inno Setup 7 脚本: 许可/组件(可选预置模型)/目录/数据目录选择页(默认 {app}\data，写入 {app}\config.json 的 data_root，{app} 不可写退 %APPDATA%)/完成页自检/卸载按需清理便携运行时；/DLite 条件编译出精简版（剔除模型组件）
+├── PaperWB.iss            # Inno Setup 7 脚本: 许可/目录/数据目录选择页(默认 {app}\data，写入 {app}\config.json 的 data_root，{app} 不可写退 %APPDATA%)/完成页自检/卸载按需清理便携运行时；/DLite 条件编译出精简版；完整版固定预置模型（无组件选择页，不想要模型用精简版）
 ├── build_installer.ps1    # 一条龙: 补装 PyInstaller → pyinstaller → 模型 staging → dist selftest 验收门（Start-Process -Wait 等待 windowed exe，`&` 对 GUI 程序不等待、$LASTEXITCODE 不可靠）+ bundled 离线布局模拟门 → 清理 dist 便携运行时残留 → ISCC 双连出包（full + lite）
 ├── stage_models.py        # Docling 模型 staging: HF 缓存 → installer/models_cache/hub（约 505 MB；HF_HUB_CACHE > 项目内 models/hf_cache/hub > HF_HOME > 默认缓存）；按 docling 源码钉扎 revision 过滤 refs（从已安装 docling 正则提取，兜底硬编码表）、剔除运行时不可达 ref 与快照、终检 ref→快照+关键文件（离线解析靠 refs/<revision> 定位快照，缺 ref 则安装版 HF_HUB_OFFLINE=1 首次解析在 TableFormer 报 LocalEntryNotFoundError）
 ├── make_icon.py           # 从项目根目录 PaperWB.jpg 生成 assets/PaperWB.ico/png
@@ -183,8 +183,8 @@ src/
 
 ### 安装包分发与预置离线模型
 
-- 正式分发物 = Inno Setup 安装向导（`installer/PaperWB.iss`，**双版本**）：许可(MIT)/安装位置（默认 `%LOCALAPPDATA%\Programs\PaperWB`，免管理员，PrivilegesRequiredOverridesAllowed 可改全局）/数据与缓存目录选择页（默认 `{app}\data` 随安装目录走，可改；离开安装位置页时若未自定义则跟随真实 `{app}` 刷新，`{app}` 不可写退 `%LOCALAPPDATA%\PaperWB\data`；[Code] 把 `data_root` 写入 `{app}\config.json`，重装预填旧值，首次启动不再弹窗）/组件选择（完整版：「预置离线解析模型」默认勾选）/完成页可选「安装自检」（[Code] Exec `--selftest` 按退出码弹窗）
-- **双版本产物**：`PaperWB-Setup-<版本>.exe`（预置模型完整版）+ `PaperWB-Setup-<版本>-lite.exe`（`ISCC /DLite` 编译，剔除模型组件，安装后首次解析由应用经 hf-mirror 联网下载，模型缓存落 `{data_root}/.paperwb/hf_home`）；精简版自检文案不含「离线模型」
+- 正式分发物 = Inno Setup 安装向导（`installer/PaperWB.iss`，**双版本**）：许可(MIT)/安装位置（默认 `%LOCALAPPDATA%\Programs\PaperWB`，免管理员，PrivilegesRequiredOverridesAllowed 可改全局）/数据与缓存目录选择页（默认 `{app}\data` 随安装目录走，可改；离开安装位置页时若未自定义则跟随真实 `{app}` 刷新，`{app}` 不可写退 `%LOCALAPPDATA%\PaperWB\data`；[Code] 把 `data_root` 写入 `{app}\config.json`，重装预填旧值，首次启动不再弹窗）/完成页可选「安装自检」（[Code] Exec `--selftest` 按退出码弹窗）。**无组件选择页**：完整版固定安装预置模型，不想要模型的用户下载精简版
+- **双版本产物**：`PaperWB-Setup-<版本>.exe`（预置模型完整版）+ `PaperWB-Setup-<版本>-lite.exe`（`ISCC /DLite` 编译，不预置模型，安装后首次解析由应用经 hf-mirror 联网下载，模型缓存落 `{data_root}/.paperwb/hf_home`）；精简版自检文案不含「离线模型」
 - **预置模型原理**：安装包把两个 HF 模型缓存目录（`models--docling-project--docling-layout-heron` 版式 + `models--docling-project--docling-models` TableFormer，共约 505 MB）装入 `<安装目录>\models\hub\`；`docling_parser.py` 导入时检测两目录齐全 → `HF_HUB_CACHE`/`HF_HUB_OFFLINE=1` 重定向（setdefault，用户显式设置优先）→ 首次解析完全离线；不齐全则回退在线下载（hf-mirror，HF_HOME 指 `{data_root}/.paperwb/hf_home`）。**不用** docling `artifacts_path`（会强制要求 RapidOcr 目录，否则扫描版 PDF 解析抛错）；RapidOCR 小模型已随 rapidocr wheel 收进主程序
 - 模型预热（打包机一次性备料，**无需跑应用**）：`_gen_prewarm_models.py`（gitignore）用 `huggingface_hub.snapshot_download` 直接下载两仓到项目内 `models/hf_cache/hub`（HF_ENDPOINT=hf-mirror，HF_HUB_DISABLE_XET=1；强制复制模式避免 Windows 无符号链接权限时 WinError 1314）；模型 staging（`stage_models.py`）再从该缓存 copytree 解引用、剔除 blobs/.lock、保留 refs+snapshots 标准布局
 - 构建入口 `installer/build_installer.ps1`：PyInstaller(onedir) → staging → **dist selftest 验收门**（Start-Process -Wait 取真实退出码，任一 FAIL 中止出包；自检时 HF_HUB_CACHE 指向 `models/hf_cache/hub` 免重复下载）→ **bundled 离线布局模拟门**（staged 模型拷入 `dist\PaperWB\models\hub` 触发 bundled 检测 + HF_HUB_OFFLINE=1，验证安装版离线解析，跑完剔除）→ 清理 dist 便携运行时残留（config.json/logs/data/models，防打进安装包）→ ISCC 双连（版本号从 main.py `setApplicationVersion` 抓取）→ `installer/Output/PaperWB-Setup-<版本>.exe` + `-lite.exe`
@@ -196,4 +196,4 @@ src/
 - 所有 Python 文件使用 `from __future__ import annotations` 和类型注解
 - 测试数据在 `test/` 目录下（含示例 PDF、写作草稿、缓存快照）
 - 验收脚本: `test/validate_zotero.py`（Zotero 文献两阶段整合验收，`--count` 可调，默认 20，输出 JSON 报告）与 `test/capture_zotero_screenshots.py`（UI 截图验收，`--count` 可调，默认 20，输出 PNG）
-- 自测脚本: `test/selftest_bugfixes.py`（纯逻辑回归）与 `test/selftest_workbench.py`（检索工作台与库内问答核心逻辑：匹配口径/索引/RAG 组装/巡视全链路假 PubMed/OpenAlex 解析与三源路由/检索式 v2 与两轮闭环/按库推荐/UI 离屏构建/两级接缝缓存与后台建库预解析（结构化抽取·prelim/final 状态迁移·队列过滤失败记忆·flush 复用·参考文献修剪），无 LLM 无网络）；`test/smoke_workbench_app.py`（offscreen 全窗口集成冒烟，读真实配置与 Zotero 库但不调 LLM；设 PAPERWB_DISABLE_PREPARSE=1 跳过后台预解析）
+- 自测脚本: `test/selftest_bugfixes.py`（纯逻辑回归）与 `test/selftest_workbench.py`（检索工作台与库内问答核心逻辑：匹配口径/索引/RAG 组装/巡视全链路假 PubMed/OpenAlex 解析与三源路由/检索式 v2 与两轮闭环/按库推荐/UI 离屏构建/两级接缝缓存与后台建库预解析（结构化抽取·prelim/final 状态迁移·队列过滤失败记忆·flush 复用·参考文献修剪），无 LLM 无网络）；`test/selftest_ui_features.py`（阅读 UI 新特性回归：热力图自适应几何与月份标签避让、计划任务 edit_plan、卡片提问 Ctrl+Enter（QALineEdit）、阅读字号增减钳制、卡片手动拆分/合并（连字符/中英拼接规则 + structured_document 落盘读回），QPA offscreen 无 LLM 无网络）；`test/smoke_workbench_app.py`（offscreen 全窗口集成冒烟，读真实配置与 Zotero 库但不调 LLM；设 PAPERWB_DISABLE_PREPARSE=1 跳过后台预解析）

@@ -37,6 +37,10 @@ AppPublisher={#MyAppPublisher}
 UninstallDisplayName={#MyAppNameZh}
 ; 默认当前用户安装（免管理员、目录可写=模型缓存可写），向导可选"所有用户"
 DefaultDirName={localappdata}\Programs\{#MyAppName}
+; DisableDirPage 默认 auto：升级/重装（注册表已有同 AppId 记录）会隐藏安装位置页、
+; 直接沿用旧目录，用户误以为不能改安装路径。显式关掉让该页始终显示；
+; 升级时 UsePreviousAppDir 仍自动预填上次目录
+DisableDirPage=no
 DefaultGroupName={#MyAppName}
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
@@ -63,11 +67,6 @@ Name: "chinesesimplified"; MessagesFile: "lang\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
-chinesesimplified.ModelsDesc=预置离线解析模型（约 500 MB，推荐；取消后首次解析 PDF 时联网下载）
-chinesesimplified.TypeFull=完整安装（含可选组件）
-chinesesimplified.TypeCompact=精简安装
-chinesesimplified.TypeCustom=自定义（自行勾选组件）
-chinesesimplified.ModelsGroup=解析模型
 chinesesimplified.DataDirTitle=数据与缓存目录
 chinesesimplified.DataDirDesc=论文、阅读缓存、写作知识库和草稿将集中保存在该目录，后续可在应用设置中更改。
 chinesesimplified.LaunchNow=立即运行 PaperWB(&L)
@@ -82,11 +81,6 @@ chinesesimplified.SelftestPass=安装自检通过，PaperWB 已就绪！
 chinesesimplified.SelftestFailFmt=安装自检未通过（退出码 %d）。
 chinesesimplified.SelftestLogHint=请把以下日志发给开发者远程排查：
 chinesesimplified.UninstallConfigQuestion=是否同时删除配置与日志（含 API Key）？选"否"保留，下次安装无需重新配置。
-english.ModelsDesc=Bundle offline parsing models (~500 MB, recommended; uncheck to download on first parse)
-english.TypeFull=Full installation (includes optional components)
-english.TypeCompact=Compact installation
-english.TypeCustom=Custom (choose components yourself)
-english.ModelsGroup=Parsing models
 english.DataDirTitle=Data & cache directory
 english.DataDirDesc=Papers, reading caches, writing knowledge base and drafts will be stored here. Can be changed later in app settings.
 english.LaunchNow=Launch PaperWB(&L)
@@ -97,18 +91,7 @@ english.SelftestFailFmt=Self-test failed (exit code %d).
 english.SelftestLogHint=Please send the following logs to the developer:
 english.UninstallConfigQuestion=Also delete settings and logs (including API keys)? Choose No to keep them for the next installation.
 
-; 完整版才注册"预置离线解析模型"组件。必须显式给 [Types] 并把组件挂上
-; full/compact：无 [Types] 节时 Inno 的默认组件选择不含该组件，静默安装会
-; 整体跳过模型（实测），组件页用户手滑去勾的语义用 custom 类型保留
-[Types]
-Name: "full"; Description: "{cm:TypeFull}"
-Name: "compact"; Description: "{cm:TypeCompact}"
-Name: "custom"; Description: "{cm:TypeCustom}"; Flags: iscustom
-
-#ifndef Lite
-[Components]
-Name: "models"; Description: "{cm:ModelsDesc}"; Types: full compact
-#endif
+; 完整版无条件预置模型（不再提供组件选择页，不想要模型的用户下载精简版 /DLite）
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
@@ -116,7 +99,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "..\dist\PaperWB\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 #ifndef Lite
-Source: "models_cache\hub\*"; DestDir: "{app}\models\hub"; Components: models; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "models_cache\hub\*"; DestDir: "{app}\models\hub"; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 
 [Icons]

@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QPushButton,
-    QLabel, QFrame, QProgressBar, QLineEdit,
+    QLabel, QFrame, QProgressBar, QLineEdit, QMenu, QDialog,
+    QPlainTextEdit, QDialogButtonBox,
     QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal, QThread, QSize, QPoint, QTimer
@@ -38,6 +39,79 @@ KEY_SECTIONS = frozenset({
     "conclusion", "methods", "method", "background",
     "related work", "summary", "findings",
 })
+
+# 允许手动拆分/合并的元素类型（解析错拆/错并时的手工修复）
+SPLITTABLE_TYPES = frozenset({
+    "body", "abstract_body", "reference", "figure_caption",
+    "table_caption", "keywords", "acknowledgment", "appendix",
+})
+MERGEABLE_TYPES = frozenset({
+    "body", "abstract_body", "reference", "figure_caption", "table_caption",
+})
+
+
+class QALineEdit(QLineEdit):
+    """卡片提问输入框：Ctrl+Enter 发送（与右侧问答区一致），单按 Enter 不发送。"""
+
+    submit_requested = Signal()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self.submit_requested.emit()
+            return  # 单按回车不发送，防误触直接消耗 token
+        super().keyPressEvent(event)
+
+
+class SplitDialog(QDialog):
+    """手动拆分定位对话框：只读文本中点击放置光标，确认拆分点。"""
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("手动拆分段落")
+        self.setMinimumSize(560, 400)
+        self.setModal(True)
+        lay = QVBoxLayout(self)
+        tip = QLabel(
+            "解析效果不佳时，可把一段手动拆成两段：\n"
+            "在下方文字里单击要拆开的位置（光标▏处），确认无误后点「拆分」。")
+        tip.setObjectName("subtitleLabel")
+        lay.addWidget(tip)
+        self.editor = QPlainTextEdit()
+        self.editor.setReadOnly(True)  # 只读仍可放置/移动光标
+        self.editor.setPlainText(text)
+        f = QFont("Segoe UI", 13)
+        self.editor.setFont(f)
+        lay.addWidget(self.editor, 1)
+        self._pos_label = QLabel()
+        self._pos_label.setWordWrap(True)
+        lay.addWidget(self._pos_label)
+        self.editor.cursorPositionChanged.connect(self._update_pos_label)
+        buttons = QDialogButtonBox(self)
+        split_btn = buttons.addButton("✂ 拆分", QDialogButtonBox.ButtonRole.AcceptRole)
+        split_btn.setObjectName("primaryBtn")
+        buttons.addButton("取消", QDialogButtonBox.ButtonRole.RejectRole)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+        self._update_pos_label()
+
+    def _update_pos_label(self) -> None:
+        pos = self.editor.textCursor().position()
+        text = self.editor.toPlainText()
+        ctx_before = text[max(0, pos - 24):pos]
+        ctx_after = text[pos:pos + 24]
+        self._pos_label.setText(
+            f"拆分位置 {pos}/{len(text)}：…{ctx_before}▏{ctx_after}…")
+
+    @staticmethod
+    def ask_split_position(text: str, parent=None) -> int | None:
+        """返回用户选定的拆分点（0 < pos < len(text)），取消返回 None。"""
+        dlg = SplitDialog(text, parent)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        pos = dlg.editor.textCursor().position()
+        return pos if 0 < pos < len(text) else None
 
 
 class TranslationWorker(QThread):
@@ -89,7 +163,33 @@ class ParagraphCard(QFrame):
         self._trans_text = ""
         self._collapsed = False
         self._qa_edit: QLineEdit | None = None
+        self._scalable_labels: list[QLabel] = []
         self._setup_ui()
+        self._collect_scalable_labels()
+
+    # ---- 字号缩放 ----
+
+    def _collect_scalable_labels(self) -> None:
+        """记录卡片内所有带字号文字标签的基准字号，供阅读字号增减。"""
+        self._scalable_labels = []
+        for lbl in self.findChildren(QLabel):
+            ps = lbl.font().pointSize()
+            if ps > 0:
+                lbl.setProperty("basePointSize", ps)
+                self._scalable_labels.append(lbl)
+
+    def apply_font_delta(self, delta: int) -> None:
+        """按基准字号 + delta 重新设置文字标签字号（delta=0 恢复默认）。"""
+        if not hasattr(self, "_scalable_labels"):
+            self._collect_scalable_labels()
+        for lbl in self._scalable_labels:
+            base = int(lbl.property("basePointSize") or 0)
+            if base <= 0:
+                continue
+            f = lbl.font()
+            f.setPointSize(base + delta)
+            lbl.setFont(f)
+        self._sync_card_height(self.width() or 640)
 
     def hasHeightForWidth(self) -> bool:
         return True
@@ -436,7 +536,7 @@ class ParagraphCard(QFrame):
         self.parent().updateGeometry() if self.parent() else None
 
     def add_qa_input(self, btn_text: str):
-        """卡片问答：按钮弹出单行输入框，回车自动关闭并发送。"""
+        """卡片问答：按钮弹出单行输入框，Ctrl+回车发送到右侧对话区。"""
         lay = self.layout()
         if lay is None:
             return
@@ -453,13 +553,13 @@ class ParagraphCard(QFrame):
 
     def _toggle_qa_edit(self):
         if self._qa_edit is None:
-            self._qa_edit = QLineEdit()
-            self._qa_edit.setPlaceholderText("输入问题，回车发送到右侧对话区（输入框自动关闭）")
+            self._qa_edit = QALineEdit()
+            self._qa_edit.setPlaceholderText("输入问题，Ctrl+回车发送到右侧对话区（输入框自动关闭）")
             self._qa_edit.setStyleSheet(
                 "QLineEdit { border: 1px solid #bfddd6; border-radius: 6px; "
                 "padding: 6px 10px; font-size: 12px; }"
             )
-            self._qa_edit.returnPressed.connect(self._submit_qa)
+            self._qa_edit.submit_requested.connect(self._submit_qa)
             self.layout().addWidget(self._qa_edit)
             self._qa_edit.setFocus()
         elif self._qa_edit.isVisible():
@@ -476,7 +576,7 @@ class ParagraphCard(QFrame):
         if q:
             self.qa_requested.emit(
                 self._elem.element_id or f"index:{self._index}", q, "")
-        self._qa_edit.setVisible(False)  # 回车后自动关闭
+        self._qa_edit.setVisible(False)  # 发送后自动关闭
         self._qa_edit.clear()
 
     def _append_translation_row(self, layout: QVBoxLayout, with_qa: bool = False,
@@ -605,7 +705,30 @@ class ImageCard(QFrame):
         self._separator: QFrame | None = None
         self._qa_btn: QPushButton | None = None
         self._qa_edit: QLineEdit | None = None
+        self._scalable_labels: list[QLabel] = []
         self._setup_ui()
+        self._collect_scalable_labels()
+
+    def _collect_scalable_labels(self) -> None:
+        """记录图卡内文字标签的基准字号（页码/图注/提示），供阅读字号增减。"""
+        self._scalable_labels = []
+        for lbl in self.findChildren(QLabel):
+            ps = lbl.font().pointSize()
+            if ps > 0:
+                lbl.setProperty("basePointSize", ps)
+                self._scalable_labels.append(lbl)
+
+    def apply_font_delta(self, delta: int) -> None:
+        if not hasattr(self, "_scalable_labels"):
+            self._collect_scalable_labels()
+        for lbl in self._scalable_labels:
+            base = int(lbl.property("basePointSize") or 0)
+            if base <= 0:
+                continue
+            f = lbl.font()
+            f.setPointSize(base + delta)
+            lbl.setFont(f)
+        self._sync_card_height()
 
     def hasHeightForWidth(self) -> bool:
         return True
@@ -696,13 +819,13 @@ class ImageCard(QFrame):
 
     def _toggle_qa_edit(self):
         if self._qa_edit is None:
-            self._qa_edit = QLineEdit()
-            self._qa_edit.setPlaceholderText("输入问题，回车发送到右侧对话区（输入框自动关闭）")
+            self._qa_edit = QALineEdit()
+            self._qa_edit.setPlaceholderText("输入问题，Ctrl+回车发送到右侧对话区（输入框自动关闭）")
             self._qa_edit.setStyleSheet(
                 "QLineEdit { border: 1px solid #bfddd6; border-radius: 6px; "
                 "padding: 6px 10px; font-size: 12px; }"
             )
-            self._qa_edit.returnPressed.connect(self._submit_qa)
+            self._qa_edit.submit_requested.connect(self._submit_qa)
             self.layout().addWidget(self._qa_edit)
             self._qa_edit.setFocus()
         elif self._qa_edit.isVisible():
@@ -719,7 +842,7 @@ class ImageCard(QFrame):
         if q:
             self.qa_requested.emit(
                 self._elem.element_id or "", q, self._image_path or "")
-        self._qa_edit.setVisible(False)  # 回车后自动关闭
+        self._qa_edit.setVisible(False)  # 发送后自动关闭
         self._qa_edit.clear()
 
     def _load_pixmap(self):
@@ -790,6 +913,10 @@ class PDFViewerPanel(QWidget):
         self._pending_integrate: bool = False
         self._stage2_timer: QTimer | None = None
         self._stage2_start_time: float = 0.0
+        # 阅读字号偏移（全局偏好，持久化到 config.reader_font_delta）
+        from ..utils.config import load_config
+        self._font_delta: int = int(load_config().get("reader_font_delta", 0) or 0)
+        self._edit_seq: int = 0  # 手动拆分/合并的元素 id 序号
         self._setup_ui()
 
     def set_text_client(self, client: "LLMClient | None"):
@@ -819,6 +946,26 @@ class PDFViewerPanel(QWidget):
         self.auto_trans_btn.clicked.connect(self._on_toggle_auto_translate)
         self.auto_trans_btn.setEnabled(False)
         toolbar.addWidget(self.auto_trans_btn)
+
+        self.font_smaller_btn = QPushButton("A−")
+        self.font_smaller_btn.setObjectName("secondaryBtn")
+        self.font_smaller_btn.setFixedWidth(36)
+        self.font_smaller_btn.setToolTip("减小阅读字号")
+        self.font_smaller_btn.clicked.connect(lambda: self._change_font_delta(-1))
+        toolbar.addWidget(self.font_smaller_btn)
+
+        self.font_bigger_btn = QPushButton("A＋")
+        self.font_bigger_btn.setObjectName("secondaryBtn")
+        self.font_bigger_btn.setFixedWidth(36)
+        self.font_bigger_btn.setToolTip("增大阅读字号")
+        self.font_bigger_btn.clicked.connect(lambda: self._change_font_delta(1))
+        toolbar.addWidget(self.font_bigger_btn)
+
+        self.fullscreen_btn = QPushButton("⛶ 全屏阅读")
+        self.fullscreen_btn.setObjectName("secondaryBtn")
+        self.fullscreen_btn.setToolTip("全屏显示主窗口（F11），Esc 或再点一次退出")
+        self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
+        toolbar.addWidget(self.fullscreen_btn)
 
         layout.addLayout(toolbar)
 
@@ -866,6 +1013,36 @@ class PDFViewerPanel(QWidget):
 
     def get_current_path(self) -> str:
         return self._current_path
+
+    # ---- 阅读字号与全屏 ----
+
+    def _change_font_delta(self, step: int) -> None:
+        """增减阅读字号（-2 ~ +6），应用到全部卡片并持久化。"""
+        new_delta = max(-2, min(6, self._font_delta + step))
+        if new_delta == self._font_delta:
+            return
+        self._font_delta = new_delta
+        from ..utils.config import load_config, save_config
+        config = load_config()
+        config["reader_font_delta"] = new_delta
+        save_config(config)
+        self._apply_font_delta_to_cards()
+
+    def _apply_font_delta_to_cards(self) -> None:
+        anchor = self._capture_viewport_anchor()  # 全卡变高/变矮时保持阅读位置
+        for card in self._cards:
+            card.apply_font_delta(self._font_delta)
+        self._restore_viewport_anchor(anchor)
+
+    def toggle_fullscreen(self) -> None:
+        """阅读一键全屏：全屏主窗口给正文腾出最大空间，Esc/再点退出。"""
+        win = self.window()
+        if win.isFullScreen():
+            win.showNormal()
+            self.fullscreen_btn.setText("⛶ 全屏阅读")
+        else:
+            win.showFullScreen()
+            self.fullscreen_btn.setText("⛶ 退出全屏")
 
     def load_pdf(self, file_path: str, existing_processor: "PDFProcessor | None" = None):
         """加载 PDF —— 检查缓存 → Stage1 → Stage2。
@@ -1235,12 +1412,16 @@ class PDFViewerPanel(QWidget):
                     card = ParagraphCard(elem, i, parent=self.container)
                     card.translate_requested.connect(self._on_translate_request)
                 card.qa_requested.connect(self._on_card_qa)
+                card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                card.customContextMenuRequested.connect(
+                    lambda pos, c=card: self._show_card_menu(c, pos))
                 self._cards.append(card)
                 self.card_layout.addWidget(card)
             except Exception:
                 failed += 1
                 import traceback
                 traceback.print_exc()
+        self._apply_font_delta_to_cards()
         self.card_layout.addStretch()
         return failed
 
@@ -1249,6 +1430,115 @@ class PDFViewerPanel(QWidget):
         if not question.strip():
             return
         self.follow_up_question.emit(question, image_path or "")
+
+    # ---- 手动拆分 / 合并卡片 ----
+
+    def _elem_index(self, card: "ParagraphCard") -> int | None:
+        """卡片元素在 display_elements 中的下标（按对象身份匹配）。"""
+        if self._structured_doc is None or not isinstance(card, ParagraphCard):
+            return None
+        for i, e in enumerate(self._structured_doc.display_elements):
+            if e is card._elem:
+                return i
+        return None  # 图注等派生卡片不在文档元素列表中
+
+    def _show_card_menu(self, card, pos) -> None:
+        """段落卡右键菜单：解析效果不佳时手工拆分/合并。"""
+        if not isinstance(card, ParagraphCard) or self._structured_doc is None:
+            return
+        idx = self._elem_index(card)
+        etype = card._elem.element_type
+        menu = QMenu(self)
+        act_split = menu.addAction("✂ 在此处拆分…")
+        act_split.setToolTip("把这一段按你指定的位置拆成两段")
+        act_split.setEnabled(
+            idx is not None and etype in SPLITTABLE_TYPES and len(card._text) >= 2)
+        act_prev = act_next = None
+        prev_ok = next_ok = False
+        if idx is not None and etype in MERGEABLE_TYPES:
+            elems = self._structured_doc.display_elements
+            prev_ok = (idx > 0 and elems[idx - 1].element_type == etype)
+            next_ok = (idx + 1 < len(elems)
+                       and elems[idx + 1].element_type == etype)
+            act_prev = menu.addAction("⤴ 与上一段合并")
+            act_prev.setEnabled(prev_ok)
+            act_next = menu.addAction("⤵ 与下一段合并")
+            act_next.setEnabled(next_ok)
+        chosen = menu.exec(card.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is act_split:
+            self._split_card_dialog(card)
+        elif chosen is act_prev and prev_ok:
+            self._merge_at(idx - 1)
+        elif chosen is act_next and next_ok:
+            self._merge_at(idx)
+
+    def _next_edit_id(self, base: str, tag: str) -> str:
+        self._edit_seq += 1
+        return f"{base}~{tag}{self._edit_seq}"
+
+    def _split_card_dialog(self, card: "ParagraphCard") -> None:
+        idx = self._elem_index(card)
+        if idx is None or self._structured_doc is None:
+            return
+        pos = SplitDialog.ask_split_position(card._text, self)
+        if pos is None:
+            return
+        text = card._elem.text
+        left, right = text[:pos].rstrip(), text[pos:].lstrip()
+        if not left or not right:
+            return
+        elem = card._elem
+        base_id = elem.element_id or f"edit{idx}"
+        elem.text = left
+        elem.element_id = self._next_edit_id(base_id, "s")
+        lower = copy(elem)
+        lower.text = right
+        lower.element_id = self._next_edit_id(base_id, "s")
+        self._structured_doc.display_elements.insert(idx + 1, lower)
+        self._apply_manual_edit()
+
+    def _merge_at(self, first_idx: int) -> None:
+        """把 display_elements[first_idx] 与其后一个同类元素合并为一段。"""
+        if self._structured_doc is None:
+            return
+        elems = self._structured_doc.display_elements
+        if first_idx < 0 or first_idx + 1 >= len(elems):
+            return
+        a, b = elems[first_idx], elems[first_idx + 1]
+        a_text, b_text = a.text.rstrip(), b.text.lstrip()
+        if not a_text:
+            merged = b_text
+        elif not b_text:
+            merged = a_text
+        elif a_text.endswith("-"):
+            merged = a_text[:-1] + b_text  # 跨页断词连字符直接拼接
+        else:
+            def _cjk(ch: str) -> bool:
+                return "\u4e00" <= ch <= "\u9fff"
+            sep = "" if (a_text and (_cjk(a_text[-1]) or _cjk(b_text[:1]))) else " "
+            merged = a_text + sep + b_text
+        a.text = merged
+        a.element_id = self._next_edit_id(a.element_id or f"edit{first_idx}", "m")
+        del elems[first_idx + 1]
+        self._apply_manual_edit()
+
+    def _apply_manual_edit(self) -> None:
+        """手动编辑后的收口：写回整合缓存 → 重渲染 → 恢复滚动位置与译文。"""
+        from ..utils.config import load_doc_state, save_doc_state
+        if self._structured_doc is None or not self._current_path:
+            return
+        state = load_doc_state(self._current_path)
+        # 无论缓存是否已含 structured_document 都写回：保证 UI 与磁盘一致
+        state["structured_document"] = self._structured_doc.to_dict()
+        save_doc_state(self._current_path, state)
+        scroll_pos = self.scroll_area.verticalScrollBar().value()
+        self._render_document(self._structured_doc)
+        self._restore_translation_state(state)
+        self.scroll_area.verticalScrollBar().setValue(scroll_pos)
+        # 只发 updated（主窗口同步检索上下文），不发 pdf_loaded（会重置对话）
+        self.structured_document_updated.emit(self._current_path)
 
     def _on_stage2_merged(self, pdf_path: str, doc: "StructuredDocument"):
         """跨页接缝合并完成 → 用合并后的文档刷新视图。"""
@@ -1332,13 +1622,45 @@ class PDFViewerPanel(QWidget):
         self._trans_workers[idx] = worker
         worker.start()
 
+    def _capture_viewport_anchor(self):
+        """记录视口顶部落在哪张卡片内及像素偏移，供卡片变高后恢复阅读位置。
+
+        自动翻译会让视口上方的卡片长高，把正在读的内容整体推出屏幕外
+        （表现为内容"跳到屏幕下面去了"）；翻译落点前后各取一次锚点即可抵消。
+        """
+        top = self.scroll_area.verticalScrollBar().value()
+        if top <= 0:
+            return None
+        for card in self._cards:
+            y = card.mapTo(self.container, QPoint(0, 0)).y()
+            if y <= top < y + max(card.height(), 1):
+                return (card, top - y)
+        return None
+
+    def _restore_viewport_anchor(self, anchor) -> None:
+        if anchor is None:
+            return
+        card, offset = anchor
+        if card.parentWidget() is None:
+            return  # 卡片已被重建（切文献/重渲染），放弃恢复
+        def _apply():
+            lay = self.card_layout
+            if lay is not None:
+                lay.activate()
+            y = card.mapTo(self.container, QPoint(0, 0)).y()
+            self.scroll_area.verticalScrollBar().setValue(max(0, y + offset))
+        _apply()
+        QTimer.singleShot(0, _apply)  # 布局事件落地后再校一次
+
     def _on_translation_done(self, idx: int, zh: str):
         worker = self._trans_workers.pop(idx, None)
         if worker is None or worker._gen != self._doc_generation:
             return  # 过期结果（已切换/重置视图）直接丢弃
         for card in self._cards:
             if hasattr(card, '_index') and card._index == idx and isinstance(card, ParagraphCard):
+                anchor = self._capture_viewport_anchor()
                 card.show_translation(zh)
+                self._restore_viewport_anchor(anchor)
                 from ..utils.config import load_doc_state, save_doc_state
                 state = load_doc_state(self._current_path)
                 translations = state.setdefault("translations", {})

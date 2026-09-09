@@ -101,6 +101,7 @@ class LLMClient:
 VISION_MODELS: frozenset[str] = frozenset({
     "glm-5v-turbo", "glm-4.6v", "glm-4.6v-flash",
     "glm-4.1v-thinking-flash", "glm-4v-flash",
+    "deepseek-v4-flash-vision-exp",
 })
 
 PROVIDERS: dict[str, dict] = {
@@ -136,41 +137,73 @@ PROVIDERS: dict[str, dict] = {
     },
     "OpenCode Go": {
         "base_url": "https://opencode.ai/zen/go/v1",
+        # 与 Go 端点 /v1/models 实际返回一致（OpenAI 兼容 chat/completions）
         "models": [
-            "glm-5.2", "glm-5.1",
-            "kimi-k2.7-code", "kimi-k2.6",
-            "deepseek-v4-pro", "deepseek-v4-flash",
-            "mimo-v2.5", "mimo-v2.5-pro",
+            # GLM / DeepSeek
+            "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5",
+            "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
+            # Kimi / MiniMax / Qwen / MiMo / 其它
+            "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
+            "minimax-m3", "minimax-m2.7", "minimax-m2.5",
+            "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus",
+            "qwen3.6-plus", "qwen3.5-plus",
+            "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-pro", "mimo-v2-omni",
+            "hy4-preview", "hy3", "hy3-preview",
+            "longcat-2.0", "omen-alpha",
+            "gpt-5.6-luna", "grok-4.6", "grok-4.5",
+            "muse-spark-1.3-contributor", "muse-spark-1.2-contributor",
         ],
-        "description": "OpenCode Go 订阅 — GLM / Kimi / DeepSeek / MiMo",
+        "description": (
+            "OpenCode Go 订阅（Go 端点共 35 个模型）— GLM / Kimi / DeepSeek / MiniMax / "
+            "Qwen / MiMo / Hy / LongCat / GPT / Grok 等；muse-spark 系列为 Contributor 档限区模型。"
+        ),
     },
     "OpenCode Zen": {
         "base_url": "https://opencode.ai/zen/v1",
+        # Zen 的 /v1/models 还含 GPT/Claude/Gemini/Grok 等名牌模型，但它们走
+        # /responses、/messages 等原生端点，OpenAI chat/completions 只兼容下列模型
         "models": [
-            "glm-5.2", "glm-5.1", "glm-5",
+            "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5",
             "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
-            "deepseek-v4-pro", "deepseek-v4-flash",
+            "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
             "minimax-m3", "minimax-m2.7", "minimax-m2.5",
             # 免费模型（/chat/completions 可直接调用）
             "big-pickle",
             "mimo-v2.5-free",
-            "hy3-free",
+            "deepseek-v4-flash-free",
+            "ling-3.0-flash-fin-free",
             "nemotron-3-ultra-free",
             "nemotron-3.5-lightning-free",
+            "muse-spark-1.3-contributor-free",
+            "muse-spark-1.2-contributor-free",
         ],
-        "description": "OpenCode Zen — GLM / Kimi / DeepSeek / MiniMax，含多个免费模型（/chat/completions）",
+        "description": (
+            "OpenCode Zen 按量付费 — GLM / Kimi / DeepSeek / MiniMax；免费模型：big-pickle、"
+            "mimo-v2.5-free、deepseek-v4-flash-free、ling-3.0-flash-fin-free、nemotron-3-ultra-free、"
+            "nemotron-3.5-lightning-free、muse-spark 系（数据可能用于训练）。"
+            "GPT / Claude / Gemini / Grok / Qwen 走原生端点，不兼容本应用的 chat/completions 调用。"
+        ),
     },
     "Ollama": {
         "base_url": "https://ollama.com/v1",
+        # ollama.com 云端目录（带 cloud 能力的模型）；云专属模型标签为 :cloud，
+        # 本地同款模型的云端变体在参数标签后加 -cloud
         "models": [
-            "deepseek-v4-flash:0731-cloud",
+            "glm-5.3:cloud", "glm-5.3-flash:cloud", "glm-5.2:cloud", "glm-5.1:cloud",
+            "deepseek-v4-flash:cloud", "deepseek-v4-flash:0731-cloud",
+            "deepseek-v4-pro:cloud",
+            "kimi-k3:cloud", "kimi-k2.7-code:cloud", "kimi-k2.6:cloud",
+            "minimax-m3:cloud", "minimax-m2.7:cloud",
+            "qwen3.5:122b-cloud",
             "gemma4:cloud",
-            "gpt-oss:120b-cloud",
+            "mistral-large-3:cloud",
+            "nemotron-3-ultra:cloud", "nemotron-3-super:120b-cloud",
+            "gpt-oss:120b-cloud", "gpt-oss:20b-cloud",
         ],
         "description": (
             "Ollama 云端（https://ollama.com/v1，需 API Key）。模型名遵循 name:tag 格式，"
-            "云端变体标签以 -cloud 结尾；目录还提供 deepseek-v4-pro / kimi-k3 / glm-5.x / "
-            "minimax-m3 等，可在模型框手动输入对应标签。"
+            "云专属模型标签为 :cloud（如 kimi-k3:cloud），本地同款模型的云端变体在参数标签后加 "
+            "-cloud（如 gpt-oss:120b-cloud）；模型框支持手动输入目录中的其它标签。"
         ),
     },
     "自定义": {
