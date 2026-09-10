@@ -1,5 +1,6 @@
-"""新功能离屏自检：热力图自适应/标签避让、计划任务编辑、卡片手动拆分合并、
-卡片提问 Ctrl+Enter、阅读字号增减（无 LLM 无网络，QPA offscreen 运行）。"""
+"""新功能离屏自检：热力图自适应/标签避让、计划任务编辑/回到今天可见性/任务折行、
+卡片手动拆分合并、卡片提问 Ctrl+Enter、阅读字号增减（内联 px 口径）、读完标记
+（无 LLM 无网络，QPA offscreen 运行）。"""
 
 from __future__ import annotations
 
@@ -73,6 +74,46 @@ check("计划：空白文本不覆盖原文本", plans[0]["text"] == "修改后�
 check("计划：PlanPage 有编辑按钮入口",
       page._edit_editor is None)
 tracker.delete_plan("daily", pid)
+
+# 「回到今天」按钮：只在视图偏离今天时出现
+page._go_prev()
+check("计划：翻到昨天后显示「回到今天」", not page._today_btn.isHidden())
+page._go_today()
+check("计划：回到今天后按钮隐藏", page._today_btn.isHidden())
+
+# 任务文字自动折行（WrapCheckBox 内嵌 wordWrap QLabel）
+from src.ui.stats_panel import WrapCheckBox  # noqa: E402
+
+long_task = "需要折行的很长任务文本，" * 12
+wcb = WrapCheckBox(long_task)
+check("计划：折行复选框 text() 往返一致", wcb.text() == long_task)
+check("计划：复选框声明 heightForWidth",
+      wcb.hasHeightForWidth() and wcb.heightForWidth(220) > wcb.heightForWidth(600))
+wcb.setChecked(True)
+check("计划：勾选后文字标签带 done 属性", bool(wcb._label.property("done")))
+wcb.setChecked(False)
+check("计划：取消勾选后 done 属性复位", not bool(wcb._label.property("done")))
+
+# 集成：窄面板下任务行实际折行增高
+from PySide6.QtWidgets import QWidget as _QWidget  # noqa: E402
+
+page_wrap = PlanPage(tracker, "daily")
+page_wrap.resize(300, 600)
+tracker.add_plan("daily", long_task, date.today().isoformat())
+page_wrap._refresh()
+page_wrap.show()
+app.processEvents()
+rows = [page_wrap._list_layout.itemAt(i).widget()
+        for i in range(page_wrap._list_layout.count())]
+row = next(w for w in rows if isinstance(w, _QWidget))
+check("计划：窄面板任务行折行增高", row.height() > 40)
+narrow_h = row.height()
+page_wrap.resize(1100, 600)
+app.processEvents()
+check("计划：面板变宽后行高回落", row.height() < narrow_h * 0.7)
+tracker.delete_plan("daily",
+                    tracker.plans_for("daily", date.today().isoformat())[0]["id"])
+page_wrap.hide()
 
 # ============================================================
 # 3. 卡片手动拆分/合并（构造 StructuredDocument + 渲染面板）
@@ -183,15 +224,34 @@ check("提问框：Ctrl+回车发送", qa_sent == ["这张图说明什么？"])
 check("提问框：发送后输入框自动关闭", not pcard._qa_edit.isVisible())
 
 # ============================================================
-# 5. 阅读字号增减
+# 5. 阅读字号增减（全局 QSS 的 font-size 会盖掉 setFont，
+#    因此增减必须以标签内联 px 落地，这里按该口径断言）
 # ============================================================
-base_ps = pcard.text_label.font().pointSize()
+import src.utils.config as config_mod  # noqa: E402
+
+config_mod.save_config = lambda _cfg: None  # 测试期间不写真实用户配置
+
+from src.ui.pdf_viewer import _FONT_PX_RE  # noqa: E402
+
+
+def _label_px(lbl) -> float:
+    m = _FONT_PX_RE.search(lbl.styleSheet())
+    return float(m.group(1)) if m else 0.0
+
+
 panel._cards = [pcard]
 panel._font_delta = 0
+panel._apply_font_delta_to_cards()
+base_px = _label_px(pcard.text_label)
+prop_base = float(pcard.text_label.property("baseFontSizePx"))
+check("字号：delta=0 时正文标签落到基准 px",
+      base_px > 0 and prop_base > 0 and base_px == round(prop_base))
 panel._change_font_delta(1)
-check("字号：+1 后标签字号变大",
-      pcard.text_label.font().pointSize() == base_ps + 1 and panel._font_delta == 1)
+check("字号：+1 后标签内联字号变大",
+      _label_px(pcard.text_label) == max(8, round(prop_base + 4 / 3))
+      and panel._font_delta == 1)
 panel._change_font_delta(-1)
+check("字号：回落到基准 px", _label_px(pcard.text_label) == base_px)
 panel._change_font_delta(-1)
 check("字号：回落后可继续减小", panel._font_delta == -1)
 for _ in range(20):
@@ -240,6 +300,44 @@ doc2 = StructuredDocument.from_dict(reloaded["structured_document"])
 check("持久化：读回后拆分两段文本正确",
       doc2.display_elements[0].text + " " + doc2.display_elements[1].text
       == t[:mid].rstrip() + " " + t[mid:].lstrip())
+
+# ============================================================
+# 7. 读完标记（ReadMarkStore 持久化 + 阅读工具栏联动）
+# ============================================================
+from src.core.read_marks import ReadMarkStore  # noqa: E402
+
+marks_dir = Path(tmp) / "marks"
+rm = ReadMarkStore(marks_dir=marks_dir)
+pdf_a = str(fake_pdf)
+check("已读：默认未读", not rm.is_read(pdf_a))
+fired: list[tuple[str, bool]] = []
+rm.changed.connect(lambda p, r: fired.append((p, r)))
+rm.set_read(pdf_a, True)
+check("已读：标记后可查询", rm.is_read(pdf_a))
+check("已读：changed 信号携带状态", fired == [(pdf_a, True)])
+check("已读：标记落盘",
+      (marks_dir / "read_marks.json").exists())
+rm2 = ReadMarkStore(marks_dir=marks_dir)
+check("已读：新实例读回同一文件", rm2.is_read(pdf_a))
+rm.set_read(pdf_a, False)
+check("已读：取消标记", not rm.is_read(pdf_a) and fired[-1] == (pdf_a, False))
+
+# 路径规范化：Windows 下大小写差异不产生重复条目
+rm2.set_read(pdf_a, True)
+check("已读：路径大小写不敏感",
+      rm2.is_read(pdf_a.upper()) if os.name == "nt" else True)
+rm2.set_read(pdf_a, False)
+
+# 阅读工具栏按钮与全局单例联动（读真实 states 目录 → 指到临时目录）
+import src.core.read_marks as read_marks_mod  # noqa: E402
+read_marks_mod.get_states_dir = lambda: marks_dir
+panel._current_path = pdf_a
+read_marks_mod.store()._loaded = False  # 让单例重新加载（测试目录刚被改）
+read_marks_mod.set_read(pdf_a, True)
+check("已读：工具栏按钮显示已读", panel.read_mark_btn.text() == "✅ 已读")
+read_marks_mod.set_read(pdf_a, False)
+check("已读：工具栏按钮恢复标记文案",
+      panel.read_mark_btn.text() == "✓ 标记已读" and panel.read_mark_btn.isEnabled())
 
 # ============================================================
 # 汇总

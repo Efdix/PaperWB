@@ -554,6 +554,7 @@ class WritingPanel(QWidget):
 
         # ---- Word 文档绑定与 AI 修订（WorkBuddy 式人机双写） ----
         self._word_path: str = ""            # 绑定的 .docx 路径（空 = 未绑定）
+        self._word_mtime: float = 0.0        # 绑定文档的磁盘 mtime（外部修改检测）
         self._word_styles: list[str] = []    # 打开时的段落样式名
         self._word_comments: list = []       # 打开时的批注（DocxComment 列表）
         self._word_has_revisions = False
@@ -573,6 +574,7 @@ class WritingPanel(QWidget):
         self._rev_controller = DocDiffController(self.editor)
         self._rev_controller.set_on_changed(self._on_rev_changed)
         self.editor.textChanged.connect(self._rev_controller.on_text_changed)
+        self.editor.installEventFilter(self)  # 拦截拖入编辑器的 .docx/.txt/.md 文件
         self._refresh_kb_dropdown()
         self._load_draft()  # 恢复上次知识库的编辑器草稿（防止空文本覆盖磁盘）
 
@@ -747,15 +749,47 @@ class WritingPanel(QWidget):
         word_head = QHBoxLayout()
         self._open_word_btn = QPushButton("打开 Word")
         self._open_word_btn.setObjectName("secondaryBtn")
-        self._open_word_btn.setToolTip("打开 .docx 文档直接编辑（段落级格式，批注只读展示）")
+        self._open_word_btn.setToolTip("打开 .docx 文档直接编辑（run 级保真写回，批注只读展示）")
         self._open_word_btn.clicked.connect(self._on_open_word)
         word_head.addWidget(self._open_word_btn)
+
+        self._recent_word_btn = QPushButton("最近 ▾")
+        self._recent_word_btn.setObjectName("secondaryBtn")
+        self._recent_word_btn.setToolTip("最近打开的 Word 文档")
+        recent_menu = QMenu(self._recent_word_btn)
+        recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
+        self._recent_word_btn.setMenu(recent_menu)
+        word_head.addWidget(self._recent_word_btn)
+
         self._save_word_btn = QPushButton("保存到 Word")
         self._save_word_btn.setObjectName("primaryBtn")
-        self._save_word_btn.setToolTip("把编辑器内容写回当前 Word 文档（保留批注）")
+        self._save_word_btn.setToolTip("把编辑器内容写回当前 Word 文档（未变段落零改动，保留批注/脚注/引用域/图片）")
         self._save_word_btn.clicked.connect(self._on_save_word)
         self._save_word_btn.setEnabled(False)
         word_head.addWidget(self._save_word_btn)
+
+        self._save_word_as_btn = QPushButton("另存为")
+        self._save_word_as_btn.setObjectName("secondaryBtn")
+        self._save_word_as_btn.setToolTip("把编辑器内容写入新的 .docx 文件并绑定")
+        self._save_word_as_btn.clicked.connect(self._on_save_word_as)
+        word_head.addWidget(self._save_word_as_btn)
+
+        self._open_in_word_btn = QPushButton("在 Word 中打开")
+        self._open_in_word_btn.setObjectName("secondaryBtn")
+        self._open_in_word_btn.setToolTip("用系统默认程序（Word/WPS）打开当前绑定的文档")
+        self._open_in_word_btn.setEnabled(False)
+        self._open_in_word_btn.clicked.connect(self._on_open_in_word)
+        word_head.addWidget(self._open_in_word_btn)
+
+        self._track_changes_cb = QCheckBox("修订写回")
+        from ..utils.config import get_word_track_changes
+        self._track_changes_cb.setChecked(get_word_track_changes())
+        self._track_changes_cb.setToolTip(
+            "保存时把修改写为 Word 修订（track changes）：删除＝红色删除线、"
+            "插入＝带下划线，可在 Word 中逐处接受/拒绝；引用域不会被改写")
+        self._track_changes_cb.toggled.connect(self._on_track_changes_toggled)
+        word_head.addWidget(self._track_changes_cb)
+
         self._word_file_label = QLabel("未绑定文件")
         self._word_file_label.setObjectName("subtitleLabel")
         self._word_file_label.setToolTip("当前绑定的 Word 文档路径")
@@ -1104,6 +1138,7 @@ class WritingPanel(QWidget):
             # 加载新知识库的草稿：必须整体替换，否则旧库内容会被
             # 30 秒自动保存写进新库的草稿文件（两库互相污染）
             self._load_draft(replace=True)
+            self._maybe_offer_word_rebind()
             self._last_kb_index = self._kb_combo.currentIndex()
         else:
             self._coach._current_profile = None
@@ -1226,17 +1261,19 @@ class WritingPanel(QWidget):
     def _clear_word_binding(self) -> None:
         """切换知识库时解除旧 Word 绑定，避免跨项目覆盖文件。"""
         self._word_path = ""
+        self._word_mtime = 0.0
         self._word_styles = []
         self._word_comments = []
         self._word_has_revisions = False
         self._word_dirty = False
         self._save_word_btn.setEnabled(False)
+        self._open_in_word_btn.setEnabled(False)
         self._comment_list.clear()
         self._render_comments()
         self._update_word_file_label()
 
     def _on_open_word(self):
-        """打开 .docx：读入编辑器 + 绑定文件 + 刷新批注。"""
+        """打开 .docx：弹文件对话框后交给 _load_word_file。"""
         if self._word_dirty:
             r = QMessageBox.question(
                 self, "未保存的修改",
@@ -1250,6 +1287,10 @@ class WritingPanel(QWidget):
             self, "打开 Word 文档", "", "Word 文档 (*.docx)")
         if not path:
             return
+        self._load_word_file(path)
+
+    def _load_word_file(self, path: str) -> None:
+        """读入 .docx 并绑定：编辑器、批注、mtime、最近文件、绑定记忆。"""
         try:
             from ..core.docx_io import read_docx
             content = read_docx(path)
@@ -1261,6 +1302,10 @@ class WritingPanel(QWidget):
             return
 
         self._word_path = path
+        try:
+            self._word_mtime = os.path.getmtime(path)
+        except OSError:
+            self._word_mtime = 0.0
         self._word_styles = list(content.styles)
         self._word_comments = content.comments
         self._word_has_revisions = content.has_revisions
@@ -1269,7 +1314,13 @@ class WritingPanel(QWidget):
         self._swap_editor_text(content.to_plain_text())
         self._update_word_file_label()
         self._save_word_btn.setEnabled(True)
+        self._open_in_word_btn.setEnabled(True)
         self._render_comments()
+        from ..utils.config import push_recent_word_file, set_word_binding
+        push_recent_word_file(path)
+        if self._coach and self._coach.current_profile:
+            set_word_binding(self._coach.current_profile.name,
+                             path, self._word_mtime)
         if content.has_revisions:
             self._status_label.setText(
                 "文档含修订标记（track changes），已合并显示；保存时按当前文本写回")
@@ -1278,10 +1329,106 @@ class WritingPanel(QWidget):
         # 自动触发草稿整体评价（只读全文+风格指南，不读引用文献）
         QTimer.singleShot(200, self._start_auto_review)
 
+    def _on_track_changes_toggled(self, checked: bool) -> None:
+        from ..utils.config import set_word_track_changes
+        set_word_track_changes(bool(checked))
+
+    def _rebuild_recent_menu(self) -> None:
+        """重建「最近」菜单（打开菜单时触发）。"""
+        from ..utils.config import get_recent_word_files
+        menu = self._recent_word_btn.menu()
+        menu.clear()
+        files = get_recent_word_files()
+        if not files:
+            menu.addAction("（暂无最近文件）").setEnabled(False)
+            return
+        for f in files:
+            action = menu.addAction(f"📄 {os.path.basename(f)}")
+            action.setToolTip(f)
+            action.triggered.connect(lambda _c=False, p=f: self._open_recent_word(p))
+
+    def _open_recent_word(self, path: str) -> None:
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "文件不存在", f"文件已被移动或删除：\n{path}")
+            return
+        if path == self._word_path:
+            return
+        if self._word_dirty:
+            r = QMessageBox.question(
+                self, "未保存的修改",
+                "当前文档有未保存的修改，打开新文档将丢失这些修改。\n继续打开？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if r != QMessageBox.StandardButton.Yes:
+                return
+        self._load_word_file(path)
+
+    def _on_open_in_word(self) -> None:
+        """用系统默认程序（Word/WPS）打开当前绑定的文档。"""
+        if not self._word_path or not os.path.exists(self._word_path):
+            QMessageBox.information(self, "提示", "当前没有绑定的 Word 文档。")
+            return
+        if not hasattr(os, "startfile"):
+            QMessageBox.warning(self, "不支持", "此功能仅支持 Windows。")
+            return
+        self._check_external_word_change()
+        os.startfile(self._word_path)  # noqa: S606
+
+    def _check_external_word_change(self) -> bool:
+        """检测绑定的文档是否在外部被修改。变化时询问处理方式。
+
+        返回 True=可继续（无变化或用户选择继续）；False=已重新加载/中止。
+        """
+        if not self._word_path or not self._word_mtime:
+            return True
+        try:
+            disk_mtime = os.path.getmtime(self._word_path)
+        except OSError:
+            return True
+        if abs(disk_mtime - self._word_mtime) < 0.001:
+            return True
+        r = QMessageBox.question(
+            self, "文档已在外部被修改",
+            f"「{os.path.basename(self._word_path)}」在 PaperWB 之外被修改过"
+            "（可能在 Word/WPS 中保存过）。\n\n"
+            "「是」= 从磁盘重新加载（未保存的修改将丢弃）；\n"
+            "「否」= 继续编辑（保存时将覆盖外部改动，保存前会自动备份原文档）。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if r == QMessageBox.StandardButton.Yes:
+            self._load_word_file(self._word_path)
+            return False
+        self._word_mtime = disk_mtime  # 用户知情并选择继续
+        return True
+
+    def _backup_word_file(self, path: str) -> str:
+        """写回前自动备份原文档到数据目录，保留最近 20 份。返回备份路径。"""
+        try:
+            import shutil
+            from ..utils.config import get_docx_backup_dir, MAX_DOCX_BACKUPS
+            stem = os.path.splitext(os.path.basename(path))[0]
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dest = get_docx_backup_dir() / f"{stem}_{stamp}.docx"
+            shutil.copy2(path, dest)
+            backups = sorted(
+                get_docx_backup_dir().glob(f"{stem}_*.docx"),
+                key=lambda p: p.name)
+            for old in backups[:-MAX_DOCX_BACKUPS]:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+            return str(dest)
+        except Exception:  # noqa: BLE001 — 备份失败不阻塞保存
+            return ""
+
     def _on_save_word(self):
-        """把编辑器内容写回绑定的 Word 文档（段落级，保留批注）。"""
+        """把编辑器内容写回绑定的 Word 文档（run 级保真写回）。"""
         if not self._word_path:
-            QMessageBox.information(self, "提示", "请先打开一个 Word 文档。")
+            QMessageBox.information(
+                self, "提示", "请先打开 Word 文档，或使用「另存为」保存为新文档。")
             return
         if self._rev_controller is not None and self._rev_controller.has_changes:
             r = QMessageBox.question(
@@ -1294,18 +1441,180 @@ class WritingPanel(QWidget):
             if r != QMessageBox.StandardButton.Yes:
                 return
             self._rev_controller.accept_all()
+        if not self._check_external_word_change():
+            return
+        backup = self._backup_word_file(self._word_path)
+        track = self._track_changes_cb.isChecked()
         try:
             from ..core.docx_io import write_docx
             text = self.editor.toPlainText().replace("\u2029", "\n")
             paragraphs = text.split("\n")
             write_docx(self._word_path, paragraphs,
-                       styles=self._word_styles, comments=self._word_comments)
+                       styles=self._word_styles, comments=self._word_comments,
+                       track_changes=track)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "保存失败", f"无法写入 Word 文档：\n{e}")
             return
+        try:
+            self._word_mtime = os.path.getmtime(self._word_path)
+        except OSError:
+            pass
+        if self._coach and self._coach.current_profile:
+            from ..utils.config import set_word_binding
+            set_word_binding(self._coach.current_profile.name,
+                             self._word_path, self._word_mtime)
         self._word_dirty = False
         self._update_word_file_label()
-        self._status_label.setText(f"已保存到 {os.path.basename(self._word_path)}")
+        msg = f"已保存到 {os.path.basename(self._word_path)}"
+        if track:
+            msg += "（修改已写为 Word 修订，可在 Word 中逐处审阅）"
+        if backup:
+            msg += " · 已自动备份"
+        self._status_label.setText(msg)
+
+    def _on_save_word_as(self):
+        """把编辑器内容另存为新的 .docx 文件并绑定。"""
+        if self._rev_controller is not None and self._rev_controller.has_changes:
+            r = QMessageBox.question(
+                self, "存在未处理的 AI 修订",
+                "编辑器中有未处理的 AI 修订。\n"
+                "「是」= 全部接受后保存；「否」= 取消保存。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if r != QMessageBox.StandardButton.Yes:
+                return
+            self._rev_controller.accept_all()
+        default = self._word_path or os.path.join(
+            os.path.expanduser("~"), "Documents", "未命名.docx")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Word 文档另存为", default, "Word 文档 (*.docx)")
+        if not path:
+            return
+        if not path.lower().endswith(".docx"):
+            path += ".docx"
+        track = self._track_changes_cb.isChecked()
+        try:
+            from ..core.docx_io import write_docx
+            text = self.editor.toPlainText().replace("\u2029", "\n")
+            paragraphs = text.split("\n")
+            write_docx(path, paragraphs, track_changes=track)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "保存失败", f"无法写入 Word 文档：\n{e}")
+            return
+        # 重新绑定到新文件（旧文档的批注不再适用）
+        self._word_path = path
+        try:
+            self._word_mtime = os.path.getmtime(path)
+        except OSError:
+            self._word_mtime = 0.0
+        self._word_comments = []
+        self._word_paragraphs_snapshot = list(paragraphs)
+        self._word_has_revisions = track
+        self._word_dirty = False
+        self._render_comments()
+        self._update_word_file_label()
+        self._save_word_btn.setEnabled(True)
+        self._open_in_word_btn.setEnabled(True)
+        from ..utils.config import push_recent_word_file, set_word_binding
+        push_recent_word_file(path)
+        if self._coach and self._coach.current_profile:
+            set_word_binding(self._coach.current_profile.name,
+                             path, self._word_mtime)
+        msg = f"已另存为 {os.path.basename(path)}"
+        if track:
+            msg += "（修改已写为 Word 修订）"
+        self._status_label.setText(msg)
+
+    # ---- 拖拽打开 / 外部修改检测 / 绑定恢复 ----
+
+    DRAG_EXTS = (".docx", ".txt", ".md")
+
+    def eventFilter(self, obj, event):
+        """拦截拖到编辑器上的文件（.docx/.txt/.md），避免被 QTextEdit 当文本消费。"""
+        from PySide6.QtCore import QEvent
+        if obj is self.editor and event.type() in (
+                QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop):
+            files = self._dragged_files(event)
+            if files:
+                if event.type() == QEvent.Type.Drop:
+                    self._handle_dropped_files(files)
+                event.acceptProposedAction()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _dragged_files(self, event) -> list[str]:
+        try:
+            return [u.toLocalFile() for u in event.mimeData().urls()
+                    if u.toLocalFile().lower().endswith(self.DRAG_EXTS)]
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _handle_dropped_files(self, files: list[str]) -> None:
+        for p in files:
+            low = p.lower()
+            if low.endswith(".docx"):
+                if not os.path.exists(p):
+                    QMessageBox.warning(self, "文件不存在", f"找不到文件：\n{p}")
+                    continue
+                if self._word_dirty:
+                    r = QMessageBox.question(
+                        self, "未保存的修改",
+                        "当前文档有未保存的修改，打开新文档将丢失这些修改。\n继续打开？",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No,
+                    )
+                    if r != QMessageBox.StandardButton.Yes:
+                        continue
+                self._load_word_file(p)
+                return
+        # 没有可打开的 docx → 取第一个 txt/md 作为纯文本草稿载入
+        for p in files:
+            if p.lower().endswith((".txt", ".md")):
+                try:
+                    text = open(p, encoding="utf-8", errors="replace").read()
+                except OSError as err:
+                    QMessageBox.warning(self, "读取失败", f"{p}\n{err}")
+                    continue
+                self._swap_editor_text(text)
+                self._draft_dirty = True  # 交给 30 秒自动保存落盘
+                self._status_label.setText(
+                    f"已载入 {os.path.basename(p)}（纯文本草稿，未绑定 Word）")
+                return
+
+    def showEvent(self, event):
+        """切到写作工作台时静默检测外部修改，仅状态栏提示（不打断）。"""
+        super().showEvent(event)
+        if self._word_path and self._word_mtime:
+            try:
+                if abs(os.path.getmtime(self._word_path)
+                       - self._word_mtime) >= 0.001:
+                    self._status_label.setText(
+                        f"⚠ {os.path.basename(self._word_path)} "
+                        "已在外部被修改；保存时会提示处理方式")
+            except OSError:
+                pass
+
+    def _maybe_offer_word_rebind(self) -> None:
+        """切换知识库后，若该库上次绑定过 Word 文档，提示恢复。"""
+        if self._word_path or not (self._coach and self._coach.current_profile):
+            return
+        from ..utils.config import get_word_binding
+        binding = get_word_binding(self._coach.current_profile.name)
+        if not binding:
+            return
+        path = binding.get("path", "")
+        if not path or not os.path.exists(path):
+            return
+        r = QMessageBox.question(
+            self, "恢复上次的 Word 文档",
+            f"知识库「{self._coach.current_profile.name}」上次编辑的文档：\n"
+            f"{path}\n\n要从这份文档恢复吗？（当前编辑器内容会被文档内容替换）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if r == QMessageBox.StandardButton.Yes:
+            self._load_word_file(path)
 
     def _update_word_file_label(self):
         if not self._word_path:

@@ -51,18 +51,20 @@ src/
 │   ├── library_recommender.py # 按库推荐: Zotero 集合(含子集合)种子构建 + OpenAlex 引文推荐(主路) + LLM 集合画像检索(辅路) + 合并去重过滤 + LibraryRecommendWorker
 │   ├── literature_scout.py # 检索工作台·定向巡视: 方向 CRUD(topics.json) + 每方向 QTimer 定时多源检索 + 库内比对滤重(seen.json) + feed.json/RIS/CSV + push_to_feed 外部推送
 │   ├── reference_match.py # 文献匹配公共口径: DOI/标题归一化 + 库内查重 + 可选 LLM 批量模糊比对（写作文献补充与巡视共用）
+│   ├── read_marks.py      # 读完标记: 按规范化 PDF 路径存 states/read_marks.json，ReadMarkStore 单例带 changed 信号；阅读工具栏「✓ 标记已读」与左右文献列表 ✓ 前缀共用
 │   ├── unified_writer.py  # 统一润色+引文核查: 证据检索化(按声明检索相关段落) + json_mode + 多层容错 JSON
+│   ├── docx_io.py         # Word(.docx) 读写核心 v2: run 级最小侵入写回（未变段落零改动；变了段落按字符 diff 重组 run，匹配片段按原 rPr 重建）+ 段落 SequenceMatcher 对齐（中间插段不错位，新段继承相邻样式）+ 批注锚点/书签/脚注引用/行内图片/超链接/域指令（fldSimple 与 fldChar 复杂域，Zotero 引用域安全）原位保留 + 可选修订(track changes)写回 w:ins/w:del（author=PaperWB，Word 可逐处接受/拒绝；域结果区/容器内改动退化整段修订）+ 批注解析（段落索引+字符偏移）
 │   ├── writing_coach.py   # 写作教练: 知识库管理/写作习惯分析/期刊格式分析/引用密度分析
 │   ├── writing_prompts.py # 四种写作类型的系统提示词（综述/论文/专利/软著）
 │   └── pubmed_searcher.py # PubMed E-utilities 检索客户端（esearch + efetch）；PubMedPaper 统一文献模型(含 source/arxiv_id)
 ├── ui/
-│   ├── pdf_viewer.py      # 结构化阅读面板: ParagraphCard 按 element_type 渲染+中英文翻译(标题/摘要/正文/关键词/图表注可译, 多并发+滚动自动翻译)+文字区 I 形光标；Stage1 完成后自动跨页整合；初步整合文献打开时后台 LLM 接缝精修(_refine_prelim_seams)
+│   ├── pdf_viewer.py      # 结构化阅读面板: ParagraphCard 按 element_type 渲染+中英文翻译(标题/摘要/正文/关键词/图表注可译, 多并发+滚动自动翻译)+文字区 I 形光标；Stage1 完成后自动跨页整合；初步整合文献打开时后台 LLM 接缝精修(_refine_prelim_seams)；阅读工具栏：字号 −/＋（内联 px 落地，全局 QSS QWidget{font-size} 会盖掉 setFont）+「✓ 标记已读」+「⛶ 全屏阅读」沉浸模式(fullscreen_toggled 信号驱动主窗口隐藏菜单/顶栏/状态栏/工作台头部/左右面板，Esc/F11/再点退出)；段落卡右键菜单手动拆分/合并
 │   ├── pdf_list_panel.py  # 左侧面板: Tab1 Zotero 只读文献库 + Tab2 其它文献
 │   ├── zotero_panel.py    # Zotero 树形视图: 集合树+文献+PDF附件标记，周期同步/手动刷新驱动刷新
 │   ├── chat_panel.py      # 聊天面板: Markdown 气泡/流式渲染（阅读侧栏「本篇论文」页签）
 │   ├── library_qa_panel.py # 库内问答面板(阅读侧栏「全文献库」页签): 索引构建/流式回答+[n]角标/只问库/重建索引/参考文献跳转打开 PDF/「后台建库解析」开关与状态行 + item_key_for_pdf/refresh_engine_item/flush_engine 预解析协作
 │   ├── workbench_panel.py # 检索工作台(两栏): 左·AI 检索主区(自然语言→多源检索+结果卡片) / 右·巡视面板(上·方向卡片+定时巡视，下·巡视结果/推荐流 卡片+忽略/RIS/CSV，方向与结果同栏相邻)
-│   ├── writing_panel.py   # 写作面板: 编辑器优先+可收起工具检查器(知识库/Zotero/批注/AI)+自动保存+字数统计
+│   ├── writing_panel.py   # 写作面板: 编辑器优先+可收起工具检查器(知识库/Zotero/批注/AI)+自动保存+字数统计；Word 交互：拖拽打开(.docx/.txt/.md, editor eventFilter 拦截)+「最近 ▾」菜单+「另存为」+「在 Word 中打开」(os.startfile)+「修订写回」开关(保存时 w:ins/w:del)+写回前自动备份(docx_backup 保留 20 份)+外部修改 mtime 检测(showEvent 静默提示/保存前询问)+按知识库绑定记忆(切库提示恢复)
 │   ├── diff_dialog.py     # 润色对比对话框: 内联 diff(单编辑框)+导航栏(上一处/下一处/接受/拒绝)+AI 对话+引用高亮
 │   ├── lit_search_dialog.py # 文献补充对话框: LLM 双轨推荐(已知文献+搜索词)→多源检索(带来源标注)→导出 CSV/加入推荐流（非模态）
 │   ├── settings_dialog.py # 设置对话框: API接口设置(多模态/纯文本/文献检索源-OpenAlex密钥可选,密钥用于三源检索与按库推荐)+连接测试（Zotero/缓存路径在独立 DirectorySettingDialog，与 API 设置平级菜单）
@@ -79,7 +81,7 @@ src/
 
 - **便携模式**：配置与日志贴着程序走——打包版 `config.json` 与 `logs/`（error/faulthandler/selftest 日志）在安装目录（exe 同级），开发模式在仓库根（均 gitignore）；exe/仓库根不可写（如装进 Program Files）才回退 `%APPDATA%/PaperWB/`。首次便携运行自动迁移 %APPDATA% 旧配置（含 PDFasker 时代），保住 API Key 与 data_root；安装向导在 ssPostInstall 把 data_root 写入 `{app}\config.json`（升级时先整体拷入 %APPDATA% 旧配置）
 - 数据根目录 data_root: 默认 `<安装目录>/data`（开发模式 `<仓库根>/data`；exe 位置不可写退 `%LOCALAPPDATA%\PaperWB\data`），安装向导「数据与缓存目录」页或首次启动弹窗可改，存储在 config 的 `data_root` 字段
-- 所有用户数据在 `{data_root}/.paperwb/` 下，包括 library.json、chats、states、page_cache、writing_kb、drafts、polish_history、reviews、lib_index（全文献库问答索引）、scout（巡视方向/去重记忆/推荐流）、tmp（短命临时文件：Zotero sqlite 副本等，`get_tmp_dir()`，data_root 不可用退系统 %TEMP%）、hf_home（无预置模型时运行时联网下载的 HF 模型缓存，docling_parser 以 HF_HOME 重定向；hub 与 xet 都在其下）
+- 所有用户数据在 `{data_root}/.paperwb/` 下，包括 library.json、chats、states、page_cache、writing_kb、drafts、polish_history、reviews、docx_backup（Word 写回前自动备份）、read_marks（读完标记）、lib_index（全文献库问答索引）、scout（巡视方向/去重记忆/推荐流）、tmp（短命临时文件：Zotero sqlite 副本等，`get_tmp_dir()`，data_root 不可用退系统 %TEMP%）、hf_home（无预置模型时运行时联网下载的 HF 模型缓存，docling_parser 以 HF_HOME 重定向；hub 与 xet 都在其下）
 - PDF 文件存储在 `{data_root}/library/` 下
 - 菜单「设置 → 缓存文件存储路径设置...」可随时更改 data_root；Zotero 路径也在同一菜单中与 API 设置平级
 - 模型预置（完整版安装包）在 `<安装目录>\models\hub`，只读使用
@@ -153,6 +155,12 @@ src/
 - 编辑器自动保存（每30秒）到 `{data_root}/.paperwb/drafts/`
 - 润色历史保存（最近20条）到 `{data_root}/.paperwb/polish_history/`
 
+### Word 交互（写作面板）
+
+- **架构**：纯文本编辑器是工作视图，docx 原件是格式真相源；保存走 `docx_io.write_docx` run 级最小侵入合并——未变段落零改动（XML 逐字节不动），变了段落按字符 diff 重组 run，未变片段按原 rPr 重建、批注锚点/书签/脚注引用/行内图片/超链接/引用域原位保留；不做 docx↔HTML 富文本往返（对 Zotero 引用域/批注/修订必损）
+- **修订写回**：工具栏「修订写回」开关（config `word_track_changes`）——保存时删除包 `w:del`（w:t→w:delText）、插入包 `w:ins`（author=PaperWB），新增/删除段落同样是修订（段落标记 ins/del），Word 中逐处接受/拒绝；承载批注锚点的段落不物理删除
+- **交互**：拖拽打开（editor eventFilter 拦截 .docx/.txt/.md）、「最近 ▾」（config `recent_word_files` 最多 10 条）、「另存为」（重新绑定）、「在 Word 中打开」（os.startfile，Windows）、写回前自动备份到 `{data_root}/.paperwb/docx_backup/`（每文档保留 20 份）、外部修改检测（mtime：showEvent 静默提示 + 保存前询问重载/覆盖）、按知识库绑定记忆（config `word_bindings`，切库时提示恢复）
+
 ### 引用高亮规则
 
 润色 diff 编辑器中支持四种引用格式的标黄：
@@ -196,4 +204,4 @@ src/
 - 所有 Python 文件使用 `from __future__ import annotations` 和类型注解
 - 测试数据在 `test/` 目录下（含示例 PDF、写作草稿、缓存快照）
 - 验收脚本: `test/validate_zotero.py`（Zotero 文献两阶段整合验收，`--count` 可调，默认 20，输出 JSON 报告）与 `test/capture_zotero_screenshots.py`（UI 截图验收，`--count` 可调，默认 20，输出 PNG）
-- 自测脚本: `test/selftest_bugfixes.py`（纯逻辑回归）与 `test/selftest_workbench.py`（检索工作台与库内问答核心逻辑：匹配口径/索引/RAG 组装/巡视全链路假 PubMed/OpenAlex 解析与三源路由/检索式 v2 与两轮闭环/按库推荐/UI 离屏构建/两级接缝缓存与后台建库预解析（结构化抽取·prelim/final 状态迁移·队列过滤失败记忆·flush 复用·参考文献修剪），无 LLM 无网络）；`test/selftest_ui_features.py`（阅读 UI 新特性回归：热力图自适应几何与月份标签避让、计划任务 edit_plan、卡片提问 Ctrl+Enter（QALineEdit）、阅读字号增减钳制、卡片手动拆分/合并（连字符/中英拼接规则 + structured_document 落盘读回），QPA offscreen 无 LLM 无网络）；`test/smoke_workbench_app.py`（offscreen 全窗口集成冒烟，读真实配置与 Zotero 库但不调 LLM；设 PAPERWB_DISABLE_PREPARSE=1 跳过后台预解析）
+- 自测脚本: `test/selftest_bugfixes.py`（纯逻辑回归）与 `test/selftest_workbench.py`（检索工作台与库内问答核心逻辑：匹配口径/索引/RAG 组装/巡视全链路假 PubMed/OpenAlex 解析与三源路由/检索式 v2 与两轮闭环/按库推荐/UI 离屏构建/两级接缝缓存与后台建库预解析（结构化抽取·prelim/final 状态迁移·队列过滤失败记忆·flush 复用·参考文献修剪），无 LLM 无网络）；`test/selftest_ui_features.py`（阅读 UI 新特性回归：热力图自适应几何与月份标签避让、计划任务 edit_plan、「回到今天」按钮仅偏离今天时可见、任务文字自动折行（WrapCheckBox）、卡片提问 Ctrl+Enter（QALineEdit）、阅读字号增减（内联 px 口径 + 钳制）、卡片手动拆分/合并（连字符/中英拼接规则 + structured_document 落盘读回）、读完标记（ReadMarkStore 持久化/信号/路径归一/工具栏联动），QPA offscreen 无 LLM 无网络）；`test/smoke_workbench_app.py`（offscreen 全窗口集成冒烟，读真实配置与 Zotero 库但不调 LLM；设 PAPERWB_DISABLE_PREPARSE=1 跳过后台预解析）

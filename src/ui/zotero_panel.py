@@ -12,6 +12,9 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QFrame, QMenu, QMessageBox,
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QBrush, QColor
+
+from ..core import read_marks
 
 if TYPE_CHECKING:
     from ..core.zotero_parser import ZoteroLibrary
@@ -49,6 +52,8 @@ class ZoteroPanel(QWidget):
         self._watcher = watcher
         self._setup_ui()
         self.refresh()
+        # 已读标记变化（阅读工具栏/其它文献列表侧标记）→ 重建树刷新 ✓ 后缀
+        read_marks.store().changed.connect(lambda _p, _r: self.refresh())
 
     # ---- 依赖注入 ----
 
@@ -184,14 +189,21 @@ class ZoteroPanel(QWidget):
         year = f" ({item.year})" if item.year else ""
         has_pdf = bool(item.pdf_path) and os.path.isfile(item.pdf_path)
         marker = "📄" if has_pdf else "⚪"
-        text = f"{marker} {item.title or '[无标题]'}{year}"
+        is_read = has_pdf and read_marks.is_read(item.pdf_path)
+        read_mark = " ✓" if is_read else ""
+        text = f"{marker} {item.title or '[无标题]'}{year}{read_mark}"
         node = QTreeWidgetItem([text])
+        if is_read:
+            node.setForeground(0, QBrush(QColor("#278273")))
         node.setData(0, Qt.ItemDataRole.UserRole, {
             "kind": "item",
             "item_id": item.item_id,
             "pdf_path": item.pdf_path if has_pdf else "",
         })
-        node.setToolTip(0, (item.title or "") + (f"\n{item.pdf_path}" if has_pdf else "\n（无 PDF 附件）"))
+        node.setToolTip(
+            0, (item.title or "")
+            + (f"\n{item.pdf_path}" + ("\n✅ 已读" if is_read else "") if has_pdf
+               else "\n（无 PDF 附件）"))
         return node
 
     def _collect_expanded(self) -> set[str]:
@@ -259,6 +271,12 @@ class ZoteroPanel(QWidget):
             a = menu.addAction("  📖 在阅读器中打开")
             a.setEnabled(has_pdf)
             a.triggered.connect(lambda: self._open_item(data))
+            if has_pdf:
+                a = menu.addAction("  ✅ 标记为未读" if read_marks.is_read(data["pdf_path"])
+                                   else "  ✓ 标记为已读")
+                a.triggered.connect(
+                    lambda checked=False, p=data["pdf_path"]:
+                    read_marks.toggle_read(p))
             menu.addSeparator()
             a = menu.addAction("  🔄 重新解析整合")
             a.setEnabled(has_pdf)

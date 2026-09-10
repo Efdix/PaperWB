@@ -787,7 +787,13 @@ QCheckBox#planTask {
     padding: 3px 2px;
 }
 
-QCheckBox#planTask:checked {
+/* 任务文字由 WrapCheckBox 内嵌的 QLabel 承载（支持随面板宽度自动折行） */
+QLabel#planTaskText {
+    font-size: 13px;
+    color: #1d1d1f;
+}
+
+QLabel#planTaskText[done="true"] {
     color: #9a9aa0;
     text-decoration: line-through;
 }

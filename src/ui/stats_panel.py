@@ -42,6 +42,49 @@ SCOPE_LABELS = {
 }
 
 
+class WrapCheckBox(QCheckBox):
+    """文字自动折行的任务复选框（QCheckBox 原生不支持 wordWrap）。
+
+    内嵌一个 wordWrap 的 QLabel 承载文字；标签不处理的鼠标事件会冒泡回
+    复选框，点文字即可正常勾选。完成后给文字标签打 done 属性置灰划线。
+    """
+
+    INDICATOR_CLEARANCE = 23  # 勾选框指示器 16px + 间距 7px（与全局 QSS 一致）
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("planTask")
+        self._label = QLabel(text, self)
+        self._label.setWordWrap(True)
+        self._label.setObjectName("planTaskText")
+        self._label.setProperty("done", False)
+        self._label.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(self.INDICATOR_CLEARANCE, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(self._label)
+        self.toggled.connect(self._sync_done_style)
+
+    def text(self) -> str:
+        return self._label.text()
+
+    def setText(self, text: str) -> None:
+        self._label.setText(text)
+
+    def _sync_done_style(self, checked: bool) -> None:
+        self._label.setProperty("done", bool(checked))
+        self._label.style().unpolish(self._label)
+        self._label.style().polish(self._label)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, w: int) -> int:
+        inner = max(w - self.INDICATOR_CLEARANCE, 60)
+        return max(super().sizeHint().height(),
+                   self._label.heightForWidth(inner))
+
+
 def _fmt_value(field: str, value: int) -> str:
     if field == "write_chars":
         return f"{value:,}"
@@ -271,12 +314,16 @@ class PlanPage(QWidget):
 
     # ---------- 日期导航 ----------
 
-    def _date_key(self) -> str:
+    def _key_for(self, d: date) -> str:
+        """任意日期在该页签下的存储键（与 StatsTracker 的口径一致）。"""
         if self._scope == "daily":
-            return self._cursor.isoformat()
+            return d.isoformat()
         if self._scope == "weekly":
-            return _week_key(self._cursor)
-        return _month_key(self._cursor)
+            return _week_key(d)
+        return _month_key(d)
+
+    def _date_key(self) -> str:
+        return self._key_for(self._cursor)
 
     def _date_label_text(self) -> str:
         if self._scope == "daily":
@@ -413,6 +460,8 @@ class PlanPage(QWidget):
                 w.deleteLater()
 
         key = self._date_key()
+        # 「回到今天」只在视图偏离当前周期时出现，今天/本周/本月不占位置
+        self._today_btn.setVisible(key != self._key_for(date.today()))
         done, total = self._tracker.plan_completion(self._scope, key)
         self._date_label.setText(self._date_label_text())
         if total:
@@ -432,9 +481,8 @@ class PlanPage(QWidget):
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(8, 4, 8, 4)
             row_layout.setSpacing(8)
-            cb = QCheckBox(p["text"])
+            cb = WrapCheckBox(p["text"])
             cb.setChecked(bool(p.get("done")))
-            cb.setObjectName("planTask")
             cb.setToolTip("双击文字可修改任务")
             cb._plan_id = p["id"]
             cb.installEventFilter(self)

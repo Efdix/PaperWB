@@ -21,6 +21,7 @@ from ..utils.config import (
     load_doc_state, get_library_dir,
 )
 from ..utils.files import open_file_location
+from ..core import read_marks
 from .zotero_panel import ZoteroPanel
 
 
@@ -46,6 +47,8 @@ class PDFListPanel(QWidget):
         self._library: list[dict] = []
         self._setup_ui()
         self._refresh()
+        # 已读标记变化（阅读工具栏/Zotero 列表侧标记）→ 重建列表刷新 ✓ 前缀
+        read_marks.store().changed.connect(lambda _p, _r: self._refresh())
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -144,19 +147,24 @@ class PDFListPanel(QWidget):
         for pdf in self._library:
             folder = pdf.get("folder", "")
             fname = pdf.get("name", os.path.basename(pdf.get("path", "")))
-            file_item = QTreeWidgetItem([fname])
+            exists = os.path.exists(pdf.get("path", ""))
+            is_read = read_marks.is_read(pdf.get("path", ""))
+            file_item = QTreeWidgetItem(
+                [fname + (" ✓" if is_read else "") + ("" if exists else " (缺失)")])
             file_item.setData(0, Qt.ItemDataRole.UserRole, {
                 "type": "pdf",
                 "path": pdf.get("path"),
                 "name": fname,
             })
-            file_item.setToolTip(0, pdf.get("path", ""))
+            file_item.setToolTip(
+                0, pdf.get("path", "") + ("\n✅ 已读" if is_read else ""))
             # 根据文件是否存在设置颜色
-            if os.path.exists(pdf.get("path", "")):
-                file_item.setForeground(0, Qt.GlobalColor.white)
-            else:
+            if not exists:
                 file_item.setForeground(0, Qt.GlobalColor.darkGray)
-                file_item.setText(0, fname + " (缺失)")
+            elif is_read:
+                file_item.setForeground(0, QBrush(QColor("#278273")))
+            else:
+                file_item.setForeground(0, Qt.GlobalColor.white)
             # 已整合文献用浅绿底标记（一眼看出谁可阅读）
             self._apply_integrated_badge(file_item, pdf.get("path", ""))
 
@@ -318,6 +326,10 @@ class PDFListPanel(QWidget):
             for f in folders:
                 a = move_menu.addAction(f)
                 a.triggered.connect(lambda checked, folder=f: self._move_pdf(path, folder))
+            menu.addSeparator()
+            a = menu.addAction("  ✅ 标记为未读" if read_marks.is_read(path)
+                               else "  ✓ 标记为已读")
+            a.triggered.connect(lambda: read_marks.toggle_read(path))
             menu.addSeparator()
             a = menu.addAction("  🔄 重新解析整合")
             a.triggered.connect(lambda: self._on_reparse(path))

@@ -299,6 +299,7 @@ class MainWindow(QMainWindow):
         self.pdf_viewer.structured_document_updated.connect(
             self._on_structured_document_updated)
         self.pdf_viewer.follow_up_question.connect(self._on_follow_up_from_reader)
+        self.pdf_viewer.fullscreen_toggled.connect(self._on_fullscreen_toggled)
 
         self.chat_panel = ChatPanel()
         self.chat_panel.send_message.connect(self._on_user_message)
@@ -373,6 +374,7 @@ class MainWindow(QMainWindow):
         self._reader_chat_toggle_btn.toggled.connect(self._set_reader_chat_visible)
         reader_layout.addWidget(reader_header)
         reader_layout.addWidget(outer_splitter, 1)
+        self._reader_header = reader_header
         self._main_tabs.addTab(reader_surface, "阅读工作台")
 
         # Tab 1: 检索工作台（AI 检索 + 按库推荐 + 定时文献巡视）
@@ -463,6 +465,7 @@ class MainWindow(QMainWindow):
         shell_layout.addWidget(app_header)
         shell_layout.addWidget(self._main_tabs, 1)
         self.setCentralWidget(shell)
+        self._app_header = app_header
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -474,18 +477,30 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self._status_text_label)
 
     def _toggle_fullscreen(self) -> None:
-        """F11 全屏切换：与阅读工具栏「⛶ 全屏阅读」按钮共用状态。"""
-        if self.isFullScreen():
-            self.showNormal()
-            self.pdf_viewer.fullscreen_btn.setText("⛶ 全屏阅读")
+        """F11 全屏切换：与阅读工具栏「⛶ 全屏阅读」按钮共用同一条路径。"""
+        self.pdf_viewer.toggle_fullscreen()
+
+    def _on_fullscreen_toggled(self, entering: bool) -> None:
+        """沉浸阅读：全屏时隐藏菜单栏/顶栏/状态栏/工作台头部/左右面板，
+        整个窗口只剩阅读区；退出时按各面板开关的原状态还原。"""
+        self.menuBar().setVisible(not entering)
+        self._app_header.setVisible(not entering)
+        self.status_bar.setVisible(not entering)
+        self._reader_header.setVisible(not entering)
+        if entering:
+            self._set_reader_library_visible(False)
+            self._set_reader_chat_visible(False)
         else:
-            self.showFullScreen()
-            self.pdf_viewer.fullscreen_btn.setText("⛶ 退出全屏")
+            self._set_reader_library_visible(
+                self._reader_library_toggle_btn.isChecked())
+            self._set_reader_chat_visible(
+                self._reader_chat_toggle_btn.isChecked())
+        self.status_bar.showMessage("已进入沉浸阅读（Esc 退出）" if entering
+                                    else "已退出沉浸阅读")
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape and self.isFullScreen():
-            self.showNormal()
-            self.pdf_viewer.fullscreen_btn.setText("⛶ 全屏阅读")
+            self.pdf_viewer.toggle_fullscreen()
             return
         super().keyPressEvent(event)
 

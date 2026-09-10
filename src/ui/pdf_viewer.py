@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import copy
 import os
+import re
 import time
 from typing import TYPE_CHECKING
 
@@ -30,8 +31,41 @@ PLACEHOLDER_TEXT = (
     "• 导入后自动 AI 解析论文结构（逐页分析）\n"
     "• 解析完成后点击论文查看结构化阅读视图\n"
     "• 重要图片和表格自动截图展示\n"
-    "• 标题/摘要/正文/图表注均可一键翻译为中文"
+    "• 标题/摘要/正文/图表注均可一键翻译为中文\n"
+    "• 解析效果不佳？右键点击段落卡片可 ✂ 拆分 / ⤴⤵ 合并段落"
 )
+
+# ---- 阅读字号缩放 ----
+# 全局 QSS `QWidget { font-size: 13px }` 的优先级高于 setFont()，因此字号
+# 增减必须以标签内联样式的 font-size(px) 落地；基准值优先取内联样式里已有的
+# font-size，否则按 QFont 的 pt 换算成 px（96dpi：1pt ≈ 4/3 px）。
+_FONT_PX_RE = re.compile(r"font-size:\s*(\d+(?:\.\d+)?)px")
+_PT2PX = 4.0 / 3.0
+
+
+def _label_base_px(lbl: QLabel) -> float:
+    """标签的基准字号（px）：优先内联样式里的 font-size，其次 QFont pt 换算。"""
+    m = _FONT_PX_RE.search(lbl.styleSheet())
+    if m:
+        return float(m.group(1))
+    ps = lbl.font().pointSizeF()
+    return ps * _PT2PX if ps > 0 else 0.0
+
+
+def _apply_label_font_delta(lbl: QLabel, delta: int) -> None:
+    base = float(lbl.property("baseFontSizePx") or 0)
+    if base <= 0:
+        return
+    px = max(8, round(base + delta * _PT2PX))
+    ss = lbl.styleSheet()
+    if _FONT_PX_RE.search(ss):
+        ss = _FONT_PX_RE.sub(f"font-size: {px}px", ss)
+    else:
+        prefix = ss.rstrip()
+        if prefix and not prefix.endswith(";"):
+            prefix += ";"
+        ss = f"{prefix} font-size: {px}px"
+    lbl.setStyleSheet(ss)
 
 # 关键章节名（subtitle/abstract_heading 匹配到则突出显示）
 KEY_SECTIONS = frozenset({
@@ -170,25 +204,21 @@ class ParagraphCard(QFrame):
     # ---- 字号缩放 ----
 
     def _collect_scalable_labels(self) -> None:
-        """记录卡片内所有带字号文字标签的基准字号，供阅读字号增减。"""
+        """记录卡片内所有文字标签的基准像素字号，供阅读字号增减。"""
         self._scalable_labels = []
         for lbl in self.findChildren(QLabel):
-            ps = lbl.font().pointSize()
-            if ps > 0:
-                lbl.setProperty("basePointSize", ps)
-                self._scalable_labels.append(lbl)
+            base_px = _label_base_px(lbl)
+            if base_px <= 0:
+                continue
+            lbl.setProperty("baseFontSizePx", base_px)
+            self._scalable_labels.append(lbl)
 
     def apply_font_delta(self, delta: int) -> None:
-        """按基准字号 + delta 重新设置文字标签字号（delta=0 恢复默认）。"""
+        """按基准 px + delta 重设内联字号（QSS 全局规则会盖掉 setFont）。"""
         if not hasattr(self, "_scalable_labels"):
             self._collect_scalable_labels()
         for lbl in self._scalable_labels:
-            base = int(lbl.property("basePointSize") or 0)
-            if base <= 0:
-                continue
-            f = lbl.font()
-            f.setPointSize(base + delta)
-            lbl.setFont(f)
+            _apply_label_font_delta(lbl, delta)
         self._sync_card_height(self.width() or 640)
 
     def hasHeightForWidth(self) -> bool:
@@ -710,24 +740,20 @@ class ImageCard(QFrame):
         self._collect_scalable_labels()
 
     def _collect_scalable_labels(self) -> None:
-        """记录图卡内文字标签的基准字号（页码/图注/提示），供阅读字号增减。"""
+        """记录图卡内文字标签的基准像素字号（页码/图注/提示），供阅读字号增减。"""
         self._scalable_labels = []
         for lbl in self.findChildren(QLabel):
-            ps = lbl.font().pointSize()
-            if ps > 0:
-                lbl.setProperty("basePointSize", ps)
-                self._scalable_labels.append(lbl)
+            base_px = _label_base_px(lbl)
+            if base_px <= 0:
+                continue
+            lbl.setProperty("baseFontSizePx", base_px)
+            self._scalable_labels.append(lbl)
 
     def apply_font_delta(self, delta: int) -> None:
         if not hasattr(self, "_scalable_labels"):
             self._collect_scalable_labels()
         for lbl in self._scalable_labels:
-            base = int(lbl.property("basePointSize") or 0)
-            if base <= 0:
-                continue
-            f = lbl.font()
-            f.setPointSize(base + delta)
-            lbl.setFont(f)
+            _apply_label_font_delta(lbl, delta)
         self._sync_card_height()
 
     def hasHeightForWidth(self) -> bool:
@@ -895,6 +921,7 @@ class PDFViewerPanel(QWidget):
     pdf_path_changed = Signal(str)
     follow_up_question = Signal(str, str)  # (question, image_path 或 "")
     structured_document_updated = Signal(str)
+    fullscreen_toggled = Signal(bool)  # 进入/退出沉浸全屏（主窗口据此隐藏周边界面）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -917,7 +944,15 @@ class PDFViewerPanel(QWidget):
         from ..utils.config import load_config
         self._font_delta: int = int(load_config().get("reader_font_delta", 0) or 0)
         self._edit_seq: int = 0  # 手动拆分/合并的元素 id 序号
+        self._pre_fullscreen_state: Qt.WindowState | None = None  # 全屏前的窗口状态
         self._setup_ui()
+        # 已读标记在列表侧被改动时，同步刷新工具栏按钮
+        from ..core.read_marks import store
+        store().changed.connect(self._on_read_marks_changed)
+
+    def _on_read_marks_changed(self, pdf_path: str, _read: bool) -> None:
+        if pdf_path == self._current_path:
+            self._update_read_mark_btn()
 
     def set_text_client(self, client: "LLMClient | None"):
         """设置纯文本接口客户端（跨页接缝合并与段落翻译共用）。"""
@@ -947,23 +982,31 @@ class PDFViewerPanel(QWidget):
         self.auto_trans_btn.setEnabled(False)
         toolbar.addWidget(self.auto_trans_btn)
 
-        self.font_smaller_btn = QPushButton("A−")
+        self.font_smaller_btn = QPushButton("−")
         self.font_smaller_btn.setObjectName("secondaryBtn")
-        self.font_smaller_btn.setFixedWidth(36)
+        self.font_smaller_btn.setFixedWidth(30)
         self.font_smaller_btn.setToolTip("减小阅读字号")
         self.font_smaller_btn.clicked.connect(lambda: self._change_font_delta(-1))
         toolbar.addWidget(self.font_smaller_btn)
 
-        self.font_bigger_btn = QPushButton("A＋")
+        self.font_bigger_btn = QPushButton("＋")
         self.font_bigger_btn.setObjectName("secondaryBtn")
-        self.font_bigger_btn.setFixedWidth(36)
+        self.font_bigger_btn.setFixedWidth(30)
         self.font_bigger_btn.setToolTip("增大阅读字号")
         self.font_bigger_btn.clicked.connect(lambda: self._change_font_delta(1))
         toolbar.addWidget(self.font_bigger_btn)
 
+        self.read_mark_btn = QPushButton("✓ 标记已读")
+        self.read_mark_btn.setObjectName("secondaryBtn")
+        self.read_mark_btn.setToolTip("标记这篇论文为已读，左侧文献列表会显示 ✓")
+        self.read_mark_btn.setEnabled(False)
+        self.read_mark_btn.clicked.connect(self._on_toggle_read_mark)
+        toolbar.addWidget(self.read_mark_btn)
+
         self.fullscreen_btn = QPushButton("⛶ 全屏阅读")
         self.fullscreen_btn.setObjectName("secondaryBtn")
-        self.fullscreen_btn.setToolTip("全屏显示主窗口（F11），Esc 或再点一次退出")
+        self.fullscreen_btn.setToolTip(
+            "沉浸阅读：隐藏菜单栏/导航/侧栏，整个窗口只留正文（F11，Esc 或再点一次退出）")
         self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
         toolbar.addWidget(self.fullscreen_btn)
 
@@ -978,6 +1021,8 @@ class PDFViewerPanel(QWidget):
         info.setContentsMargins(12, 4, 12, 4)
         self.info_label = QLabel("尚未加载 PDF — 从左侧文献库选择 PDF 文件")
         self.info_label.setObjectName("subtitleLabel")
+        self.info_label.setToolTip(
+            "提示：解析效果不佳时，右键点击任意段落卡片可 ✂ 拆分 / ⤴⤵ 合并段落")
         info.addWidget(self.info_label)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -1035,14 +1080,46 @@ class PDFViewerPanel(QWidget):
         self._restore_viewport_anchor(anchor)
 
     def toggle_fullscreen(self) -> None:
-        """阅读一键全屏：全屏主窗口给正文腾出最大空间，Esc/再点退出。"""
+        """沉浸全屏：全屏主窗口 + 通知主窗口隐藏周边界面；Esc/再点退出。
+
+        退出时恢复进入前的窗口状态（最大化/普通），不丢最大化。
+        """
         win = self.window()
-        if win.isFullScreen():
-            win.showNormal()
-            self.fullscreen_btn.setText("⛶ 全屏阅读")
-        else:
+        entering = not win.isFullScreen()
+        if entering:
+            self._pre_fullscreen_state = win.windowState()
             win.showFullScreen()
-            self.fullscreen_btn.setText("⛶ 退出全屏")
+        else:
+            prev = getattr(self, "_pre_fullscreen_state", None)
+            if prev is not None:
+                win.setWindowState(prev & ~Qt.WindowState.WindowFullScreen)
+                self._pre_fullscreen_state = None
+            else:
+                win.showNormal()
+        self.fullscreen_btn.setText("⛶ 退出全屏" if entering else "⛶ 全屏阅读")
+        self.fullscreen_toggled.emit(entering)
+
+    # ---- 读完标记 ----
+
+    def _update_read_mark_btn(self) -> None:
+        """按当前文献的已读状态刷新工具栏按钮文案。"""
+        if not self._current_path:
+            self.read_mark_btn.setEnabled(False)
+            return
+        from ..core.read_marks import is_read
+        self.read_mark_btn.setEnabled(True)
+        if is_read(self._current_path):
+            self.read_mark_btn.setText("✅ 已读")
+            self.read_mark_btn.setToolTip("这篇论文已标记为已读，点击取消标记")
+        else:
+            self.read_mark_btn.setText("✓ 标记已读")
+            self.read_mark_btn.setToolTip("标记这篇论文为已读，左侧文献列表会显示 ✓")
+
+    def _on_toggle_read_mark(self) -> None:
+        if not self._current_path:
+            return
+        from ..core import read_marks
+        read_marks.set_read(self._current_path, not read_marks.is_read(self._current_path))
 
     def load_pdf(self, file_path: str, existing_processor: "PDFProcessor | None" = None):
         """加载 PDF —— 检查缓存 → Stage1 → Stage2。
@@ -1053,6 +1130,7 @@ class PDFViewerPanel(QWidget):
         self._detach_processor()
         self._reset_view()
         self._current_path = file_path
+        self._update_read_mark_btn()
 
         # ---- 先查 Stage 2 整合缓存 ----
         from ..utils.config import load_doc_state
@@ -1720,6 +1798,7 @@ class PDFViewerPanel(QWidget):
         self._detach_processor()
         self._reset_view()
         self._current_path = ""
+        self._update_read_mark_btn()
         self.pdf_path_changed.emit("")
 
     def _detach_processor(self):

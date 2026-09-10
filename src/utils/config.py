@@ -190,6 +190,13 @@ def get_polish_history_dir() -> Path:
     return d
 
 
+def get_docx_backup_dir() -> Path:
+    """Word 写回前自动备份目录：{data_root}/.paperwb/docx_backup/"""
+    d = _resolve_data_dir() / "docx_backup"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def get_writing_kb_dir() -> Path:
     """写作知识库目录：{data_root}/.paperwb/writing_kb/"""
     d = _resolve_data_dir() / "writing_kb"
@@ -589,6 +596,63 @@ def save_polish_entry(profile_name: str, entry: dict) -> None:
         history = history[-MAX_POLISH_HISTORY:]
     f = get_polish_history_dir() / f"{profile_name}.json"
     f.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ========== Word 交互（最近文件 / 绑定记忆 / 修订写回偏好） ==========
+
+MAX_RECENT_WORD_FILES = 10
+MAX_DOCX_BACKUPS = 20
+
+
+def get_recent_word_files() -> list[str]:
+    """最近打开的 Word 文档路径（新的在前，去重）。"""
+    cfg = load_config()
+    files = cfg.get("recent_word_files", [])
+    if not isinstance(files, list):
+        return []
+    return [str(x) for x in files if x]
+
+
+def push_recent_word_file(path: str) -> None:
+    """记录最近打开的 Word 文档（置顶、去重、截断）。"""
+    path = str(path)
+    if not path:
+        return
+    cfg = load_config()
+    files = [str(x) for x in cfg.get("recent_word_files", []) if x]
+    files = [path] + [x for x in files if x != path]
+    cfg["recent_word_files"] = files[:MAX_RECENT_WORD_FILES]
+    save_config(cfg)
+
+
+def get_word_binding(profile_name: str) -> dict | None:
+    """知识库上次绑定的 Word 文档：{"path":…, "mtime":…} 或 None。"""
+    cfg = load_config()
+    bindings = cfg.get("word_bindings", {})
+    binding = bindings.get(profile_name) if isinstance(bindings, dict) else None
+    return binding if isinstance(binding, dict) and binding.get("path") else None
+
+
+def set_word_binding(profile_name: str, path: str, mtime: float = 0.0) -> None:
+    """记录知识库当前绑定的 Word 文档（跨会话恢复用）。"""
+    cfg = load_config()
+    bindings = cfg.setdefault("word_bindings", {})
+    if path:
+        bindings[profile_name] = {"path": str(path), "mtime": float(mtime or 0.0)}
+    else:
+        bindings.pop(profile_name, None)
+    save_config(cfg)
+
+
+def get_word_track_changes() -> bool:
+    """保存时把 AI/编辑修改写为 Word 修订（track changes）的偏好。"""
+    return bool(load_config().get("word_track_changes", False))
+
+
+def set_word_track_changes(enabled: bool) -> None:
+    cfg = load_config()
+    cfg["word_track_changes"] = bool(enabled)
+    save_config(cfg)
 
 
 # ========== 草稿评价持久化 ==========
