@@ -15,7 +15,7 @@ from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 
 _datas, _binaries, _hiddenimports = [], [], []
 for _pkg in ("docling", "docling_core", "docling_ibm_models", "docling_parse", "rapidocr",
-             "transformers", "numpy", "pandas", "PIL", "cv2",
+             "transformers", "tokenizers", "numpy", "pandas", "PIL", "cv2",
              "rank_bm25", "hf_transfer"):
     _d, _b, _h = collect_all(_pkg)
     _datas += _d

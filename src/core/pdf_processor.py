@@ -2278,7 +2278,18 @@ class DoclingParseWorker(QThread):
                 return
             pages = parse_pdf(self._pdf_path)
         except Exception as e:  # noqa: BLE001
-            self.error.emit(f"Docling 解析失败：{e}")
+            # 提取完整的底层异常原因链（transformers 常用包装异常吞掉真实的底层错误）
+            parts = [str(e)]
+            cause = getattr(e, "__cause__", None) or getattr(e, "__context__", None)
+            seen = {id(e)}
+            while cause is not None and id(cause) not in seen:
+                seen.add(id(cause))
+                c_str = str(cause)
+                if c_str and c_str not in parts:
+                    parts.append(c_str)
+                cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
+            err_detail = " | ".join(parts)
+            self.error.emit(f"Docling 解析失败：{err_detail}")
             return
 
         self._manifest.total_pages = len(pages)

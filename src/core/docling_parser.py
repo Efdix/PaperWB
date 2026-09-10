@@ -21,6 +21,18 @@ import threading
 from typing import TYPE_CHECKING
 
 os.environ.setdefault("DOCLING_INFERENCE_COMPILE_TORCH_MODELS", "0")
+
+# 规避 transformers.dependency_versions_check 对 tokenizers 等包过于严苛的静态版本断言：
+# transformers 在 import 时通过 dependency_versions_check 检查已安装库的精确版本范围，
+# 一旦本地 tokenizers 因环境变动微版本不匹配或打包时元数据缺失，便会抛出
+# ImportError: tokenizers>=... is required... 导致 Docling 解析直接报错失败。
+# 提前注入 mock 模块屏蔽该静态版本断言，保障模型推理平稳运行。
+if "transformers.dependency_versions_check" not in sys.modules:
+    import types
+    _mock_dvc = types.ModuleType("transformers.dependency_versions_check")
+    _mock_dvc.dep_version_check = lambda *a, **k: None
+    sys.modules["transformers.dependency_versions_check"] = _mock_dvc
+
 _hf_mirror = os.environ.get(
     "PAPERWB_HF_MIRROR",
     os.environ.get("PDFASKER_HF_MIRROR", "1"),

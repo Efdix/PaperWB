@@ -141,9 +141,17 @@ try {
                      Select-Object -First 1
             $SamplePdf = if ($found) { $found.FullName } else { "" }
         }
-        # 指向本机已预热的模型缓存（models/hf_cache/hub），自检不重新下载 500MB 模型
-        $HubCache = Join-Path $Repo "models\hf_cache\hub"
-        if (Test-Path $HubCache) { $env:HF_HUB_CACHE = $HubCache }
+        # 指向本机已预热的模型缓存，自检不重新下载 500MB 模型
+        $HubCacheCandidates = @(
+            (Join-Path $Repo "models\hub"),
+            (Join-Path $Repo "installer\models_cache\hub"),
+            (Join-Path $Repo "models\hf_cache\hub"),
+            (Join-Path $HOME ".cache\huggingface\hub")
+        )
+        $HubCache = $HubCacheCandidates | Where-Object {
+            Test-Path (Join-Path $_ "models--docling-project--docling-layout-heron")
+        } | Select-Object -First 1
+        if ($HubCache) { $env:HF_HUB_CACHE = $HubCache }
         Step "Selftest dist build$(if ($SamplePdf) { " with sample: $SamplePdf" })"
         $Ec = RunSelftestExe $SamplePdf
         # 便携化后自检日志在 exe 同级 logs/ 下；%TEMP% 兼容旧包排查

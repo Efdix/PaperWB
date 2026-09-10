@@ -5,7 +5,7 @@
 - Python 环境: conda env `PaperWB`（Python 3.11；本机位于 `D:\science\Miniforge\envs\PaperWB`，构建脚本通过 `conda env list` 自动发现，无需硬编码路径）
 - 所有 Python 命令前需激活: `conda activate PaperWB`
 - 包管理: pip + `requirements.txt`
-- 依赖（requirements.txt）: `PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3` `docling==2.118.0` `rank_bm25==0.2.2` `hf_transfer==0.1.9` `python-docx==1.2.0` `Pillow==12.3.0`
+- 依赖（requirements.txt）: `PySide6==6.11.1` `openai==2.44.0` `PyMuPDF==1.27.2.3` `docling==2.118.0` `transformers==5.15.0` `tokenizers==0.22.2` `rank_bm25==0.2.2` `hf_transfer==0.1.9` `python-docx==1.2.0` `Pillow==12.3.0`
 - 构建：`PyInstaller`（已装入该环境）+ Inno Setup 7（本机 `D:\science\Inno Setup 7`，兼容 6.4+；`winget install -e --id JRSoftware.InnoSetup.7`）
 
 ## 项目入口
