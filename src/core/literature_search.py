@@ -522,7 +522,8 @@ def rank_papers(papers: list[PubMedPaper]) -> list[PubMedPaper]:
 def run_paper_search(request_text: str, client=None, pool: list[dict] | None = None,
                      limit: int = 10, searcher: MultiSourceSearcher | None = None,
                      log_cb=None, interrupt_cb=None, rounds: int = 2,
-                     filter_library: bool = True) -> list[dict]:
+                     filter_library: bool = True,
+                     blacklist=None) -> list[dict]:
     """统一检索核心逻辑（纯函数，供 QThread 与同步调用共用）。
 
     Args:
@@ -537,6 +538,7 @@ def run_paper_search(request_text: str, client=None, pool: list[dict] | None = N
             1 = 单轮（定时巡视用，控制请求量）。
         filter_library: True = 剔除库中已有文献（原行为）；
             False = 保留全部结果，每条附加 "in_library" 标记（True/False）。
+        blacklist: BlacklistStore | None（拉黑文献不再出现在结果中）。
 
     Returns:
         去重、过滤、排序后的文献 dict 列表（paper_to_dict 格式）。
@@ -600,6 +602,12 @@ def run_paper_search(request_text: str, client=None, pool: list[dict] | None = N
                    f"（{ylo or '…'}–{yhi or '…'}）")
     merged = rank_papers(merged)
 
+    if blacklist is not None:
+        before = len(merged)
+        merged = [p for p in merged if not blacklist.matches(p.doi, p.title)]
+        if before != len(merged):
+            log_cb(f"黑名单过滤剔除 {before - len(merged)} 篇")
+
     matches = [find_library_match(p.title, p.doi, pool or []) for p in merged]
     if filter_library:
         new_papers = [p for p, m in zip(merged, matches) if not m]
@@ -635,7 +643,8 @@ class PaperSearchWorker(QThread):
 
     def __init__(self, request_text: str, client=None, pool: list[dict] | None = None,
                  limit: int = 10, searcher: MultiSourceSearcher | None = None,
-                 rounds: int = 2, filter_library: bool = True, parent=None):
+                 rounds: int = 2, filter_library: bool = True,
+                 blacklist=None, parent=None):
         super().__init__(parent)
         self._request = request_text
         self._client = client       # LLMClient | None（检索式生成 + 两轮反思）
@@ -644,6 +653,7 @@ class PaperSearchWorker(QThread):
         self._searcher = searcher   # 测试可注入假多源检索器
         self._rounds = rounds
         self._filter_library = filter_library
+        self._blacklist = blacklist
 
     def run(self) -> None:
         try:
@@ -652,6 +662,7 @@ class PaperSearchWorker(QThread):
                 limit=self._limit, searcher=self._searcher, rounds=self._rounds,
                 log_cb=self.log.emit, interrupt_cb=self.isInterruptionRequested,
                 filter_library=self._filter_library,
+                blacklist=self._blacklist,
             )
             if self.isInterruptionRequested():
                 return

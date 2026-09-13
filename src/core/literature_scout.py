@@ -51,6 +51,7 @@ class ScoutTopic:
     limit: int = 15                # 每次每方向获取条数上限
     enabled: bool = True
     use_llm_match: bool = False    # 二级 LLM 模糊比对（应对 DOI 缺失/标题改写）
+    email_notify: bool = False     # 发现新文献时发邮件提醒（需在设置中配置邮箱）
     last_run: str = ""             # ISO 时间
     last_new: int = 0
 
@@ -72,6 +73,7 @@ class ScoutTopic:
             "collection_key": self.collection_key,
             "interval_hours": self.interval_hours, "limit": self.limit,
             "enabled": self.enabled, "use_llm_match": self.use_llm_match,
+            "email_notify": self.email_notify,
             "last_run": self.last_run, "last_new": self.last_new,
         }
 
@@ -97,6 +99,7 @@ class ScoutTopic:
             limit=limit,
             enabled=bool(d.get("enabled", True)),
             use_llm_match=bool(d.get("use_llm_match", False)),
+            email_notify=bool(d.get("email_notify", False)),
             last_run=str(d.get("last_run", "")),
             last_new=int(d.get("last_new", 0) or 0),
         )
@@ -270,13 +273,14 @@ class ScoutWorker(QThread):
 
     def __init__(self, topic: ScoutTopic, pool: list[dict], seen: set[str],
                  client=None, searcher: MultiSourceSearcher | None = None,
-                 parent=None):
+                 blacklist=None, parent=None):
         super().__init__(parent)
         self._topic = topic
         self._pool = pool or []
         self._seen = seen or set()
         self._client = client  # LLMClient | None（二级模糊比对用）
         self._searcher = searcher  # 测试可注入假多源检索器
+        self._blacklist = blacklist  # BlacklistStore | None（拉黑过滤）
 
     def run(self) -> None:
         try:
@@ -297,6 +301,8 @@ class ScoutWorker(QThread):
             for p in papers:
                 pid = p.pmid or p.arxiv_id or p.doi  # 统一去重记忆标识
                 if pid and pid in self._seen:
+                    continue
+                if self._blacklist is not None and self._blacklist.matches(p.doi, p.title):
                     continue
                 if find_library_match(p.title, p.doi, self._pool):
                     continue
@@ -352,6 +358,7 @@ class ScoutManager(QObject):
         self._pool: list[dict] = []       # Zotero 条目快照（比对池）
         self._client = None               # 解析接口（二级比对可选）
         self._searcher: MultiSourceSearcher | None = None  # 测试注入用
+        self._blacklist = None            # 结果黑名单（BlacklistStore）
         self._timers: dict[str, QTimer] = {}
         self._workers: dict[str, ScoutWorker] = {}
         self._feed: list[dict] = load_feed(scout_dir)
@@ -369,6 +376,10 @@ class ScoutManager(QObject):
     def set_searcher(self, searcher: MultiSourceSearcher | None) -> None:
         """注入自定义多源检索器（测试用；None = 运行时默认）。"""
         self._searcher = searcher
+
+    def set_blacklist(self, blacklist) -> None:
+        """注入结果黑名单（BlacklistStore；None = 不过滤）。"""
+        self._blacklist = blacklist
 
     # ---- 方向 CRUD ----
 
@@ -490,7 +501,8 @@ class ScoutManager(QObject):
             pool = [e for e in pool
                     if topic.collection_key in (e.get("collections") or [])]
         worker = ScoutWorker(topic, pool, set(load_seen(self._dir).keys()),
-                             self._client, searcher=self._searcher)
+                             self._client, searcher=self._searcher,
+                             blacklist=self._blacklist)
         track(worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._workers[topic_id] = worker
         worker.found.connect(
@@ -513,6 +525,9 @@ class ScoutManager(QObject):
         topic.last_run = now_iso
         topic.last_new = len(papers)
         save_topics(self._topics, self._dir)
+        from .search_records import append_history
+        append_history("定向巡视", topic.name, len(papers),
+                       detail=f"新文献 {len(papers)} 篇", search_dir=self._dir)
 
         pmids = [p.get("pmid") or p.get("arxiv_id") or p.get("doi")
                  for p in papers if (p.get("pmid") or p.get("arxiv_id") or p.get("doi"))]
@@ -552,8 +567,18 @@ class ScoutManager(QObject):
     # ---- 推荐流 ----
 
     def feed_items(self) -> list[dict]:
-        """未忽略的推荐条目（新→旧）。"""
-        return [e for e in self._feed if not e.get("ignored")]
+        """未忽略且未被拉黑的推荐条目（新→旧）。"""
+        items = []
+        for e in self._feed:
+            if e.get("ignored"):
+                continue
+            if self._blacklist is not None:
+                p = e.get("paper", {}) or {}
+                if self._blacklist.matches(str(p.get("doi", "") or ""),
+                                           str(p.get("title", "") or "")):
+                    continue
+            items.append(e)
+        return items
 
     def ignore_feed_item(self, entry_id: str) -> None:
         for e in self._feed:

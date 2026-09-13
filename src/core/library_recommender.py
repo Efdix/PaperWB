@@ -111,8 +111,12 @@ def recommend_from_library(
     searcher: MultiSourceSearcher | None = None,
     log_cb: Callable[[str], None] | None = None,
     interrupt_cb: Callable[[], bool] | None = None,
+    blacklist=None,
 ) -> tuple[list[dict], dict]:
     """两路推荐 → 合并去重 → 过滤库内已有与种子自身。
+
+    Args:
+        blacklist: BlacklistStore | None（拉黑文献不再出现在推荐结果中）。
 
     Returns:
         (papers, stats)。papers 每条为 paper_to_dict + rec_source
@@ -134,6 +138,8 @@ def recommend_from_library(
         if normalize_doi(p.doi) and normalize_doi(p.doi) in seed_dois:
             return True
         if normalize_title(p.title) and normalize_title(p.title) in seed_titles:
+            return True
+        if blacklist is not None and blacklist.matches(p.doi, p.title):
             return True
         return find_library_match(p.title, p.doi, lib_pool) is not None
 
@@ -207,7 +213,8 @@ class LibraryRecommendWorker(QThread):
 
     def __init__(self, seeds: list[dict], pool: list[dict] | None, client=None,
                  year_from: int | None = None, limit: int = 20,
-                 searcher: MultiSourceSearcher | None = None, parent=None):
+                 searcher: MultiSourceSearcher | None = None,
+                 blacklist=None, parent=None):
         super().__init__(parent)
         self._seeds = seeds
         self._pool = pool or []
@@ -215,6 +222,7 @@ class LibraryRecommendWorker(QThread):
         self._year_from = year_from
         self._limit = limit
         self._searcher = searcher
+        self._blacklist = blacklist
 
     def run(self) -> None:
         try:
@@ -222,7 +230,8 @@ class LibraryRecommendWorker(QThread):
                 self._seeds, self._pool, client=self._client,
                 year_from=self._year_from, limit=self._limit,
                 searcher=self._searcher,
-                log_cb=self.log.emit, interrupt_cb=self.isInterruptionRequested)
+                log_cb=self.log.emit, interrupt_cb=self.isInterruptionRequested,
+                blacklist=self._blacklist)
             if self.isInterruptionRequested():
                 return
             self.results_ready.emit(papers)

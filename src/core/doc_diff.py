@@ -276,48 +276,53 @@ class DocDiffController:
         cursor = QTextCursor(doc)
         cursor.setPosition(start)
         cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        # 整个处理过程保持 _skip_recompute=True：highlight_citations() 会改字符格式
+        # 并触发 textChanged，此时若已复位，写作面板的「光标落在修订内自动接受」
+        # 会连锁接受相邻的下一处修订
         self._skip_recompute = True
-        cursor.beginEditBlock()
+        try:
+            cursor.beginEditBlock()
 
-        if accept:
-            if kind == "delete":
-                cursor.removeSelectedText()
-            elif kind == "insert":
-                cursor.mergeCharFormat(_plain_fmt())
-            else:  # replace: remove red-strikethrough, un-format green
-                self._strip_strikethrough_in_selection(cursor, start, end)
-        else:
-            if kind == "delete":
-                cursor.mergeCharFormat(_plain_fmt())
-            elif kind == "insert":
-                cursor.removeSelectedText()
-            else:  # replace: remove green, un-format red
-                self._strip_green_in_selection(cursor, start, end)
+            if accept:
+                if kind == "delete":
+                    cursor.removeSelectedText()
+                elif kind == "insert":
+                    cursor.mergeCharFormat(_plain_fmt())
+                else:  # replace: remove red-strikethrough, un-format green
+                    self._strip_strikethrough_in_selection(cursor, start, end)
+            else:
+                if kind == "delete":
+                    cursor.mergeCharFormat(_plain_fmt())
+                elif kind == "insert":
+                    cursor.removeSelectedText()
+                else:  # replace: remove green, un-format red
+                    self._strip_green_in_selection(cursor, start, end)
 
-        cursor.endEditBlock()
-        self._skip_recompute = False
-        new_len = len(doc.toPlainText())
-        delta = new_len - old_len
+            cursor.endEditBlock()
+            new_len = len(doc.toPlainText())
+            delta = new_len - old_len
 
-        self._change_anchors.pop(idx)
-        for i in range(idx, len(self._change_anchors)):
-            s, e, k = self._change_anchors[i]
-            self._change_anchors[i] = (s + delta, e + delta, k)
+            self._change_anchors.pop(idx)
+            for i in range(idx, len(self._change_anchors)):
+                s, e, k = self._change_anchors[i]
+                self._change_anchors[i] = (s + delta, e + delta, k)
 
-        self.highlight_citations()
+            self.highlight_citations()
 
-        total = len(self._change_anchors)
-        if total > 0:
-            if idx >= total:
-                idx = total - 1
-            self._current_anchor_idx = idx
-            s, e, _ = self._change_anchors[idx]
-            cursor = QTextCursor(doc)
-            cursor.setPosition(s)
-            cursor.setPosition(e, QTextCursor.MoveMode.KeepAnchor)
-            self._edit.setTextCursor(cursor)
-        self._edit.setFocus()
-        self._notify()
+            total = len(self._change_anchors)
+            if total > 0:
+                if idx >= total:
+                    idx = total - 1
+                self._current_anchor_idx = idx
+                s, e, _ = self._change_anchors[idx]
+                cursor = QTextCursor(doc)
+                cursor.setPosition(s)
+                cursor.setPosition(e, QTextCursor.MoveMode.KeepAnchor)
+                self._edit.setTextCursor(cursor)
+            self._edit.setFocus()
+            self._notify()
+        finally:
+            self._skip_recompute = False
 
     def accept_all(self) -> None:
         """全部接受（从第一处开始循环处理）。"""

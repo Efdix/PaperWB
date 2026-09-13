@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton,
     QLabel, QScrollArea, QFrame, QSplitter, QSizePolicy, QLineEdit,
-    QApplication,
+    QApplication, QWidget,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor, QColor, QTextDocument
@@ -162,6 +162,9 @@ class DiffDialog(QDialog):
         self._notes_layout = QVBoxLayout(self._notes_widget)
         self._notes_layout.setSpacing(4)
         self._notes_layout.setContentsMargins(8, 4, 8, 4)
+        # 备注分段渲染（引文核查/导师意见/红线问题/修改说明），内容顶部对齐，
+        # 富余高度留给末尾而非灌进某个标签（否则占位提示会垂直居中悬浮）
+        self._notes_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self._notes_scroll = QScrollArea()
         self._notes_scroll.setWidgetResizable(True)
@@ -186,7 +189,6 @@ class DiffDialog(QDialog):
         chat_label.setStyleSheet(
             "color: #147c7c; font-weight: bold; font-size: 13px; padding: 2px 8px;"
         )
-        chat_label.setVisible(False)
         chat_lo.addWidget(chat_label)
         self._chat_label = chat_label
 
@@ -231,7 +233,11 @@ class DiffDialog(QDialog):
         send_btn.clicked.connect(self._send_chat)
         send_btn.setObjectName("primaryBtn")
         chat_input_row.addWidget(send_btn)
-        chat_lo.addLayout(chat_input_row)
+        # 输入行是发起 AI 对话的唯一入口，必须初始可见；标签一开始就显示，
+        # 避免只剩一个无标题的孤立输入框（记录区首条消息后才展开）
+        self._chat_input_row = QWidget()
+        self._chat_input_row.setLayout(chat_input_row)
+        chat_lo.addWidget(self._chat_input_row)
 
         self._main_splitter.addWidget(chat_container)
 
@@ -355,8 +361,6 @@ class DiffDialog(QDialog):
             row_layout.addWidget(text_label, 1)
 
             self._notes_layout.addWidget(row)
-
-        self._notes_layout.addStretch()
 
     def _render_supervisor_notes(self):
         if not self._supervisor_notes:
@@ -583,6 +587,7 @@ class DiffDialog(QDialog):
         """首次发送消息时显示聊天记录区域。"""
         self._chat_scroll.setVisible(True)
         self._chat_label.setVisible(True)
+        self._chat_input_row.setVisible(True)
 
     def _add_chat_bubble(self, role: str, text: str):
         if role == "user":

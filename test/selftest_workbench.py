@@ -205,7 +205,7 @@ finally:
     shutil.rmtree(tmp2, ignore_errors=True)
 
 # ---------- 6. UI 离屏构建 ----------
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton, QSizePolicy
 
 app = QApplication.instance() or QApplication([])
 
@@ -1448,6 +1448,371 @@ check("组装：同页断段被合并（PBMCs 续句并入上段）",
 # FAST_DOCUMENT_VERSION 自增验证（确保旧缓存自动失效）
 check("FAST_DOCUMENT_VERSION 已升级",
       FAST_DOCUMENT_VERSION >= 6)
+
+
+# ---------- 11. 检索黑名单与记录库 ----------
+from src.core.search_records import (
+    BlacklistStore, append_history, clear_history, get_blacklist, load_history,
+)
+
+_bl_dir = tempfile.mkdtemp(prefix="paperwb_bl_test_")
+_bl = BlacklistStore(search_dir=_bl_dir)
+check("黑名单初始为空", len(_bl) == 0)
+_e1 = _bl.add(doi="https://doi.org/10.1002/ABC.123", title="Feather Color Paper",
+              reason="不切题", source="AI 检索")
+check("拉黑返回条目", _e1 is not None and _e1.doi == "10.1002/abc.123", repr(_e1))
+check("拉黑 DOI 匹配（URL 前缀/大小写归一）", _bl.matches("10.1002/abc.123", "任意标题"))
+check("拉黑标题匹配", _bl.matches("", "Feather  Color, PAPER!"))
+check("未拉黑不误伤", not _bl.matches("10.9/other", "Different Title"))
+check("拉黑 matches_paper", _bl.matches_paper({"doi": "10.1002/ABC.123", "title": "x"}))
+check("重复拉黑幂等", _bl.add(doi="10.1002/abc.123") is not None and len(_bl) == 1)
+_e2 = _bl.add(title="只按标题拉黑的文献")
+check("仅标题拉黑", _e2 is not None and _e2.key == _e2.title_norm)
+_bl2 = BlacklistStore(search_dir=_bl_dir)
+check("黑名单持久化", len(_bl2) == 2 and _bl2.matches("10.1002/abc.123", ""))
+check("按 key 移除", _bl2.remove_by_key(_e1.key) and not _bl2.matches("10.1002/abc.123", "x")
+      and _bl2.matches("", "只按标题拉黑的文献"))
+check("移除不存在的 key 返回 False", not _bl2.remove_by_key("nope"))
+_bl2.clear()
+check("黑名单清空", len(_bl2) == 0)
+check("无效输入返回 None", _bl2.add() is None)
+
+append_history("AI 检索", "wing development", 5, search_dir=_bl_dir)
+append_history("定向巡视", "方向A", 2, search_dir=_bl_dir)
+_hist = load_history(search_dir=_bl_dir)
+check("检索历史留档", len(_hist) == 2 and _hist[0]["kind"] == "定向巡视"
+      and _hist[0]["n_results"] == 2, repr(_hist))
+clear_history(search_dir=_bl_dir)
+check("检索历史清空", load_history(search_dir=_bl_dir) == [])
+check("全局黑名单单例可用", get_blacklist() is get_blacklist())
+
+# run_paper_search 黑名单过滤
+from src.core.literature_search import run_paper_search
+from src.core.pubmed_searcher import PubMedPaper
+
+
+class FakeBLSearcher:
+    def search(self, plan, limit=10):
+        return [
+            PubMedPaper(pmid="1", title="Blocked paper X", authors="A",
+                        year="2024", journal="J", doi="10.5/blocked"),
+            PubMedPaper(pmid="2", title="Good paper Y", authors="B",
+                        year="2024", journal="J", doi="10.5/good"),
+        ]
+
+
+_bl3 = BlacklistStore(search_dir=_bl_dir)
+_bl3.add(doi="10.5/blocked")
+_bl_dir_none = None  # 占位保持缩进一致
+_res_bl = run_paper_search("blocked good", client=None, pool=[], limit=10,
+                           searcher=FakeBLSearcher(), blacklist=_bl3)
+check("检索结果黑名单过滤",
+      [p["pmid"] for p in _res_bl] == ["2"], repr(_res_bl))
+
+# ScoutManager 黑名单过滤（复用手动巡视链路）
+from src.core.literature_scout import ScoutManager, ScoutTopic, load_feed
+
+_bl4_dir = tempfile.mkdtemp(prefix="paperwb_bl4_")
+_bl4 = BlacklistStore(search_dir=_bl4_dir)
+_bl4.add(doi="10.5/blocked")
+_mgr_bl = ScoutManager(scout_dir=_bl4_dir)
+_mgr_bl.set_searcher(FakeBLSearcher())
+_mgr_bl.set_blacklist(_bl4)
+_mgr_bl.upsert_topic(ScoutTopic(id="sb1", name="黑名单方向",
+                                keywords=["blocked good"], enabled=False))
+_got_bl = []
+_mgr_bl.results_ready.connect(lambda name, entries: _got_bl.append(entries))
+check("巡视手动启动（黑名单）", _mgr_bl.run_topic_now("sb1") is True)
+_deadline_bl = _time.time() + 10
+while _time.time() < _deadline_bl and (_mgr_bl.has_busy_workers() or _mgr_bl._workers):
+    app.processEvents()
+    _time.sleep(0.02)
+check("巡视黑名单剔除", len(_got_bl) == 1 and len(_got_bl[0]) == 1
+      and _got_bl[0][0]["paper"]["title"] == "Good paper Y", repr(_got_bl))
+
+# ScoutTopic email_notify 字段
+_t_email = ScoutTopic(id="em1", name="邮件方向", email_notify=True)
+check("ScoutTopic.email_notify 序列化",
+      ScoutTopic.from_dict(_t_email.to_dict()).email_notify is True)
+check("ScoutTopic.email_notify 默认关闭",
+      ScoutTopic.from_dict({"id": "em2"}).email_notify is False)
+
+# ---------- 12. 邮件通知框架（无网络） ----------
+from src.core.email_notifier import (
+    EmailConfig, format_page_update, format_papers_digest,
+    send_notification_email,
+)
+
+_cfg_empty = EmailConfig.from_config({})
+check("EmailConfig 默认未配置", not _cfg_empty.is_configured())
+_cfg_full = EmailConfig.from_config({
+    "enabled": True, "smtp_host": "smtp.qq.com", "smtp_port": "465",
+    "username": "a@qq.com", "password": "authcode",
+    "recipients": "a@qq.com，b@163.com；c@gmail.com",
+})
+check("EmailConfig 收件人解析（中英文逗号/分号）",
+      _cfg_full.recipients == ["a@qq.com", "b@163.com", "c@gmail.com"],
+      repr(_cfg_full.recipients))
+check("EmailConfig 配置完整判定", _cfg_full.is_configured())
+_ok_off, _msg_off = send_notification_email(
+    EmailConfig.from_config({"enabled": False, "smtp_host": "x"}),
+    "s", "b")
+check("未启用时发信直接跳过", _ok_off is False and "未配置" in _msg_off, _msg_off)
+
+_subject, _body = format_papers_digest(
+    "定向巡视", "羽色方向",
+    [{"title": "Paper One", "authors": "A B, C D", "year": "2025",
+      "journal": "Nature", "doi": "10.1/one", "abstract": "这是一个摘要" * 100}])
+check("文献摘要邮件主题", "羽色方向" in _subject and "1 篇" in _subject, _subject)
+check("文献摘要邮件正文含标题与 DOI",
+      "Paper One" in _body and "10.1/one" in _body and len(_body) < 2000)
+_p_subject, _p_body = format_page_update(
+    "昆明动物所", "https://kiz.cas.cn/",
+    [{"title": "招聘启事", "url": "https://kiz.cas.cn/x1"},])
+check("网页更新邮件主题", "昆明动物所" in _p_subject, _p_subject)
+check("网页更新邮件正文含新链接",
+      "招聘启事" in _p_body and "https://kiz.cas.cn/x1" in _p_body)
+
+# ---------- 13. 网页追踪（解析/变更检测/序列化，无网络） ----------
+from src.core.web_watch import (
+    WatchedPage, compute_changes, extract_text_and_links, is_valid_url,
+)
+
+check("URL 校验", is_valid_url("https://kiz.cas.cn/")
+      and not is_valid_url("ftp://x") and not is_valid_url("kiz.cas.cn"))
+_wp = WatchedPage.from_dict({
+    "id": "w1", "name": "测试页", "url": "https://example.com/",
+    "keywords": "招聘\n招生", "interval_hours": 0, "last_new": "3"})
+check("WatchedPage 关键词字符串解析", _wp.keywords == ["招聘", "招生"], repr(_wp.keywords))
+check("WatchedPage 周期钳制", _wp.interval_hours == 6 and
+      WatchedPage(id="w2", interval_hours=9999).interval_hours == 168)
+check("WatchedPage 往返序列化", WatchedPage.from_dict(_wp.to_dict()).to_dict() == _wp.to_dict())
+
+_html = """<html><head><style>.x{color:red}</style></head><body>
+<script>var a=1;</script>
+<h1>机构首页</h1>
+<p>欢迎访问。</p>
+<ul>
+<li><a href="/notice/1">关于 2026 年招聘的通知</a></li>
+<li><a href="https://other.com/x">外部链接</a></li>
+</ul></body></html>"""
+_lines, _links = extract_text_and_links(_html, "https://kiz.cas.cn/")
+check("HTML 文本提取（去 script/style）",
+      any("机构首页" in ln for ln in _lines)
+      and not any("var a" in ln for ln in _lines), repr(_lines))
+check("HTML 链接提取与相对地址补全",
+      any(lk["url"] == "https://kiz.cas.cn/notice/1"
+          and "招聘" in lk["title"] for lk in _links), repr(_links))
+
+_first = compute_changes(None, _lines, _links, [])
+check("首次检查只建基线", _first["changed"] is False and _first["new_items"] == [])
+_same = compute_changes({"text_hash": _first["text_hash"], "links": _links}, _lines, _links, [])
+check("无变化不报更新", _same["changed"] is False and _same["new_items"] == [])
+_new_html = _html.replace("</ul>", "<li><a href='/notice/2'>招生简章发布</a></li></ul>")
+_lines2, _links2 = extract_text_and_links(_new_html, "https://kiz.cas.cn/")
+_chg = compute_changes({"text_hash": _first["text_hash"], "links": _links},
+                       _lines2, _links2, [])
+check("新链接检出", _chg["changed"] is True and len(_chg["new_items"]) == 1
+      and _chg["new_items"][0]["title"] == "招生简章发布", repr(_chg))
+_chg_kw = compute_changes({"text_hash": _first["text_hash"], "links": _links},
+                          _lines2, _links2, ["基金"])
+check("关键词过滤新链接（无匹配即无提示）",
+      _chg_kw["new_items"] == [], repr(_chg_kw))
+_many_links = [{"title": f"链接{i}", "url": f"https://kiz.cas.cn/{i}"}
+               for i in range(80)]
+_overhaul = compute_changes({"text_hash": _first["text_hash"], "links": _links},
+                            _lines, _many_links, [])
+check("整站改版不逐条推送", _overhaul["changed"] is True
+      and _overhaul["new_items"] == [] and _overhaul.get("site_overhaul") is True,
+      repr(_overhaul))
+
+# WebWatchPanel 离屏构建 + 页面 CRUD
+from src.ui.web_watch_panel import WatchEditDialog, WebWatchPanel
+
+_ww_dir = tempfile.mkdtemp(prefix="paperwb_ww_test_")
+_wwp = WebWatchPanel(watch_dir=_ww_dir)
+_wwp.manager().upsert_page(WatchedPage(id="wp1", name="昆明动物所",
+                                       url="https://kiz.cas.cn/"))
+app.processEvents()
+check("网页追踪面板卡片渲染", len(_wwp._cards) == 1
+      and "昆明动物所" in _wwp._cards["wp1"]._name_label.text())
+_wwp.manager().remove_page("wp1")
+app.processEvents()
+check("网页追踪面板删除卡片", len(_wwp._cards) == 0)
+_dlg_we = WatchEditDialog(None)
+_dlg_we._name_edit.setText("测试页")
+_dlg_we._url_edit.setText("https://kiz.cas.cn/")
+_dlg_we._keywords_edit.setPlainText("招聘\n基金")
+_we_res = _dlg_we.page_result()
+check("网页监控编辑对话框取值", _we_res.name == "测试页"
+      and _we_res.keywords == ["招聘", "基金"] and _we_res.notify_email is True)
+
+# 黑名单管理对话框（独立目录，避免与巡视用例互相污染）
+from src.ui.search_records_dialogs import BlacklistDialog, SearchHistoryDialog
+
+_bl5_dir = tempfile.mkdtemp(prefix="paperwb_bl5_")
+_bl5 = BlacklistStore(search_dir=_bl5_dir)
+_bl5.add(title="黑名单对话框条目", doi="10.7/x", reason="测试")
+_dlg_bl = BlacklistDialog(_bl5)
+check("黑名单对话框条目渲染", _dlg_bl._list.count() == 1)
+_dlg_bl._list.setCurrentRow(0)
+_dlg_bl._on_remove()
+check("黑名单对话框移除", len(_bl5) == 0 and _dlg_bl.changed is True)
+_dlg_hist = SearchHistoryDialog(search_dir=_bl_dir)
+check("检索历史对话框构建", _dlg_hist._list is not None)
+
+# ScoutCard 拉黑按钮
+from src.ui.workbench_panel import ScoutCard
+
+_scard_bl = ScoutCard({
+    "id": "y@t", "topic": "方向", "added_at": "",
+    "paper": {"title": "拉黑测试", "doi": "10.9/blk"}})
+_got_blk = []
+_scard_bl.block_requested.connect(_got_blk.append)
+for _btn in _scard_bl.findChildren(QPushButton):
+    if "🚫" in _btn.text():
+        _btn.click()
+check("结果卡片拉黑信号", len(_got_blk) == 1
+      and _got_blk[0].get("doi") == "10.9/blk", repr(_got_blk))
+
+# ---------- 14. 写作专业化（结构指南 / 续写与大纲提示词） ----------
+from src.core.writing_prompts import (
+    get_all_writing_types, get_structure_guide, get_writing_type_config,
+)
+
+check("写作类型齐全", {k for k, _ in get_all_writing_types()}
+      >= {"综述", "研究型论文", "专利", "软著"})
+check("综述提示词含综合原则", "综合而非罗列" in get_writing_type_config("综述")["system_prompt"])
+check("论文提示词含 IMRaD", "IMRaD" in get_writing_type_config("研究型论文")["system_prompt"])
+check("专利提示词含权利要求原则",
+      "权利要求" in get_writing_type_config("专利")["system_prompt"])
+check("四类型结构指南就绪",
+      all(get_structure_guide(t) for t in ("综述", "研究型论文", "专利", "软著")))
+check("自定义类型结构指南兜底", "通用结构指南" in get_structure_guide("custom_x"))
+
+from src.ui.writing_panel import ComposeWorker
+
+check("续写提示词模板就绪",
+      "{style_context}" in ComposeWorker.CONTINUE_PROMPT
+      and "{context}" in ComposeWorker.CONTINUE_PROMPT
+      and "不编造引文" in ComposeWorker.CONTINUE_PROMPT)
+check("大纲提示词模板就绪",
+      "{topic}" in ComposeWorker.OUTLINE_PROMPT
+      and "需引用" in ComposeWorker.OUTLINE_PROMPT)
+
+# 写作面板与设置对话框离屏构建（新按钮 / 邮件页签）
+from src.ui.settings_dialog import EmailNotifyTab, SettingsDialog
+from src.ui.writing_panel import WritingPanel
+
+_sdlg = SettingsDialog()
+check("设置对话框含邮件通知页签", isinstance(_sdlg._email_tab, EmailNotifyTab)
+      and _sdlg.tabs.indexOf(_sdlg._email_tab) >= 0)
+_email_cfg_round = {
+    "enabled": True, "smtp_host": "smtp.qq.com", "smtp_port": 465,
+    "use_ssl": True, "username": "a@qq.com", "password": "code",
+    "sender": "", "recipients": "a@qq.com",
+}
+_sdlg._email_tab.load(_email_cfg_round)
+check("邮件页签读写往返", _sdlg._email_tab.get() == _email_cfg_round,
+      repr(_sdlg._email_tab.get()))
+check("邮件页签测试按钮分支", hasattr(_sdlg, "_test_email"))
+
+_wpanel = WritingPanel()
+check("写作面板续写按钮", hasattr(_wpanel, "_continue_btn")
+      and _wpanel._continue_btn.text() == "AI 续写")
+check("写作面板大纲按钮", hasattr(_wpanel, "_outline_btn")
+      and _wpanel._outline_btn.text() == "生成大纲")
+check("续写取消纳入统一取消",
+      any("_compose_worker" in str(c)
+          for c in _wpanel._cancel_all_workers.__code__.co_consts))
+check("写作面板内联风格指南视图", hasattr(_wpanel, "_style_guide_view")
+      and not hasattr(_wpanel, "_view_style_btn"))
+check("写作面板 Zotero 检测入口", hasattr(_wpanel, "_zotero_check_btn")
+      and hasattr(_wpanel, "_zotero_result_list"))
+check("批注列表自动换行", _wpanel._comment_list.wordWrap()
+      and _wpanel._zotero_result_list.wordWrap())
+_wpanel.shutdown()
+
+# 复查修复：批注编号必须用文档真实段落号（否则会改错段落）
+from src.ui.writing_panel import (
+    ElidedLabel, format_comment_items, match_reference_to_library,
+    extract_reference_entries,
+)
+
+_comment_items = [
+    {"paragraph_index": 5, "author": "导师", "text": "补充文献",
+     "paragraph": "第五段正文"},
+    {"paragraph_index": 9, "author": "审阅人B", "text": "统一术语",
+     "paragraph": "第九段正文"},
+]
+_fmt = format_comment_items(_comment_items)
+check("批注编号使用真实段落号",
+      "[5]" in _fmt and "[9]" in _fmt and "[0]" not in _fmt, _fmt[:80])
+
+_el = ElidedLabel("很长的论文标题" * 30)
+check("省略标签不参与最小宽度计算",
+      _el.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Ignored
+      and _el.full_text().startswith("很长的论文标题"))
+
+# 复查修复：接受一处修订时 highlight_citations 触发的 textChanged
+# 必须仍在 _skip_recompute 保护期内，否则写作面板会连锁自动接受相邻修订
+from PySide6.QtWidgets import QTextEdit as _QTextEdit
+from src.core.doc_diff import DocDiffController
+
+_edit = _QTextEdit()
+_ctrl = DocDiffController(_edit)
+_skip_at_signal: list[bool] = []
+_edit.textChanged.connect(
+    lambda: _skip_at_signal.append(bool(_ctrl._skip_recompute)))
+_ctrl.render("AAA BBB CCC", "AAA XXX CCC")
+_ctrl._current_anchor_idx = 0
+_ctrl.apply_change(accept=True)
+check("接受修订全程处于跳过重算保护期",
+      bool(_skip_at_signal) and all(_skip_at_signal)
+      and not _ctrl._skip_recompute, str(_skip_at_signal))
+
+# 写作面板·参考文献在库检测（纯函数：分段提取 + 归一匹配）
+_num_text = (
+    "正文段落……\n\n"
+    "参考文献\n"
+    "[1] Zhang S, et al. Single-cell transcriptomic analysis of the tumor ecosystem. Cell. 2021.\n"
+    "[2] Chen R, et al. Spatial transcriptomics decodes tissue architecture\n"
+    "in the developing heart. Nature Methods. 2022.\n"
+    "[3] Wang L, et al. Bulk RNA-seq reveals zzz. Science. 2020.\n"
+)
+_num_entries = extract_reference_entries(_num_text)
+check("参考文献提取·编号分段", len(_num_entries) == 3
+      and _num_entries[0].startswith("Zhang S")
+      and _num_entries[1].startswith("Chen R")
+      and "developing heart" in _num_entries[1], repr(_num_entries))
+
+_para_text = (
+    "正文段落……\n\nReferences\n\n"
+    "Zhang S, et al. Single-cell transcriptomic analysis of the tumor ecosystem. Cell. 2021.\n\n"
+    "Chen R, et al. Spatial transcriptomics decodes tissue architecture. Nature Methods. 2022.\n"
+)
+_para_entries = extract_reference_entries(_para_text)
+check("参考文献提取·空行分段", len(_para_entries) == 2
+      and _para_entries[0].startswith("Zhang S"), repr(_para_entries))
+check("参考文献提取·无章节返回空", extract_reference_entries("没有文献章节的正文") == [])
+
+_pool = [
+    {"title": "Spatial Transcriptomics Decodes Tissue Architecture!",
+     "doi": "https://doi.org/10.1038/s41592-022-01451-9", "year": "2022"},
+    {"title": "Single-cell transcriptomic analysis of the tumor ecosystem",
+     "doi": "", "year": "2021"},
+]
+check("文献在库匹配·DOI 精确",
+      match_reference_to_library(
+          "Chen R, et al. Spatial x. Nature. 2022. doi:10.1038/s41592-022-01451-9.",
+          _pool) is _pool[0])
+check("文献在库匹配·标题包含（大小写/符号无关）",
+      match_reference_to_library(
+          "[2] chen r, et al. Spatial Transcriptomics Decodes Tissue Architecture! Nat Methods 2022.",
+          _pool) is _pool[0])
+check("文献在库匹配·未命中", match_reference_to_library(
+    "Wang L, et al. Something completely unrelated here. Science. 2020.", _pool) is None)
+check("文献在库匹配·空池安全", match_reference_to_library("any entry", []) is None)
 
 
 # ---------- 汇总 ----------

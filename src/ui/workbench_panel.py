@@ -29,12 +29,18 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ..core.email_notifier import (
+    EmailConfig, format_papers_digest, format_page_update, send_async,
+)
 from ..core.library_recommender import (
     LibraryRecommendWorker, build_seeds,
 )
 from ..core.literature_scout import (
     MAX_INTERVAL_HOURS, ScoutManager, ScoutTopic, papers_to_ris, save_csv,
 )
+from ..core.search_records import append_history, get_blacklist
+from .search_records_dialogs import BlacklistDialog, SearchHistoryDialog
+from .web_watch_panel import WebWatchPanel
 from ..utils.config import get_easyscholar_api_key
 from ..utils.threads import track
 
@@ -112,6 +118,10 @@ class TopicEditDialog(QDialog):
         self._llm_cb.setChecked(bool(topic.use_llm_match) if topic else False)
         form.addRow("", self._llm_cb)
 
+        self._email_cb = QCheckBox("发现新文献时发邮件提醒（需在设置中配置邮箱）")
+        self._email_cb.setChecked(bool(topic.email_notify) if topic else False)
+        form.addRow("", self._email_cb)
+
         self._enabled_cb = QCheckBox("启用定时巡视")
         self._enabled_cb.setChecked(topic.enabled if topic else True)
         form.addRow("", self._enabled_cb)
@@ -152,6 +162,7 @@ class TopicEditDialog(QDialog):
             limit=self._limit_spin.value(),
             enabled=self._enabled_cb.isChecked(),
             use_llm_match=self._llm_cb.isChecked(),
+            email_notify=self._email_cb.isChecked(),
             last_run=base.last_run if base else "",
             last_new=base.last_new if base else 0,
         )
@@ -236,7 +247,8 @@ class TopicCard(QFrame):
     def _refresh_labels(self) -> None:
         t = self._topic
         suffix = " ⏳" if self._running else ""
-        self._name_label.setText((t.name or "（未命名方向）") + suffix)
+        email_chip = " 📧" if t.email_notify else ""
+        self._name_label.setText((t.name or "（未命名方向）") + email_chip + suffix)
         kws = "；".join(t.keywords[:4]) + ("…" if len(t.keywords) > 4 else "")
         self._kw_label.setText(f"关键词：{kws or '（未设置）'}")
         last = t.last_run[:16].replace("T", " ") if t.last_run else "未运行"
@@ -267,6 +279,7 @@ class ScoutCard(QFrame):
     """单条巡视发现的文献卡片。"""
 
     ignore_requested = Signal(str)
+    block_requested = Signal(dict)       # 携带 paper dict（加入黑名单）
     translate_requested = Signal(dict)   # 携带 paper dict
 
     def __init__(self, entry: dict, parent=None):
@@ -363,10 +376,18 @@ class ScoutCard(QFrame):
         ignore_btn.setToolTip("从推荐流移除（之后不再重复推送）")
         ignore_btn.clicked.connect(
             lambda: self.ignore_requested.emit(entry.get("id", "")))
+        block_btn = QPushButton("🚫")
+        block_btn.setObjectName("softBtn")
+        block_btn.setToolTip(
+            "加入黑名单：这篇文献之后不会再出现在\n"
+            "AI 检索、按库推荐、巡视和文献补充的结果中")
+        block_btn.clicked.connect(
+            lambda: self.block_requested.emit(self._entry.get("paper", {})))
         btns.addWidget(pubmed_btn)
         btns.addWidget(cite_btn)
         btns.addWidget(trans_btn)
         btns.addStretch()
+        btns.addWidget(block_btn)
         btns.addWidget(ignore_btn)
         layout.addLayout(btns)
 
@@ -509,9 +530,14 @@ class WorkbenchPanel(QWidget):
         self._manager.topics_changed.connect(self._render_topics)
         self._manager.topic_running.connect(self._on_topic_running)
         self._manager.results_ready.connect(self._on_scout_results)
+        # 结果黑名单（拉黑文献不再出现在任何检索结果中）
+        self._blacklist = get_blacklist()
+        self._manager.set_blacklist(self._blacklist)
 
         self._setup_ui()
         self._manager.status_msg.connect(self._feed_status.setText)
+        self._watch_panel.manager().status_msg.connect(self._feed_status.setText)
+        self._watch_panel.manager().page_updated.connect(self._on_page_updated)
         self._refresh_rec_controls([])
         self._render_topics()
         self._render_feed()
@@ -617,6 +643,11 @@ class WorkbenchPanel(QWidget):
             "勾选 = 从结果中剔除本地 Zotero 库中已有的文献；\n"
             "不勾选 = 保留全部结果，并在卡片上标注「已在库中」")
         ctrl.addWidget(self._filter_library_cb)
+        self._history_btn = QPushButton("🕘 检索记录")
+        self._history_btn.setObjectName("softBtn")
+        self._history_btn.setToolTip("查看历次检索留档（AI 检索/推荐/巡视/文献补充）")
+        self._history_btn.clicked.connect(self._on_show_history)
+        ctrl.addWidget(self._history_btn)
         ctrl.addStretch()
         self._ai_search_btn = QPushButton("开始检索 ✈")
         self._ai_search_btn.setObjectName("primaryBtn")
@@ -667,7 +698,7 @@ class WorkbenchPanel(QWidget):
         return panel
 
     def _build_scout_panel(self) -> QWidget:
-        """右栏巡视面板：方向管理在上，巡视结果（推荐流）在下，同栏相邻。"""
+        """右栏巡视面板：方向管理在上，网页追踪居中，巡视结果在下。"""
         container = QWidget()
         container.setMinimumWidth(340)
         v = QVBoxLayout(container)
@@ -678,12 +709,16 @@ class WorkbenchPanel(QWidget):
         splitter.setHandleWidth(6)
         splitter.setOpaqueResize(False)
         splitter.addWidget(self._build_topic_panel())
+        self._watch_panel = WebWatchPanel()
+        splitter.addWidget(self._watch_panel)
         splitter.addWidget(self._build_feed_panel())
-        splitter.setSizes([300, 430])
+        splitter.setSizes([260, 240, 430])
         splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setStretchFactor(2, 1)
         splitter.setCollapsible(0, True)
-        splitter.setCollapsible(1, False)
+        splitter.setCollapsible(1, True)
+        splitter.setCollapsible(2, False)
         self._scout_splitter = splitter
         v.addWidget(splitter)
         return container
@@ -754,11 +789,16 @@ class WorkbenchPanel(QWidget):
         csv_btn = QPushButton("导出 CSV")
         csv_btn.setObjectName("secondaryBtn")
         csv_btn.clicked.connect(self._on_export_csv)
+        blacklist_btn = QPushButton("🚫 黑名单")
+        blacklist_btn.setObjectName("secondaryBtn")
+        blacklist_btn.setToolTip("管理检索黑名单（拉黑的文献不再出现在结果中）")
+        blacklist_btn.clicked.connect(self._on_manage_blacklist)
         clear_btn = QPushButton("清空")
         clear_btn.setObjectName("softBtn")
         clear_btn.clicked.connect(self._on_clear_feed)
         footer.addWidget(ris_btn)
         footer.addWidget(csv_btn)
+        footer.addWidget(blacklist_btn)
         footer.addStretch()
         footer.addWidget(clear_btn)
         v.addLayout(footer)
@@ -796,6 +836,7 @@ class WorkbenchPanel(QWidget):
         pool = self._build_pool()
         self._manager.set_match_pool(pool)
         self._manager.start()
+        self._watch_panel.start()
         self._refresh_rec_controls(pool)
 
     def on_zotero_changed(self) -> None:
@@ -815,18 +856,24 @@ class WorkbenchPanel(QWidget):
         if not self._manager.reload_storage():
             self._feed_status.setText("已有巡视任务正在退出，稍后再切换数据目录")
             return False
+        if not self._watch_panel.reload_storage():
+            self._feed_status.setText("已有网页检查正在退出，稍后再切换数据目录")
+            return False
+        self._blacklist.reload()
         self._render_topics()
         self._render_feed()
         if self._library is not None:
             pool = self._build_pool()
             self._manager.set_match_pool(pool)
             self._manager.start()
+            self._watch_panel.start()
             self._refresh_rec_controls(pool)
         return True
 
     def shutdown(self) -> None:
         """停止巡视定时器并请求中断后台线程（关窗时调用）。"""
         self._manager.shutdown()
+        self._watch_panel.shutdown()
         for w in (self._ai_worker, self._rec_worker, self._if_worker):
             if w is not None and w.isRunning():
                 w.requestInterruption()
@@ -837,7 +884,8 @@ class WorkbenchPanel(QWidget):
     def has_busy_workers(self) -> bool:
         ai = self._ai_worker is not None and self._ai_worker.isRunning()
         rec = self._rec_worker is not None and self._rec_worker.isRunning()
-        return ai or rec or self._manager.has_busy_workers()
+        return (ai or rec or self._manager.has_busy_workers()
+                or self._watch_panel.has_busy_workers())
     # ================= 库快照工具 =================
 
     def _build_collections(self) -> None:
@@ -1103,7 +1151,8 @@ class WorkbenchPanel(QWidget):
         worker = PaperSearchWorker(
             text, client=self._text_client, pool=self._build_pool(), limit=10,
             searcher=self._ai_searcher, rounds=2,
-            filter_library=self._filter_library_cb.isChecked())
+            filter_library=self._filter_library_cb.isChecked(),
+            blacklist=self._blacklist)
         track(worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._ai_worker = worker
         worker.log.connect(self._on_ai_log)
@@ -1119,6 +1168,7 @@ class WorkbenchPanel(QWidget):
         if self.sender() is not self._ai_worker:
             return
         self._render_search_papers(papers, "AI 检索")
+        append_history("AI 检索", self._ai_input.toPlainText().strip(), len(papers))
         self.search_completed.emit(len(papers))
 
     def _on_ai_error(self, err: str) -> None:
@@ -1158,7 +1208,7 @@ class WorkbenchPanel(QWidget):
 
         worker = LibraryRecommendWorker(
             seeds, pool, client=self._text_client, limit=20,
-            searcher=self._ai_searcher)
+            searcher=self._ai_searcher, blacklist=self._blacklist)
         track(worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._rec_worker = worker
         worker.log.connect(self._on_ai_log)
@@ -1171,6 +1221,7 @@ class WorkbenchPanel(QWidget):
         if self.sender() is not self._rec_worker:
             return
         self._render_search_papers(papers, "按库推荐")
+        append_history("按库推荐", self._current_rec_label(), len(papers))
         self.search_completed.emit(len(papers))
 
     def _on_rec_error(self, err: str) -> None:
@@ -1210,6 +1261,7 @@ class WorkbenchPanel(QWidget):
             }
             card = ScoutCard(entry)
             card.ignore_requested.connect(self._on_ignore_feed)
+            card.block_requested.connect(self._on_block_paper)
             card.translate_requested.connect(self._on_translate_card)
             self._register_card(card)
             self._ai_results_layout.insertWidget(
@@ -1266,6 +1318,7 @@ class WorkbenchPanel(QWidget):
             self._feed_empty = None
         card = ScoutCard(entry)
         card.ignore_requested.connect(self._on_ignore_feed)
+        card.block_requested.connect(self._on_block_paper)
         card.translate_requested.connect(self._on_translate_card)
         self._register_card(card)
         self._flush_if_queries()
@@ -1276,6 +1329,51 @@ class WorkbenchPanel(QWidget):
         for entry in entries:
             self._add_feed_card(entry)
         self.scout_completed.emit(topic_name, len(entries))
+        self._maybe_email_scout_results(topic_name, entries)
+
+    def _maybe_email_scout_results(self, topic_name: str, entries: list) -> None:
+        """方向开启邮件提醒且邮箱已配置时，推送新文献摘要邮件。"""
+        if not entries:
+            return
+        topic = next((t for t in self._manager.topics()
+                      if t.name == topic_name), None)
+        if topic is None or not topic.email_notify:
+            return
+        cfg = EmailConfig.from_config()
+        if not cfg.is_configured():
+            self._feed_status.setText(
+                f"「{topic_name}」发现 {len(entries)} 篇新文献"
+                "（未配置邮件通知，可在 设置 → API 接口设置 → 邮件通知 中开启）")
+            return
+        papers = [e.get("paper", {}) for e in entries]
+        subject, body = format_papers_digest("定向巡视", topic_name, papers)
+        send_async(subject, body, on_done=lambda ok, msg, tn=topic_name:
+                   self._feed_status.setText(
+                       f"「{tn}」新文献邮件{'已发送' if ok else f'发送失败：{msg}'}"))
+
+    def _on_block_paper(self, paper: dict) -> None:
+        """把一篇文献加入黑名单（结果卡片 🚫），并从当前展示中移除该卡片。"""
+        title = str(paper.get("title", "") or "").strip()
+        doi = str(paper.get("doi", "") or "").strip()
+        if not title and not doi:
+            QMessageBox.information(self, "无法拉黑", "这篇文献缺少标题和 DOI，无法加入黑名单。")
+            return
+        entry = self._blacklist.add(
+            doi=doi, title=title,
+            source="检索工作台")
+        if entry is None:
+            QMessageBox.information(self, "无法拉黑", "这篇文献缺少可识别的标识。")
+            return
+        sender = self.sender()
+        if sender is not None:
+            self._unregister_card(sender)
+            sender.setParent(None)
+            sender.deleteLater()
+        # 推荐流中的同名文献一并按新口径重渲染
+        self._render_feed()
+        self._feed_status.setText(
+            f"已加入黑名单：{title[:40]}{'…' if len(title) > 40 else ''}"
+            "（之后不会再出现在检索结果中）")
 
     def _on_ignore_feed(self, entry_id: str) -> None:
         self._manager.ignore_feed_item(entry_id)
@@ -1398,6 +1496,29 @@ class WorkbenchPanel(QWidget):
         if r == QMessageBox.StandardButton.Yes:
             self._manager.clear_feed()
             self._render_feed()
+
+    def _on_page_updated(self, page, new_items: list) -> None:
+        """网页监控发现更新：按页面设置推送邮件提醒（未配置则静默跳过）。"""
+        if not getattr(page, "notify_email", False):
+            return
+        cfg = EmailConfig.from_config()
+        if not cfg.is_configured():
+            return
+        subject, body = format_page_update(
+            page.name or page.url, page.url, list(new_items),
+            summary=getattr(page, "last_status", ""))
+        send_async(subject, body, on_done=lambda ok, msg, p=page:
+                   self._feed_status.setText(
+                       f"「{p.name}」更新邮件{'已发送' if ok else f'发送失败：{msg}'}"))
+
+    def _on_manage_blacklist(self) -> None:
+        dlg = BlacklistDialog(self._blacklist, self)
+        dlg.exec()
+        if dlg.changed:
+            self._render_feed()  # 黑名单变化后按新口径重渲染推荐流
+
+    def _on_show_history(self) -> None:
+        SearchHistoryDialog(self).exec()
 
     def _feed_papers(self) -> list[dict]:
         return [e.get("paper", {}) for e in self._manager.feed_items()]

@@ -26,9 +26,14 @@ def normalize_doi(doi: str) -> str:
     return d.rstrip("/")
 
 
+# CJK 统一表意文字（含扩展A）+ 日文假名 + 韩文谚文，供标题归一化保留
+_CJK_RANGES = "\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af"
+
+
 def normalize_title(title: str) -> str:
-    """规范化标题：仅保留小写字母数字，用于精确比对。"""
-    return re.sub(r"[^a-z0-9]", "", (title or "").lower())
+    """规范化标题：保留小写字母数字与 CJK 字符（中文/日文/韩文标题也能比对），
+    其余符号、空格、大小写差异一律剥掉，用于精确比对。"""
+    return re.sub(rf"[^{_CJK_RANGES}a-z0-9]", "", (title or "").lower())
 
 
 def find_library_match(title: str, doi: str, pool: list[dict]) -> dict | None:

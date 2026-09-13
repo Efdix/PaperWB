@@ -11,6 +11,7 @@ AI 辅助按钮:
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -19,17 +20,57 @@ from PySide6.QtWidgets import (
     QScrollArea, QLabel, QFrame, QSplitter, QProgressBar,
     QMessageBox, QFileDialog, QComboBox, QGroupBox, QInputDialog,
     QListWidget, QListWidgetItem, QApplication, QMenu,
-    QLineEdit, QDialog, QDialogButtonBox, QCheckBox, QTabWidget,
+    QLineEdit, QCheckBox, QTabWidget, QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal, QThread, QTimer
 from PySide6.QtGui import QFont, QTextCursor, QColor, QTextCharFormat, QTextDocument
 
+from ..core.reference_match import normalize_doi, normalize_title
 from ..utils.threads import track
 
 if TYPE_CHECKING:
     from ..core.llm_client import LLMClient
     from ..core.zotero_parser import ZoteroLibrary
     from ..core.writing_coach import WritingCoach, WritingProfile
+
+
+# ============================================================
+# 小控件
+# ============================================================
+
+class ElidedLabel(QLabel):
+    """按当前宽度省略显示的长文本标签。
+
+    完整内容放进 tooltip；水平策略设为 Ignored，长文件名/长状态不会抬高
+    所在行的最小宽度而把右侧控件（字数、进度条、停止按钮）挤出可视区。
+    """
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           self.sizePolicy().verticalPolicy())
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802 (保持 Qt 命名)
+        self._full_text = text or ""
+        self.setToolTip(self._full_text)
+        self._refresh()
+
+    def full_text(self) -> str:
+        return self._full_text
+
+    def _refresh(self) -> None:
+        width = self.width()
+        if width <= 0:
+            super().setText(self._full_text)
+            return
+        super().setText(self.fontMetrics().elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, width))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh()
 
 
 # ============================================================
@@ -81,6 +122,20 @@ class InlinePolishWorker(QThread):
                 self.error_signal.emit(str(e))
 
 
+def format_comment_items(items: list[dict]) -> str:
+    """把批注列表格式化为 LLM 输入。
+
+    编号必须使用文档真实段落号（paragraph_index）——返回值会被直接当作
+    段落号用于渲染修改，用枚举序号会在批注未锚定在前几段时改错段落。
+    """
+    lines = []
+    for it in items:
+        lines.append(
+            f"[{it.get('paragraph_index', -1)}] 批注（{it.get('author', '')}）：{it.get('text', '')}\n"
+            f"段落：{it.get('paragraph', '')}")
+    return "\n\n".join(lines)
+
+
 class CommentFixWorker(QThread):
     """AI 按批注修改：批注列表 + 锚定段落 → LLM 返回修改后段落。
 
@@ -126,11 +181,6 @@ class CommentFixWorker(QThread):
             return
         try:
             from ..core.json_utils import parse_json_response
-            lines = []
-            for i, it in enumerate(self._items):
-                lines.append(
-                    f"[{i}] 批注（{it.get('author', '')}）：{it.get('text', '')}\n"
-                    f"段落：{it.get('paragraph', '')}")
             # 风格指南（与 UnifiedWriter 润色同一约束）
             style_context = ""
             if self._coach is not None:
@@ -156,7 +206,7 @@ class CommentFixWorker(QThread):
             prompt = (self.PROMPT
                       .replace("{style_context}", style_context)
                       .replace("{evidence}", citation_evidence)
-                      .replace("{items}", "\n\n".join(lines)))
+                      .replace("{items}", format_comment_items(self._items)))
             resp = self._client.chat_sync(
                 [{"role": "system", "content": "只返回 JSON，不要解释。"},
                  {"role": "user", "content": prompt}],
@@ -182,164 +232,297 @@ class CommentFixWorker(QThread):
 
 
 # ============================================================
-# 风格指南展示对话框
+# 风格指南内联展示（知识库页签）
 # ============================================================
 
-class StyleGuideDialog(QDialog):
-    """风格指南滚动展示对话框 —— 可滚动的完整分析结果。"""
+def _add_style_section(cl: QVBoxLayout, title: str, content: str,
+                       color: str = "#147c7c") -> None:
+    """向布局追加一节「色条标题 + 内容卡」，内容为空跳过。"""
+    if not content:
+        return
+    header = QLabel(title)
+    header.setStyleSheet(
+        f"color: {color}; font-size: 15px; font-weight: bold; "
+        f"border-left: 3px solid {color}; padding-left: 10px; margin-top: 8px;"
+    )
+    cl.addWidget(header)
+    body = QLabel(content)
+    body.setWordWrap(True)
+    body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    body.setStyleSheet(
+        "color: #29434a; font-size: 13px; line-height: 1.8; "
+        "padding: 10px 12px; background: #fffdfa; border: 1px solid #e5e1d9; border-radius: 8px;"
+    )
+    cl.addWidget(body)
 
-    def __init__(self, profile, parent=None):
+
+def _populate_style_guide(cl: QVBoxLayout, profile) -> None:
+    """把风格分析结果（写作习惯 + 期刊格式）逐节填入布局。"""
+    # 写作习惯部分
+    if profile and profile.has_writing_habits:
+        h = profile.writing_habits
+        if h.get("citation_detail_level"):
+            cd = h["citation_detail_level"] or {}
+            _add_style_section(cl, "引用详略度",
+                f"平均 {cd.get('avg_sentences_per_citation', '?')} 句话 / {cd.get('avg_chars_per_citation', '?')} 字  "
+                f"(共 {cd.get('sample_count', '?')} 个样本)\n"
+                f"中位数: {cd.get('med_chars_per_citation', '?')} 字  "
+                f"四分位: {cd.get('q25_chars', '?')}-{cd.get('q75_chars', '?')} 字\n"
+                f"分布: {cd.get('distribution_description', '')}",
+                "#147c7c")
+        if h.get("argumentation_style"):
+            _add_style_section(cl, "论述逻辑", h["argumentation_style"], "#147c7c")
+        if h.get("paragraph_patterns"):
+            _add_style_section(cl, "段落组织", h["paragraph_patterns"], "#147c7c")
+        if h.get("terminology_preferences"):
+            _add_style_section(cl, "术语偏好", h["terminology_preferences"], "#147c7c")
+        st = h.get("sentence_templates")
+        if st:
+            if isinstance(st, list):
+                _add_style_section(cl, "句式模板", "\n".join(f"· {s}" for s in st), "#147c7c")
+            else:
+                _add_style_section(cl, "句式模板", st, "#147c7c")
+        if h.get("transition_phrases"):
+            _add_style_section(cl, "过渡方式", h["transition_phrases"], "#147c7c")
+        if h.get("tone_voice"):
+            _add_style_section(cl, "语气风格", h["tone_voice"], "#147c7c")
+        cit_den = h.get("citation_density", {})
+        if cit_den:
+            lines = []
+            summary = cit_den.get("summary", "")
+            if summary:
+                lines.append(summary)
+            sections = cit_den.get("sections", [])
+            if sections:
+                lines.append("")
+                for s in sections:
+                    lines.append(f"  · {s.get('name', '?')}: {s.get('citation_count', '?')} 篇")
+            _add_style_section(cl, "引用密度（各章节引用分布）", "\n".join(lines), "#147c7c")
+
+        sp = h.get("section_paragraphs")
+        if sp and isinstance(sp, list):
+            lines = []
+            for s in sp:
+                lines.append(
+                    f"· {s.get('section', '?')}: {s.get('paragraph_count', '?')} 段, "
+                    f"每段平均 {s.get('avg_words_per_paragraph', '?')} 字"
+                )
+                if s.get("notes"):
+                    lines.append(f"  ({s['notes']})")
+            _add_style_section(cl, "各章节段落组织", "\n".join(lines), "#147c7c")
+
+        st_habits = h.get("section_transitions")
+        if st_habits:
+            lines = [f"密度: {st_habits.get('density', '无')}"]
+            pats = st_habits.get("patterns", [])
+            if pats:
+                lines.append("典型模式: " + "; ".join(str(p) for p in pats))
+            wb = st_habits.get("weak_boundaries", [])
+            if wb:
+                lines.append("薄弱边界: " + "; ".join(str(w) for w in wb))
+            _add_style_section(cl, "章节过渡模式", "\n".join(lines), "#147c7c")
+
+        sw = h.get("section_word_counts")
+        if sw and isinstance(sw, list):
+            lines = []
+            for s in sw:
+                lines.append(
+                    f"· {s.get('section', '?')}: 约 {s.get('word_count', '?')} 字 "
+                    f"({s.get('percentage', '?')})"
+                )
+            _add_style_section(cl, "各部分字数分布", "\n".join(lines), "#147c7c")
+    if profile and profile.has_journal_style:
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("background-color: #e4e0d8; max-height: 1px;")
+        cl.addWidget(sep)
+
+        j = profile.journal_style
+        if j.get("citation_format"):
+            _add_style_section(cl, "引用格式", j["citation_format"], "#b87835")
+        if j.get("section_structure"):
+            _add_style_section(cl, "章节结构", j["section_structure"], "#b87835")
+        if j.get("reference_list_format"):
+            _add_style_section(cl, "参考文献格式", j["reference_list_format"], "#b87835")
+        if j.get("figure_conventions"):
+            _add_style_section(cl, "图表惯例", j["figure_conventions"], "#b87835")
+        if j.get("abstract_format"):
+            _add_style_section(cl, "摘要格式", j["abstract_format"], "#b87835")
+        if j.get("general_formatting"):
+            _add_style_section(cl, "其他格式", j["general_formatting"], "#b87835")
+
+
+class StyleGuideView(QWidget):
+    """知识库页签内联风格指南 —— 生成后直接铺满页签空白区，可滚动。"""
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("风格分析完成")
-        self.resize(560, 500)
-        self.setMinimumSize(420, 350)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.Window)
-        self._setup_ui(profile)
-
-    def _setup_ui(self, profile):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: #f4f1eb; }")
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet("QScrollArea { border: none; background: #ffffff; }")
+        layout.addWidget(self._scroll)
+        self.set_profile(None)
 
+    def set_profile(self, profile) -> None:
+        """按当前知识库的分析结果重建内容；无结果时显示占位提示。"""
+        old = self._scroll.takeWidget()
+        if old is not None:
+            old.deleteLater()
         container = QWidget()
-        container.setStyleSheet("background: #f4f1eb;")
+        container.setStyleSheet("background: #ffffff;")
         cl = QVBoxLayout(container)
-        cl.setContentsMargins(24, 20, 24, 20)
-        cl.setSpacing(12)
-
-        def _section(title, content, color="#147c7c"):
-            if not content:
-                return
-            header = QLabel(title)
-            header.setStyleSheet(
-                f"color: {color}; font-size: 15px; font-weight: bold; "
-                f"border-left: 3px solid {color}; padding-left: 10px; margin-top: 8px;"
-            )
-            cl.addWidget(header)
-            body = QLabel(content)
-            body.setWordWrap(True)
-            body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            body.setStyleSheet(
-                "color: #29434a; font-size: 13px; line-height: 1.8; "
-                "padding: 10px 12px; background: #fffdfa; border: 1px solid #e5e1d9; border-radius: 8px;"
-            )
-            cl.addWidget(body)
-
-        # 写作习惯部分
-        if profile and profile.has_writing_habits:
-            h = profile.writing_habits
-            if h.get("citation_detail_level"):
-                cd = h["citation_detail_level"] or {}
-                _section("引用详略度",
-                    f"平均 {cd.get('avg_sentences_per_citation', '?')} 句话 / {cd.get('avg_chars_per_citation', '?')} 字  "
-                    f"(共 {cd.get('sample_count', '?')} 个样本)\n"
-                    f"中位数: {cd.get('med_chars_per_citation', '?')} 字  "
-                    f"四分位: {cd.get('q25_chars', '?')}-{cd.get('q75_chars', '?')} 字\n"
-                    f"分布: {cd.get('distribution_description', '')}",
-                    "#147c7c")
-            if h.get("argumentation_style"):
-                _section("论述逻辑", h["argumentation_style"], "#147c7c")
-            if h.get("paragraph_patterns"):
-                _section("段落组织", h["paragraph_patterns"], "#147c7c")
-            if h.get("terminology_preferences"):
-                _section("术语偏好", h["terminology_preferences"], "#147c7c")
-            st = h.get("sentence_templates")
-            if st:
-                if isinstance(st, list):
-                    _section("句式模板", "\n".join(f"· {s}" for s in st), "#147c7c")
-                else:
-                    _section("句式模板", st, "#147c7c")
-            if h.get("transition_phrases"):
-                _section("过渡方式", h["transition_phrases"], "#147c7c")
-            if h.get("tone_voice"):
-                _section("语气风格", h["tone_voice"], "#147c7c")
-            cit_den = h.get("citation_density", {})
-            if cit_den:
-                lines = []
-                summary = cit_den.get("summary", "")
-                if summary:
-                    lines.append(summary)
-                sections = cit_den.get("sections", [])
-                if sections:
-                    lines.append("")
-                    for s in sections:
-                        lines.append(f"  · {s.get('name', '?')}: {s.get('citation_count', '?')} 篇")
-                _section("引用密度（各章节引用分布）", "\n".join(lines), "#147c7c")
-
-            sp = h.get("section_paragraphs")
-            if sp and isinstance(sp, list):
-                lines = []
-                for s in sp:
-                    lines.append(
-                        f"· {s.get('section', '?')}: {s.get('paragraph_count', '?')} 段, "
-                        f"每段平均 {s.get('avg_words_per_paragraph', '?')} 字"
-                    )
-                    if s.get("notes"):
-                        lines.append(f"  ({s['notes']})")
-                _section("各章节段落组织", "\n".join(lines), "#147c7c")
-
-            st_habits = h.get("section_transitions")
-            if st_habits:
-                lines = [f"密度: {st_habits.get('density', '无')}"]
-                pats = st_habits.get("patterns", [])
-                if pats:
-                    lines.append("典型模式: " + "; ".join(str(p) for p in pats))
-                wb = st_habits.get("weak_boundaries", [])
-                if wb:
-                    lines.append("薄弱边界: " + "; ".join(str(w) for w in wb))
-                _section("章节过渡模式", "\n".join(lines), "#147c7c")
-
-            sw = h.get("section_word_counts")
-            if sw and isinstance(sw, list):
-                lines = []
-                for s in sw:
-                    lines.append(
-                        f"· {s.get('section', '?')}: 约 {s.get('word_count', '?')} 字 "
-                        f"({s.get('percentage', '?')})"
-                    )
-                _section("各部分字数分布", "\n".join(lines), "#147c7c")
-        if profile and profile.has_journal_style:
-            sep = QFrame()
-            sep.setFrameShape(QFrame.Shape.HLine)
-            sep.setStyleSheet("background-color: #e4e0d8; max-height: 1px;")
-            cl.addWidget(sep)
-
-            j = profile.journal_style
-            if j.get("citation_format"):
-                _section("引用格式", j["citation_format"], "#b87835")
-            if j.get("section_structure"):
-                _section("章节结构", j["section_structure"], "#b87835")
-            if j.get("reference_list_format"):
-                _section("参考文献格式", j["reference_list_format"], "#b87835")
-            if j.get("figure_conventions"):
-                _section("图表惯例", j["figure_conventions"], "#b87835")
-            if j.get("abstract_format"):
-                _section("摘要格式", j["abstract_format"], "#b87835")
-            if j.get("general_formatting"):
-                _section("其他格式", j["general_formatting"], "#b87835")
-
+        cl.setContentsMargins(12, 8, 12, 12)
+        cl.setSpacing(10)
+        if profile and (profile.has_writing_habits or profile.has_journal_style):
+            _populate_style_guide(cl, profile)
+        else:
+            hint = QLabel("尚未生成风格指南。\n添加范文后点击「生成风格指南」，指南内容将显示在这里。")
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: #9a958c; font-size: 13px; padding: 8px 4px;")
+            cl.addWidget(hint)
         cl.addStretch()
-        scroll.setWidget(container)
-        layout.addWidget(scroll)
+        self._scroll.setWidget(container)
 
-        btn_row = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
-        btn_row.accepted.connect(self.accept)
-        btn_row.setStyleSheet(
-            "QPushButton { background: #147c7c; color: #ffffff; font-weight: bold; "
-            "border-radius: 7px; padding: 7px 24px; font-size: 13px; }"
-            "QPushButton:hover { background: #0e696a; }"
-        )
-        btn_container = QWidget()
-        btn_container.setStyleSheet("background: #f4f1eb;")
-        btn_lo = QHBoxLayout(btn_container)
-        btn_lo.setContentsMargins(24, 10, 24, 16)
-        btn_lo.addStretch()
-        btn_lo.addWidget(btn_row)
-        layout.addWidget(btn_container)
+
+# ============================================================
+# Zotero 参考文献在库检测（本地零成本匹配，口径同 reference_match）
+# ============================================================
+
+_REF_HEADING_RE = re.compile(
+    r"^\s*(参考文献|引用文献|文献列表|references?|bibliography|works cited)\s*:?\s*$",
+    re.IGNORECASE)
+_REF_NUM_START_RE = re.compile(r"^\s*[\[（(]?\d{1,4}[\]）.)、](?!\d)\s*\S")
+_REF_NUM_MARK_RE = re.compile(r"^\s*[\[（(]?\d{1,4}[\]）.)、]\s*")
+_DOI_IN_TEXT_RE = re.compile(r"10\.\d{4,9}/[^\s,;，；]+", re.IGNORECASE)
+
+
+def extract_reference_entries(text: str) -> list[str]:
+    """从编辑器全文提取参考文献条目（保留原文，供展示与匹配）。
+
+    定位最后一个「参考文献 / References / Bibliography」独立标题行；编号条目
+    （[1] / 1. / (1) / 1、）≥3 条时按编号分段、非编号行并入上一条；无编号时
+    空行分段，整段无空行则逐行一条。
+    """
+    lines = (text or "").splitlines()
+    heading_idx = -1
+    for i, line in enumerate(lines):
+        if _REF_HEADING_RE.match(line):
+            heading_idx = i  # 取最后一处：前置行文中出现"参考文献"字样的不算
+    if heading_idx < 0:
+        return []
+    raw = lines[heading_idx + 1:]
+    cut = len(raw)
+    for j, ln in enumerate(raw):
+        if j > 0 and _REF_HEADING_RE.match(ln):
+            cut = j
+            break
+    raw = raw[:cut]
+    body = [ln for ln in raw if ln.strip()]
+    if not body:
+        return []
+
+    if sum(1 for ln in body if _REF_NUM_START_RE.match(ln)) >= 3:
+        entries: list[str] = []
+        for ln in body:
+            if _REF_NUM_START_RE.match(ln):
+                entries.append(_REF_NUM_MARK_RE.sub("", ln, count=1).strip())
+            elif entries:
+                entries[-1] = (entries[-1] + " " + ln.strip()).strip()
+        return [e for e in entries if e]
+
+    if any(not ln.strip() for ln in raw):
+        entries = []
+        buf: list[str] = []
+        for ln in raw:
+            if ln.strip():
+                buf.append(ln.strip())
+            elif buf:
+                entries.append(" ".join(buf))
+                buf = []
+        if buf:
+            entries.append(" ".join(buf))
+        return entries
+    return body
+
+
+def match_reference_to_library(entry: str, pool: list[dict]) -> dict | None:
+    """判断单条参考文献文本是否对应库内文献（reference_match 公共口径）。
+
+    1) 条目中出现的 DOI 与库内 DOI 规范化精确匹配；
+    2) 库内标题归一后（≥15 字符）在条目归一全文中做包含判定 —— 参考文献条目
+       通常逐字包含标题，去符号/大小写后包含即可视为同一篇。
+
+    pool 条目可预置 `_n_doi` / `_n_title`（worker 批量检测时预归一化，
+    避免每条参考文献重复归一化整个库）。
+    """
+    if not entry or not pool:
+        return None
+    for doi in _DOI_IN_TEXT_RE.findall(entry):
+        n_doi = normalize_doi(doi).rstrip(".")
+        if not n_doi:
+            continue
+        for it in pool:
+            n = it.get("_n_doi")
+            if n is None:
+                n = normalize_doi(it.get("doi", ""))
+            if n == n_doi:
+                return it
+    n_entry = normalize_title(entry)
+    if not n_entry:
+        return None
+    for it in pool:
+        n_title = it.get("_n_title")
+        if n_title is None:
+            n_title = normalize_title(it.get("title", ""))
+        if len(n_title) >= 15 and n_title in n_entry:
+            return it
+    return None
+
+
+class ZoteroRefCheckWorker(QThread):
+    """后台检测编辑器参考文献在 Zotero 库中的收录情况（纯本地，无 LLM）。"""
+
+    finished_signal = Signal(list)  # [{"text", "matched", "lib_title"}]
+    error_signal = Signal(str)
+
+    def __init__(self, text: str, zotero, parent=None):
+        super().__init__(parent)
+        self._text = text
+        self._zotero = zotero
+
+    def run(self):
+        try:
+            entries = extract_reference_entries(self._text)
+            if not entries:
+                self.finished_signal.emit([])
+                return
+            if self.isInterruptionRequested():
+                return
+            pool = []
+            for it in self._zotero.get_all_items():
+                pool.append({
+                    "title": it.title, "doi": it.doi, "year": it.year,
+                    "_n_title": normalize_title(it.title or ""),
+                    "_n_doi": normalize_doi(it.doi or ""),
+                })
+            results = []
+            for e in entries:
+                if self.isInterruptionRequested():
+                    return
+                hit = match_reference_to_library(e, pool)
+                results.append({
+                    "text": e,
+                    "matched": hit is not None,
+                    "lib_title": (hit or {}).get("title", ""),
+                })
+            self.finished_signal.emit(results)
+        except Exception as e:  # noqa: BLE001
+            if not self.isInterruptionRequested():
+                self.error_signal.emit(str(e))
 
 
 # ============================================================
@@ -522,6 +705,92 @@ class DraftReviewWorker(QThread):
             self.error_signal.emit(str(e))
 
 
+class ComposeWorker(QThread):
+    """后台纯文本生成：AI 续写 / 生成大纲（输出正文纯文本，非 JSON）。"""
+
+    finished_signal = Signal(str)
+    error_signal = Signal(str)
+
+    CONTINUE_PROMPT = """你是学术写作助手。请从【已有正文】的结尾处自然续写。
+
+{style_context}
+
+【已有正文】（结尾部分）
+{context}
+
+## 要求
+1. 紧接上文语义续写 1-3 段，不要重复已有内容，不要复述上文
+2. 保持该写作类型的结构逻辑与上方知识库风格（术语/句式/引用详略度）一致
+3. 不编造引文：只能沿用上文已出现的引文标记；若上文无可用引文，用不依赖引用的论述方式展开
+4. 直接输出续写的正文文字，不要任何解释、标题或前后缀
+5. 遵循学术语言规范：不用加粗/斜体/列表，段落用空行分隔"""
+
+    OUTLINE_PROMPT = """你是学术写作专家。请为以下主题生成一份写作大纲。
+
+{style_context}
+
+【主题】
+{topic}
+
+## 要求
+1. 按上方结构指南中该写作类型的标准结构组织章节
+2. 每个章节标题下缩进给出 2-4 条写作要点（该节应覆盖的内容、需要的论证或数据），要点要结合主题给出实质提示，不写"第一部分"这种空壳命名
+3. 在需要文献支撑的小节标注「（需引用）」，提醒用户后续用「补充参考文献」检索
+4. 层级编号用「一、」「1.1」「1.1.1」风格，直接输出大纲纯文本，不要 JSON、不要解释
+5. 若正文已有内容，大纲应与已有内容兼容"""
+
+    def __init__(self, client, coach, mode: str, text: str,
+                 writing_type: str, parent=None):
+        super().__init__(parent)
+        self._client = client
+        self._coach = coach
+        self._mode = mode          # "continue" | "outline"
+        self._text = text
+        self._writing_type = writing_type
+
+    def run(self):
+        if self.isInterruptionRequested():
+            return
+        try:
+            from ..core.writing_prompts import get_writing_type_config
+            style_context = ""
+            if self._coach is not None:
+                try:
+                    sp = self._coach.build_polish_system_prompt(self._writing_type)
+                    if sp:
+                        style_context = f"【风格约束与结构指南】\n{sp}"
+                except Exception:  # noqa: BLE001
+                    pass
+            if self._mode == "outline":
+                template = self.OUTLINE_PROMPT
+                user_text = template.replace("{style_context}", style_context) \
+                                    .replace("{topic}", self._text)
+                system = "你是学术写作专家。直接输出大纲纯文本，不要 JSON 不要解释。"
+            else:
+                template = self.CONTINUE_PROMPT
+                user_text = template.replace("{style_context}", style_context) \
+                                    .replace("{context}", self._text)
+                system = "你是学术写作助手。直接输出续写的正文文字，不要解释。"
+            resp = self._client.chat_sync(
+                [{"role": "system", "content": system},
+                 {"role": "user", "content": user_text}],
+                timeout=300.0)
+            if self.isInterruptionRequested():
+                return
+            text = (resp or "").strip()
+            if not text:
+                self.error_signal.emit("LLM 返回了空响应")
+                return
+            # 剥掉偶发的 ``` / ```markdown 围栏（只去成对围栏行，不动正文）
+            if text.startswith("```"):
+                text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+                text = re.sub(r"\s*```\s*$", "", text)
+            self.finished_signal.emit(text.strip())
+        except Exception as e:  # noqa: BLE001
+            if not self.isInterruptionRequested():
+                self.error_signal.emit(str(e))
+
+
 # ============================================================
 # 写作面板
 # ============================================================
@@ -562,8 +831,11 @@ class WritingPanel(QWidget):
         self._rev_controller = None          # DocDiffController（_setup_ui 后创建）
         self._rev_worker: "InlinePolishWorker | None" = None
         self._comment_worker: "CommentFixWorker | None" = None
+        self._compose_worker: "ComposeWorker | None" = None
+        self._zotero_refs_worker: "ZoteroRefCheckWorker | None" = None
         self._ai_bar: QFrame | None = None   # 浮动 AI 操作条
         self._ai_bar_anchor: tuple[int, int] = (-1, -1)  # 操作条对应的选区
+        self._suspend_rev_autoaccept = False  # 程序性插入期间不自动接受修订
         self._comment_highlights: list = []  # 批注定位高亮（ExtraSelection）
         self._comment_marks: list = []       # 批注常驻标记（ExtraSelection）
         self._ai_word_selections: list = []  # AI 味标黄（ExtraSelection）
@@ -609,7 +881,9 @@ class WritingPanel(QWidget):
         for b in (self._polish_btn, self._cn2en_btn,
                   getattr(self, "_verify_btn", None),
                   getattr(self, "_lit_search_btn", None),
-                  getattr(self, "_comment_ai_btn", None)):
+                  getattr(self, "_comment_ai_btn", None),
+                  getattr(self, "_continue_btn", None),
+                  getattr(self, "_outline_btn", None)):
             if b is not None:
                 b.setEnabled(not busy)
         if not busy and getattr(self, "_comment_ai_btn", None) is not None:
@@ -624,7 +898,24 @@ class WritingPanel(QWidget):
 
     def set_zotero_library(self, zotero: "ZoteroLibrary | None"):
         self._zotero = zotero
+        # 作废旧检测任务并清空结果：旧库比对结果不能套用到新连接上
+        old = self._zotero_refs_worker
+        if old is not None:
+            old.requestInterruption()
+            self._zotero_refs_worker = None
+        self._zotero_check_btn.setEnabled(True)
+        self._zotero_check_btn.setText("检测参考文献")
+        self._zotero_result_list.clear()
+        self._zotero_check_status.setText("检测当前编辑器参考文献在 Zotero 库中的收录情况")
         self._update_zotero_status()
+
+    def _invalidate_zotero_results(self, reason: str = "") -> None:
+        """编辑器整体换文后旧检测结果不再对应，清空并提示重新检测。"""
+        if self._zotero_result_list.count() == 0:
+            return
+        self._zotero_result_list.clear()
+        self._zotero_check_status.setText(
+            reason or "编辑器内容已更换，请重新检测参考文献。")
 
     def prepare_storage_switch(self) -> bool:
         """在数据根目录改变前保存旧目录草稿并停止写作任务。"""
@@ -790,7 +1081,7 @@ class WritingPanel(QWidget):
         self._track_changes_cb.toggled.connect(self._on_track_changes_toggled)
         word_head.addWidget(self._track_changes_cb)
 
-        self._word_file_label = QLabel("未绑定文件")
+        self._word_file_label = ElidedLabel("未绑定文件")
         self._word_file_label.setObjectName("subtitleLabel")
         self._word_file_label.setToolTip("当前绑定的 Word 文档路径")
         word_head.addWidget(self._word_file_label, 1)
@@ -874,7 +1165,6 @@ class WritingPanel(QWidget):
         right_frame = QFrame()
         right_frame.setObjectName("writingSidePanel")
         right_frame.setMinimumWidth(260)
-        right_frame.setMaximumWidth(380)
         right_layout = QVBoxLayout(right_frame)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(8)
@@ -921,25 +1211,46 @@ class WritingPanel(QWidget):
         self._style_btn.setEnabled(False)
         kb_layout.addWidget(self._style_btn)
 
-        self._view_style_btn = QPushButton("查看风格指南")
-        self._view_style_btn.setObjectName("secondaryBtn")
-        self._view_style_btn.setToolTip("再次查看已生成的风格分析结果")
-        self._view_style_btn.clicked.connect(self._on_view_style_guide)
-        self._view_style_btn.setEnabled(False)
-        kb_layout.addWidget(self._view_style_btn)
+        self._style_guide_view = StyleGuideView()
+        kb_layout.addWidget(self._style_guide_view, 1)
 
         inspector_tabs.addTab(kb_group, "知识库")
 
-        # Zotero 状态
-        zotero_group = QGroupBox("Zotero 状态")
+        # Zotero：编辑器参考文献在库检测
+        zotero_group = QGroupBox("Zotero 参考文献检测")
         zotero_layout = QVBoxLayout(zotero_group)
-        zotero_layout.setSpacing(4)
+        zotero_layout.setSpacing(6)
 
         self._zotero_status_label = QLabel("未连接")
         self._zotero_status_label.setWordWrap(True)
         self._zotero_status_label.setObjectName("statusChip")
         self._zotero_status_label.setProperty("status", "warning")
         zotero_layout.addWidget(self._zotero_status_label)
+
+        self._zotero_check_btn = QPushButton("检测参考文献")
+        self._zotero_check_btn.setObjectName("primaryBtn")
+        self._zotero_check_btn.setToolTip(
+            "提取正文末尾「参考文献 / References」章节，逐条比对 Zotero 库"
+            "（DOI/标题归一匹配），标记哪些已在库中")
+        self._zotero_check_btn.clicked.connect(self._on_check_zotero_refs)
+        zotero_layout.addWidget(self._zotero_check_btn)
+
+        self._zotero_check_status = QLabel("检测当前编辑器参考文献在 Zotero 库中的收录情况")
+        self._zotero_check_status.setWordWrap(True)
+        self._zotero_check_status.setObjectName("subtitleLabel")
+        zotero_layout.addWidget(self._zotero_check_status)
+
+        self._zotero_result_list = QListWidget()
+        self._zotero_result_list.setMinimumHeight(120)
+        self._zotero_result_list.setWordWrap(True)
+        self._zotero_result_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._zotero_result_list.setStyleSheet(
+            "QListWidget { background-color: #fffdfa; border: 1px solid #e5e1d9; "
+            "border-radius: 8px; font-size: 12px; color: #29434a; }"
+            "QListWidget::item { padding: 5px; border-bottom: 1px solid #eef0ec; }"
+        )
+        zotero_layout.addWidget(self._zotero_result_list, 1)
         inspector_tabs.addTab(zotero_group, "Zotero")
 
         # 审阅批注（Word 文档批注只读展示）
@@ -953,7 +1264,10 @@ class WritingPanel(QWidget):
         comment_layout.addWidget(self._comment_status)
 
         self._comment_list = QListWidget()
-        self._comment_list.setMaximumHeight(160)
+        self._comment_list.setMinimumHeight(120)
+        self._comment_list.setWordWrap(True)
+        self._comment_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._comment_list.setStyleSheet(
             "QListWidget { background-color: #fffdfa; border: 1px solid #e5e1d9; "
             "border-radius: 8px; font-size: 12px; color: #29434a; }"
@@ -1009,6 +1323,25 @@ class WritingPanel(QWidget):
         self._lit_search_btn.clicked.connect(self._on_lit_search)
         ai_layout.addWidget(self._lit_search_btn)
 
+        self._continue_btn = QPushButton("AI 续写")
+        self._continue_btn.setObjectName("secondaryBtn")
+        self._continue_btn.setToolTip(
+            "从光标处续写 1-3 段：结合该写作类型的结构指南与知识库风格，\n"
+            "只沿用文中已有的引文标记，不编造文献。插入后可 Ctrl+Z 撤销。"
+        )
+        self._continue_btn.clicked.connect(self._on_continue_writing)
+        ai_layout.addWidget(self._continue_btn)
+
+        self._outline_btn = QPushButton("生成大纲")
+        self._outline_btn.setObjectName("secondaryBtn")
+        self._outline_btn.setToolTip(
+            "输入主题，按写作类型标准结构生成带写作要点的大纲，\n"
+            "需要文献支撑的小节会标注「（需引用）」。插入后可自由编辑。"
+        )
+        self._outline_btn.clicked.connect(self._on_generate_outline)
+        ai_layout.addWidget(self._outline_btn)
+        ai_layout.addStretch()
+
         inspector_tabs.addTab(ai_group, "AI 辅助")
         right_layout.addWidget(inspector_tabs, 1)
 
@@ -1030,7 +1363,7 @@ class WritingPanel(QWidget):
 
         status_bar = QHBoxLayout()
         status_bar.setContentsMargins(12, 4, 12, 4)
-        self._status_label = QLabel("就绪")
+        self._status_label = ElidedLabel("就绪")
         self._status_label.setObjectName("subtitleLabel")
         status_bar.addWidget(self._status_label)
         status_bar.addStretch()
@@ -1043,8 +1376,16 @@ class WritingPanel(QWidget):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self._progress_bar.setVisible(False)
-        self._progress_bar.setMaximumWidth(180)
-        self._progress_bar.setMaximumHeight(14)
+        self._progress_bar.setMaximumWidth(260)
+        self._progress_bar.setMaximumHeight(18)
+        # 全局 QSS 把进度条文字设为透明（只想要细条效果），这里覆写回来，
+        # 否则 setFormat 的任务说明完全不可见
+        self._progress_bar.setStyleSheet(
+            "QProgressBar { color: #3a3a3c; font-size: 11px; "
+            "background-color: #e5e5ea; border: none; border-radius: 5px; "
+            "text-align: center; }"
+            "QProgressBar::chunk { background-color: #3478f6; border-radius: 5px; }"
+        )
         status_bar.addWidget(self._progress_bar)
 
         self._cancel_btn = QPushButton("停止处理")
@@ -1141,6 +1482,20 @@ class WritingPanel(QWidget):
             self._maybe_offer_word_rebind()
             self._last_kb_index = self._kb_combo.currentIndex()
         else:
+            # 切到「未选择」：与切换知识库同样先保存——否则最近一次自动保存
+            # 之后的草稿修改会静默丢失（current_profile 置空后定时器不再落盘）
+            if not self._confirm_save_if_dirty():
+                self._kb_combo.blockSignals(True)
+                self._kb_combo.setCurrentIndex(self._last_kb_index)
+                self._kb_combo.blockSignals(False)
+                return
+            if not self._cancel_all_workers():
+                self._kb_combo.blockSignals(True)
+                self._kb_combo.setCurrentIndex(self._last_kb_index)
+                self._kb_combo.blockSignals(False)
+                QMessageBox.warning(self, "请稍候", "当前 AI 任务尚未退出，请稍后再切换知识库。")
+                return
+            self._auto_save_draft()
             self._coach._current_profile = None
             self._clear_word_binding()
             self._last_kb_index = self._kb_combo.currentIndex()
@@ -1243,6 +1598,8 @@ class WritingPanel(QWidget):
 
     def _on_editor_manual_edit(self):
         """用户手动编辑：若光标落在修订区域内，自动接受该处修订避免冲突。"""
+        if self._suspend_rev_autoaccept:
+            return  # 程序性插入（AI 续写/润色结果/历史插入）不算用户编辑
         if self._rev_controller is None or not self._rev_controller.has_changes:
             return
         # 渲染期间（_skip_recompute）不处理
@@ -1255,6 +1612,14 @@ class WritingPanel(QWidget):
                 self._rev_controller._current_anchor_idx = i
                 self._rev_controller.apply_change(accept=True)
                 break
+
+    def _insert_programmatic_text(self, cursor: QTextCursor, text: str) -> None:
+        """程序性插入文本：期间不让光标位置的未处理修订被自动接受。"""
+        self._suspend_rev_autoaccept = True
+        try:
+            cursor.insertText(text)
+        finally:
+            self._suspend_rev_autoaccept = False
 
     # ================= Word 文档打开/保存 =================
 
@@ -1464,6 +1829,9 @@ class WritingPanel(QWidget):
             set_word_binding(self._coach.current_profile.name,
                              self._word_path, self._word_mtime)
         self._word_dirty = False
+        # 磁盘内容已与编辑器一致：刷新批注偏移校验基准，避免批注定位
+        # 因段落被判为「已改动」而退化成整段高亮
+        self._word_paragraphs_snapshot = list(paragraphs)
         self._update_word_file_label()
         msg = f"已保存到 {os.path.basename(self._word_path)}"
         if track:
@@ -1541,6 +1909,8 @@ class WritingPanel(QWidget):
                     self._handle_dropped_files(files)
                 event.acceptProposedAction()
                 return True
+        if obj is self.editor and event.type() == QEvent.Type.Resize:
+            self._reposition_ai_bar()  # 窗口/字号变化后浮动条跟随选区
         return super().eventFilter(obj, event)
 
     def _dragged_files(self, event) -> list[str]:
@@ -1576,6 +1946,11 @@ class WritingPanel(QWidget):
                 except OSError as err:
                     QMessageBox.warning(self, "读取失败", f"{p}\n{err}")
                     continue
+                # 纯文本草稿与 Word 文档互斥：先处理旧绑定的未保存修改并解绑，
+                # 否则之后的「保存到 Word」会把 txt 内容写回旧 docx
+                if not self._confirm_save_if_dirty():
+                    return
+                self._clear_word_binding()
                 self._swap_editor_text(text)
                 self._draft_dirty = True  # 交给 30 秒自动保存落盘
                 self._status_label.setText(
@@ -1623,6 +1998,8 @@ class WritingPanel(QWidget):
         name = os.path.basename(self._word_path)
         self._word_file_label.setText(
             f"● {name} 已修改未保存" if self._word_dirty else name)
+        # 省略显示时用完整路径做提示（覆盖 ElidedLabel 的默认同文 tooltip）
+        self._word_file_label.setToolTip(self._word_path)
 
     def _confirm_save_if_dirty(self) -> bool:
         """关闭/切换前询问是否保存 Word 修改。返回 True=可继续。"""
@@ -1655,6 +2032,103 @@ class WritingPanel(QWidget):
     def _on_rev_reject_all(self):
         if self._rev_controller is not None:
             self._rev_controller.reject_all()
+
+    # ================= AI 续写 / 生成大纲 =================
+
+    def _on_continue_writing(self):
+        """AI 续写：取光标前 ~1500 字作上下文，续写插入光标处（可撤销）。"""
+        if not self._text_client:
+            QMessageBox.warning(self, "提示", "请先配置写作 API")
+            return
+        if self._compose_worker is not None and self._compose_worker.isRunning():
+            QMessageBox.information(self, "提示", "AI 正在生成，请稍候。")
+            return
+        plain = self.editor.toPlainText().replace("\u2029", "\n")
+        pos = self.editor.textCursor().position()
+        context = plain[max(0, pos - 1500):pos]
+        if not context.strip():
+            QMessageBox.information(
+                self, "提示",
+                "光标前没有可参考的正文。请先写一些内容再续写；"
+                "空白草稿建议先用「生成大纲」。")
+            return
+        self._set_ai_buttons_busy(True)
+        self._progress_bar.setVisible(True)
+        self._progress_bar.setRange(0, 0)
+        self._cancel_btn.setVisible(True)
+        self._status_label.setText("AI 正在续写...")
+        self._compose_worker = ComposeWorker(
+            self._text_client, self._coach, "continue", context,
+            self._current_writing_type)
+        track(self._compose_worker)
+        self._compose_worker.finished_signal.connect(self._on_compose_done)
+        self._compose_worker.error_signal.connect(self._on_compose_error)
+        self._compose_worker.start()
+
+    def _on_generate_outline(self):
+        """生成大纲：输入主题 → 按写作类型结构生成大纲插入光标处。"""
+        if not self._text_client:
+            QMessageBox.warning(self, "提示", "请先配置写作 API")
+            return
+        if self._compose_worker is not None and self._compose_worker.isRunning():
+            QMessageBox.information(self, "提示", "AI 正在生成，请稍候。")
+            return
+        topic, ok = QInputDialog.getMultiLineText(
+            self, "生成大纲",
+            "论文主题 / 核心内容（越具体，大纲越贴合）：",
+            "例如：候鸟迁徙路线的遗传分化机制综述\n"
+            "已有数据：…（可选）\n目标期刊：…（可选）")
+        if not ok or not topic.strip():
+            return
+        self._set_ai_buttons_busy(True)
+        self._progress_bar.setVisible(True)
+        self._progress_bar.setRange(0, 0)
+        self._cancel_btn.setVisible(True)
+        self._status_label.setText("AI 正在生成大纲...")
+        self._compose_worker = ComposeWorker(
+            self._text_client, self._coach, "outline", topic.strip(),
+            self._current_writing_type)
+        track(self._compose_worker)
+        self._compose_worker.finished_signal.connect(self._on_compose_done)
+        self._compose_worker.error_signal.connect(self._on_compose_error)
+        self._compose_worker.start()
+
+    def _on_compose_done(self, text: str):
+        if self.sender() is not self._compose_worker:
+            return
+        self._compose_worker = None
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setRange(0, 100)
+        self._cancel_btn.setVisible(False)
+        self._set_ai_buttons_busy(False)
+        if not text.strip():
+            self._status_label.setText("AI 未生成内容")
+            return
+        cursor = self.editor.textCursor()
+        if cursor.hasSelection():
+            cursor.removeSelectedText()
+        insert = text
+        plain = self.editor.toPlainText().replace("\u2029", "\n")
+        pos = cursor.position()
+        # 续写排版：光标前有非空文字且本行未结束时先换行；段落之间空行
+        before = plain[:pos]
+        if before.strip() and not before.endswith("\n"):
+            insert = "\n" + insert
+        self._insert_programmatic_text(cursor, insert)
+        self.editor.setTextCursor(cursor)
+        self.editor.ensureCursorVisible()
+        self._status_label.setText(
+            "生成完成，已插入正文（可 Ctrl+Z 撤销；请核对引用后再保存到 Word）")
+
+    def _on_compose_error(self, err: str):
+        if self.sender() is not self._compose_worker:
+            return
+        self._compose_worker = None
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setRange(0, 100)
+        self._cancel_btn.setVisible(False)
+        self._set_ai_buttons_busy(False)
+        self._status_label.setText(f"生成失败：{err[:60]}")
 
     def _start_inline_polish(self, text: str, instruction: str):
         """选中即改：后台 LLM 润色 → 修订形式渲染进编辑器。
@@ -1794,7 +2268,7 @@ class WritingPanel(QWidget):
             return
         self._ai_bar_anchor = (cursor.selectionStart(), cursor.selectionEnd())
         if self._ai_bar is None:
-            self._ai_bar = QFrame(self.editor)
+            self._ai_bar = QFrame(self.editor.viewport())
             self._ai_bar.setStyleSheet(
                 "QFrame { background-color: #ffffff; border: 1px solid #cfe5dd; "
                 "border-radius: 8px; }"
@@ -1817,19 +2291,34 @@ class WritingPanel(QWidget):
             self._ai_input.returnPressed.connect(
                 lambda: self._on_ai_bar_action(self._ai_input.text().strip()))
             lay.addWidget(self._ai_input)
-            self._ai_bar.adjustSize()
-        # 定位到选区上方
+            # 滚动/换行后跟随选区重新定位
+            self.editor.verticalScrollBar().valueChanged.connect(self._reposition_ai_bar)
+        self._reposition_ai_bar()
+
+    def _reposition_ai_bar(self):
+        """按当前选区与视口位置摆放浮动条（滚动/缩放/再次选中都会调用）。"""
+        bar = self._ai_bar
+        if bar is None:
+            return
+        cursor = self.editor.textCursor()
+        if not cursor.hasSelection():
+            return
         rect = self.editor.cursorRect(cursor)
+        if not self.editor.viewport().rect().intersects(rect):
+            bar.hide()  # 选区滚出可视区：先收起，滚回来会再定位
+            return
         max_width = max(240, self.editor.viewport().width() - 12)
-        if self._ai_bar.width() > max_width:
-            self._ai_bar.setFixedWidth(max_width)
-        x = min(max(6, rect.x()), max(6, self.editor.viewport().width() - self._ai_bar.width() - 6))
-        y = rect.y() - self._ai_bar.height() - 6
+        bar.setMaximumWidth(max_width)  # 不用 setFixedWidth：宽度可随窗口恢复
+        bar.adjustSize()
+        x = min(max(6, rect.x()),
+                max(6, self.editor.viewport().width() - bar.width() - 6))
+        y = rect.y() - bar.height() - 6
         if y < 0:
-            y = rect.y() + self.editor.fontMetrics().height() + 6
-        self._ai_bar.move(x, y)
-        self._ai_bar.show()
-        self._ai_bar.raise_()
+            y = rect.y() + rect.height() + 6  # 首行放不下时贴到选区下方
+        bar.move(x, y)
+        if not bar.isVisible():
+            bar.show()
+        bar.raise_()
 
     def _hide_ai_bar(self):
         if self._ai_bar is not None:
@@ -1901,13 +2390,8 @@ class WritingPanel(QWidget):
         sel.format = fmt
         return sel
 
-    def _render_comment_marks(self):
-        """在编辑器中常驻显示批注标记（淡黄底，与修订绿/红区分）。
-
-        与 AI 味禁词高亮共用 ExtraSelection 机制（setExtraSelections）。
-        """
-        if not self._word_comments:
-            return
+    def _compute_comment_marks(self):
+        """重算批注常驻标记（只更新内部数据，不刷新显示）。"""
         selections: list = []
         for c in self._word_comments:
             span = self._comment_span(c)
@@ -1915,12 +2399,14 @@ class WritingPanel(QWidget):
                 continue
             selections.append(self._make_selection(span[0], span[1], "#fff3d6"))
         self._comment_marks = selections
-        self._refresh_extra_selections()
 
-    def _refresh_extra_selections(self):
-        """合并批注常驻标记与批注定位高亮。"""
-        marks = getattr(self, "_comment_marks", []) or []
-        self.editor.setExtraSelections(marks + self._comment_highlights)
+    def _render_comment_marks(self):
+        """在编辑器中常驻显示批注标记（淡黄底，与修订绿/红区分）。
+
+        与 AI 味禁词高亮共用 ExtraSelection 机制（setExtraSelections）。
+        """
+        self._compute_comment_marks()
+        self._refresh_extra_selections()
 
     def _render_comments(self):
         """渲染批注列表。"""
@@ -2011,14 +2497,18 @@ class WritingPanel(QWidget):
         if not changes:
             self._status_label.setText("AI 未对批注产生修改")
             return
-        # 逐段渲染修订
+        # 逐段渲染修订：同段多条批注只渲染一次（后者覆盖前者），
+        # 并按段落号倒序应用——改动只影响其后的文本，前面段落的定位保持有效
         plain = self.editor.toPlainText().replace("\u2029", "\n")
         paragraphs = plain.split("\n")
+        pending: dict[int, str] = {}
         for ch in changes:
             pi = ch.get("paragraph_index", -1)
             new_text = ch.get("new_text", "")
-            if not (0 <= pi < len(paragraphs)) or not new_text:
-                continue
+            if isinstance(pi, int) and 0 <= pi < len(paragraphs) and new_text:
+                pending[pi] = new_text
+        for pi in sorted(pending, reverse=True):
+            new_text = pending[pi]
             original = paragraphs[pi]
             if new_text == original:
                 continue
@@ -2058,6 +2548,8 @@ class WritingPanel(QWidget):
             sel.format.setForeground(QColor("#a76d2b"))
             selections.append(sel)
         self._ai_word_selections = selections
+        # 文本变了，批注常驻标记的偏移同步重算，否则黄标停在旧位置
+        self._compute_comment_marks()
         self._refresh_extra_selections()
         if matches:
             self._word_count_label.setText(f"字数: {len(text)} | 疑似AI味: {len(matches)}")
@@ -2147,9 +2639,15 @@ class WritingPanel(QWidget):
         if not self._text_client:
             QMessageBox.warning(self, "提示", "请先配置写作 API")
             return
+        if self._style_worker is not None and self._style_worker.isRunning():
+            QMessageBox.information(self, "提示", "风格分析正在进行，请稍候。")
+            return
 
         self._style_btn.setEnabled(False)
         self._style_btn.setText("正在分析...")
+        # 分析期间禁止增删范文：完成后按钮会被重新启用，可能重入并发分析
+        self._sample_btn.setEnabled(False)
+        self._journal_btn.setEnabled(False)
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)  # 不确定进度条
         self._status_label.setText("正在分析写作风格（可能需要 30-60 秒）...")
@@ -2164,39 +2662,26 @@ class WritingPanel(QWidget):
         )
         self._style_worker.start()
 
-    def _on_view_style_guide(self):
-        """再次查看已生成的风格分析结果。"""
-        if not self._coach or not self._coach.current_profile:
-            return
-        profile = self._coach.current_profile
-        if not profile.has_writing_habits and not profile.has_journal_style:
-            QMessageBox.information(self, "提示",
-                "尚未生成风格指南，请先添加范文后点击\u201c生成风格指南\u201d。")
-            return
-        dialog = StyleGuideDialog(profile, parent=self)
-        dialog.exec()
-
     def _on_style_guide_ready(self, guide: dict):
         if self.sender() is not self._style_worker:
             return
+        self._style_worker = None
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 100)
-        self._style_btn.setEnabled(True)
-        self._style_btn.setText("重新生成风格指南")
+        self._sample_btn.setEnabled(True)
+        self._journal_btn.setEnabled(True)
         self._update_kb_status()
-        self._status_label.setText("风格分析完成")
-
-        profile = self._coach.current_profile
-        dialog = StyleGuideDialog(profile, parent=self)
-        dialog.exec()
+        self._status_label.setText("风格分析完成，指南已显示在知识库页签")
 
     def _on_style_guide_error(self, err: str):
         if self.sender() is not self._style_worker:
             return
+        self._style_worker = None
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 100)
-        self._style_btn.setEnabled(True)
-        self._style_btn.setText("生成风格指南")
+        self._sample_btn.setEnabled(True)
+        self._journal_btn.setEnabled(True)
+        self._update_kb_status()
         self._status_label.setText(f"风格分析失败: {err[:60]}")
         QMessageBox.warning(self, "风格分析失败", err)
 
@@ -2528,7 +3013,8 @@ class WritingPanel(QWidget):
                 cursor = self.editor.textCursor()
                 cursor.movePosition(QTextCursor.MoveOperation.End)
                 self.editor.setTextCursor(cursor)
-                cursor.insertText(("\n\n" if plain.strip() else "") + text)
+                self._insert_programmatic_text(
+                    cursor, ("\n\n" if plain.strip() else "") + text)
                 self._status_label.setText("原选区已被修改，润色结果已追加到文末")
                 self._save_polish_history(result, original, final_text=text)
                 return
@@ -2538,7 +3024,7 @@ class WritingPanel(QWidget):
         cursor.setPosition(start)
         cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
         self.editor.setTextCursor(cursor)
-        cursor.insertText(text)
+        self._insert_programmatic_text(cursor, text)
         self._status_label.setText("润色文本已替换")
         self._save_polish_history(result, original, final_text=text)
 
@@ -2595,7 +3081,7 @@ class WritingPanel(QWidget):
 
     def _on_lit_insert(self, marker: str):
         cursor = self.editor.textCursor()
-        cursor.insertText(marker)
+        self._insert_programmatic_text(cursor, marker)
         self._status_label.setText("已插入文献引用标记")
 
     # ---- 按钮 3: 草稿整体评价 ----
@@ -2685,7 +3171,7 @@ class WritingPanel(QWidget):
 
     def _on_history_insert(self, text: str):
         cursor = self.editor.textCursor()
-        cursor.insertText(text)
+        self._insert_programmatic_text(cursor, text)
         self._status_label.setText("已插入润色历史文本")
 
     # ---- Zotero ----
@@ -2696,18 +3182,74 @@ class WritingPanel(QWidget):
 
     def _update_zotero_status(self):
         if self._zotero and self._zotero.is_available:
-            count = self._zotero.item_count if hasattr(self._zotero, 'item_count') else 0
-            text = f"已连接 · {count} 篇文献"
+            text = "已连接"
             data_dir = getattr(self._zotero, "data_dir", "") or ""
             if data_dir:
                 text += f"\n{data_dir}"
             self._zotero_status_label.setText(text)
             self._zotero_status_label.setProperty("status", "ready")
         else:
-            self._zotero_status_label.setText("未连接 · 引文核查不可用")
+            self._zotero_status_label.setText("未连接 · 无法检测参考文献")
             self._zotero_status_label.setProperty("status", "warning")
         self._zotero_status_label.style().unpolish(self._zotero_status_label)
         self._zotero_status_label.style().polish(self._zotero_status_label)
+
+    def _on_check_zotero_refs(self):
+        """检测当前编辑器参考文献在 Zotero 库中的收录情况。"""
+        if self._zotero_check_btn.text() == "正在检测...":
+            return
+        if not (self._zotero and self._zotero.is_available):
+            self._zotero_check_status.setText("Zotero 未连接，无法检测。请先在「设置 → Zotero 文献库路径设置」中配置。")
+            return
+        text = self.editor.toPlainText().strip()
+        if not text:
+            self._zotero_check_status.setText("编辑器为空，没有可检测的参考文献。")
+            return
+        self._zotero_check_btn.setEnabled(False)
+        self._zotero_check_btn.setText("正在检测...")
+        self._zotero_check_status.setText("正在比对 Zotero 库...")
+        self._zotero_refs_worker = ZoteroRefCheckWorker(text, self._zotero)
+        track(self._zotero_refs_worker)
+        self._zotero_refs_worker.finished_signal.connect(self._on_zotero_refs_ready)
+        self._zotero_refs_worker.error_signal.connect(self._on_zotero_refs_error)
+        self._zotero_refs_worker.start()
+
+    def _on_zotero_refs_ready(self, results: list):
+        if self.sender() is not getattr(self, "_zotero_refs_worker", None):
+            return
+        self._zotero_refs_worker = None
+        self._zotero_check_btn.setEnabled(True)
+        self._zotero_check_btn.setText("检测参考文献")
+        self._zotero_result_list.clear()
+        if not results:
+            self._zotero_check_status.setText(
+                "未在编辑器末尾找到「参考文献 / References / Bibliography」章节，无法检测。")
+            return
+        matched = sum(1 for r in results if r["matched"])
+        for r in results:
+            if r["matched"]:
+                shown = "✓ " + (r["lib_title"] or r["text"])[:80]
+            else:
+                shown = "✗ " + r["text"][:80]
+            item = QListWidgetItem(shown)
+            item.setToolTip(r["text"])
+            self._zotero_result_list.addItem(item)
+        lib_empty = bool(
+            getattr(self._zotero, "is_available", False)
+            and not getattr(self._zotero, "item_count", 0)
+        )
+        hint = "（注意：Zotero 库为空或加载失败，结果不可信）" if lib_empty else "悬停查看原文。"
+        self._zotero_check_status.setText(
+            f"共 {len(results)} 条参考文献，{matched} 条已在 Zotero 库中，"
+            f"{len(results) - matched} 条未找到。{hint}")
+
+    def _on_zotero_refs_error(self, err: str):
+        if self.sender() is not getattr(self, "_zotero_refs_worker", None):
+            return
+        self._zotero_refs_worker = None
+        self._zotero_check_btn.setEnabled(True)
+        self._zotero_check_btn.setText("检测参考文献")
+        self._zotero_check_status.setText(f"检测失败: {err[:80]}")
 
     # ---- 知识库状态 ----
 
@@ -2725,13 +3267,17 @@ class WritingPanel(QWidget):
                 f"期刊格式: {journal_ok}",
             ]
             self._kb_status_label.setText("\n".join(lines))
-            self._style_btn.setEnabled(profile.total_papers > 0)
-            has_guide = profile.has_writing_habits or profile.has_journal_style
-            self._view_style_btn.setEnabled(has_guide)
         else:
             self._kb_status_label.setText("未选择知识库\n请在下拉菜单中选择或新建")
-            self._style_btn.setEnabled(False)
-            self._view_style_btn.setEnabled(False)
+        # 按钮可用性与文案跟当前库状态保持一致（分析进行中不覆盖「正在分析...」）
+        style_busy = (self._style_worker is not None
+                      and self._style_worker.isRunning())
+        if not style_busy:
+            self._style_btn.setEnabled(bool(profile and profile.total_papers > 0))
+            has_guide = bool(
+                profile and (profile.has_writing_habits or profile.has_journal_style))
+            self._style_btn.setText("重新生成风格指南" if has_guide else "生成风格指南")
+        self._style_guide_view.set_profile(profile)
 
     # ---- 生命周期 ----
 
@@ -2739,7 +3285,7 @@ class WritingPanel(QWidget):
         """协作式取消所有后台 AI 处理线程，不强杀正在执行网络请求的线程。"""
         attrs = ("_citation_worker", "_evidence_worker", "_unified_worker",
                  "_review_worker", "_style_worker", "_rev_worker",
-                 "_comment_worker")
+                 "_comment_worker", "_compose_worker", "_zotero_refs_worker")
         all_stopped = True
         for attr in attrs:
             w = getattr(self, attr)
@@ -2751,18 +3297,18 @@ class WritingPanel(QWidget):
                     all_stopped = False
                     continue
             setattr(self, attr, None)
+        if not all_stopped:
+            # 仍有线程未退出：保留忙态，避免用户发起新任务与迟到结果互相覆盖
+            return False
         self._progress_bar.setVisible(False)
         self._progress_bar.setRange(0, 100)
         self._cancel_btn.setVisible(False)
         self._set_ai_buttons_busy(False)
-        has_style_source = bool(
-            self._coach.current_profile
-            and self._coach.current_profile.total_papers > 0
-        )
-        self._style_btn.setEnabled(has_style_source)
-        self._style_btn.setText("重新生成风格指南" if has_style_source else "生成风格指南")
+        self._sample_btn.setEnabled(True)
+        self._journal_btn.setEnabled(True)
+        self._update_kb_status()
         self._status_label.setText("已取消")
-        return all_stopped
+        return True
 
     def shutdown(self) -> bool:
         """清理后台线程并保存草稿。"""
@@ -2796,8 +3342,9 @@ class WritingPanel(QWidget):
                 save_draft(self._coach.current_profile.name, text)
                 self._draft_dirty = False
                 self.draft_saved.emit(len(text))
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            # 静默失败会让用户以为草稿已保存，至少给出可见提示
+            self._status_label.setText(f"草稿自动保存失败：{str(e)[:60]}")
 
     def _swap_editor_text(self, text: str) -> None:
         """程序性替换编辑器全文：不记为用户修改，不触发高亮防抖。"""
@@ -2810,6 +3357,7 @@ class WritingPanel(QWidget):
             self._update_word_file_label()
         self._draft_dirty = False
         self._refresh_ai_highlight()
+        self._invalidate_zotero_results()
         # 程序性替换后清空修订状态（只重置锚点，不触碰已写入的内容）
         if self._rev_controller is not None:
             self._rev_controller._change_anchors = []
@@ -2864,3 +3412,4 @@ class WritingPanel(QWidget):
 
     def set_editor_text(self, text: str):
         self.editor.setPlainText(text)
+        self._invalidate_zotero_results()

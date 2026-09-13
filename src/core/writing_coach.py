@@ -533,7 +533,7 @@ class WritingCoach:
 
         用于 UnifiedWriter 润色+核查流程，避免无关的期刊格式信息干扰 LLM。
         """
-        from .writing_prompts import get_writing_type_config
+        from .writing_prompts import get_writing_type_config, get_structure_guide
 
         cfg = get_writing_type_config(writing_type)
         prompt = cfg["system_prompt"]
@@ -601,6 +601,9 @@ class WritingCoach:
 
         if parts:
             prompt += "\n\n---\n以下是根据你的历史论文分析出的写作习惯（仅描述风格，不限制学术主题），请在写作中保持一致的风格：\n\n" + "\n\n".join(parts)
+
+        # 结构指南：分阶段写作要点（该写作类型的章节组织方式）
+        prompt += "\n\n---\n" + get_structure_guide(writing_type)
 
         # 小结与过渡指导
         prompt += (

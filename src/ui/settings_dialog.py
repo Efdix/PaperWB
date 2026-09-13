@@ -4,14 +4,14 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QComboBox, QPushButton, QFormLayout, QGroupBox, QMessageBox,
     QTabWidget, QWidget,
-    QFileDialog,
+    QFileDialog, QCheckBox, QSpinBox,
 )
 from PySide6.QtCore import Qt, QThread, Signal as QtSignal
 
 from ..core.llm_client import PROVIDERS, VISION_MODELS
 from ..utils.config import (
     load_config, save_config, get_vision_api, get_text_api, get_openalex_api_key,
-    get_easyscholar_api_key,
+    get_easyscholar_api_key, get_email_config, save_email_config,
 )
 from ..utils.threads import track
 
@@ -81,6 +81,115 @@ class _TestEasyScholarWorker(QThread):
         except Exception as e:
             if not self.isInterruptionRequested():
                 self.finished_signal.emit(False, str(e))
+
+
+class _TestEmailWorker(QThread):
+    """后台发送测试邮件。"""
+
+    finished_signal = QtSignal(bool, str)  # (ok, message)
+
+    def __init__(self, cfg: dict, parent=None):
+        super().__init__(parent)
+        self._cfg = cfg
+
+    def run(self):
+        try:
+            from ..core.email_notifier import EmailConfig, send_notification_email
+            ok, msg = send_notification_email(
+                EmailConfig.from_config(self._cfg),
+                "【PaperWB】测试邮件",
+                "这是一封来自 PaperWB 的测试邮件。\n\n"
+                "如果你收到了它，说明邮件通知已配置成功：\n"
+                "· 文献巡视发现新文献时可以自动发邮件提醒\n"
+                "· 网页追踪（如机构主页通知栏）有更新时也可以自动发邮件\n",
+            )
+            if not self.isInterruptionRequested():
+                self.finished_signal.emit(ok, msg)
+        except Exception as e:
+            if not self.isInterruptionRequested():
+                self.finished_signal.emit(False, str(e))
+
+
+class EmailNotifyTab(QWidget):
+    """邮件通知配置页签（SMTP 发信，供巡视/网页提醒使用）。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        desc = QLabel(
+            "配置邮箱后，定向巡视发现新文献、网页追踪发现更新时可以自动发邮件提醒你。"
+            "密码栏填写邮箱服务商生成的「授权码」（而非登录密码）：\n"
+            "· QQ 邮箱：设置 → 账户 → 开启 SMTP 并生成授权码（服务器 smtp.qq.com，端口 465）\n"
+            "· 163 邮箱：设置 → POP3/SMTP → 开启并生成授权码（服务器 smtp.163.com，端口 465）\n"
+            "· Gmail：开启两步验证后生成应用专用密码（服务器 smtp.gmail.com，端口 465）"
+        )
+        desc.setObjectName("subtitleLabel")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        group = QGroupBox("SMTP 发信设置")
+        form = QFormLayout(group)
+        self._enabled_cb = QCheckBox("启用邮件通知")
+        self._enabled_cb.setToolTip("总开关：关闭后巡视与网页追踪都不发邮件")
+        form.addRow("", self._enabled_cb)
+        self._host = QLineEdit()
+        self._host.setPlaceholderText("smtp.qq.com")
+        form.addRow("SMTP 服务器：", self._host)
+        port_row = QWidget()
+        port_lay = QHBoxLayout(port_row)
+        port_lay.setContentsMargins(0, 0, 0, 0)
+        self._port = QSpinBox()
+        self._port.setRange(1, 65535)
+        port_lay.addWidget(self._port)
+        self._ssl_cb = QCheckBox("SSL（465 勾选；587 取消用 STARTTLS）")
+        port_lay.addWidget(self._ssl_cb)
+        port_lay.addStretch()
+        form.addRow("端口：", port_row)
+        self._username = QLineEdit()
+        self._username.setPlaceholderText("yourname@qq.com")
+        form.addRow("发件邮箱：", self._username)
+        self._password = QLineEdit()
+        self._password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._password.setPlaceholderText("邮箱服务商生成的授权码")
+        form.addRow("授权码：", self._password)
+        self._recipients = QLineEdit()
+        self._recipients.setPlaceholderText("接收提醒的邮箱，多个用英文逗号分隔（可与自己相同）")
+        form.addRow("收件邮箱：", self._recipients)
+        layout.addWidget(group)
+
+        hint = QLabel(
+            "授权码保存在本机配置文件中，仅用于向你的邮箱服务商发信。"
+            "收件邮箱可以等你拿到目标邮箱地址后再填。")
+        hint.setObjectName("subtitleLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        layout.addStretch()
+
+    def load(self, cfg: dict) -> None:
+        self._enabled_cb.setChecked(bool(cfg.get("enabled")))
+        self._host.setText(str(cfg.get("smtp_host", "") or ""))
+        try:
+            self._port.setValue(int(cfg.get("smtp_port") or 465))
+        except (TypeError, ValueError):
+            self._port.setValue(465)
+        self._ssl_cb.setChecked(bool(cfg.get("use_ssl", True)))
+        self._username.setText(str(cfg.get("username", "") or ""))
+        self._password.setText(str(cfg.get("password", "") or ""))
+        self._recipients.setText(str(cfg.get("recipients", "") or ""))
+
+    def get(self) -> dict:
+        return {
+            "enabled": self._enabled_cb.isChecked(),
+            "smtp_host": self._host.text().strip(),
+            "smtp_port": self._port.value(),
+            "use_ssl": self._ssl_cb.isChecked(),
+            "username": self._username.text().strip(),
+            "password": self._password.text(),
+            "sender": "",
+            "recipients": self._recipients.text().strip(),
+        }
 
 
 class APIConfigTab(QWidget):
@@ -399,10 +508,13 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._openalex_tab, "文献检索源")
         self._easyscholar_tab = EasyScholarTab()
         self.tabs.addTab(self._easyscholar_tab, "影响因子")
+        self._email_tab = EmailNotifyTab()
+        self.tabs.addTab(self._email_tab, "邮件通知")
         layout.addWidget(self.tabs)
         self._test_worker: _TestConnectionWorker | None = None
         self._openalex_test_worker: _TestOpenAlexWorker | None = None
         self._easyscholar_test_worker: _TestEasyScholarWorker | None = None
+        self._email_test_worker: _TestEmailWorker | None = None
 
         btn = QHBoxLayout()
         btn.addStretch()
@@ -424,12 +536,14 @@ class SettingsDialog(QDialog):
         self._text_tab.load(get_text_api(self._config))
         self._openalex_tab.load(get_openalex_api_key(self._config))
         self._easyscholar_tab.load(get_easyscholar_api_key(self._config))
+        self._email_tab.load(get_email_config(self._config))
 
     def _save(self):
         self._config["vision_api"] = self._vision_tab.get()
         self._config["text_api"] = self._text_tab.get()
         self._config["openalex_api_key"] = self._openalex_tab.get()
         self._config["easyscholar_api_key"] = self._easyscholar_tab.get()
+        save_email_config(self._email_tab.get())
         save_config(self._config)
         QMessageBox.information(
             self, "已保存",
@@ -444,6 +558,9 @@ class SettingsDialog(QDialog):
             return
         if isinstance(current, EasyScholarTab):
             self._test_easyscholar(current)
+            return
+        if isinstance(current, EmailNotifyTab):
+            self._test_email(current)
             return
         if not isinstance(current, APIConfigTab):
             return
@@ -486,6 +603,38 @@ class SettingsDialog(QDialog):
         self._easyscholar_test_worker.finished_signal.connect(self._on_easyscholar_test_done)
         self._easyscholar_test_worker.start()
 
+    def _test_email(self, tab: EmailNotifyTab):
+        """邮件通知页签：向收件邮箱发一封测试邮件。"""
+        if self._email_test_worker is not None and self._email_test_worker.isRunning():
+            return
+        cfg = tab.get()
+        missing = [name for name, val in (
+            ("SMTP 服务器", cfg.get("smtp_host")),
+            ("发件邮箱", cfg.get("username")),
+            ("授权码", cfg.get("password")),
+            ("收件邮箱", cfg.get("recipients")),
+        ) if not val]
+        if missing:
+            QMessageBox.warning(self, "信息不全", "请先填写：" + "、".join(missing))
+            return
+        self._test_btn.setEnabled(False)
+        self._test_btn.setText("发送中...")
+        self._email_test_worker = _TestEmailWorker(cfg)
+        track(self._email_test_worker)
+        self._email_test_worker.finished_signal.connect(self._on_email_test_done)
+        self._email_test_worker.start()
+
+    def _on_email_test_done(self, ok: bool, msg: str):
+        if self.sender() is not self._email_test_worker:
+            return
+        self._email_test_worker = None
+        self._test_btn.setEnabled(True)
+        self._test_btn.setText("测试当前接口")
+        if ok:
+            QMessageBox.information(self, "测试成功", f"测试邮件已发出：{msg}")
+        else:
+            QMessageBox.critical(self, "发送失败", msg)
+
     def _on_easyscholar_test_done(self, ok: bool, msg: str):
         if self.sender() is not self._easyscholar_test_worker:
             return
@@ -520,7 +669,7 @@ class SettingsDialog(QDialog):
             QMessageBox.critical(self, "测试失败", f"连接失败：{msg}")
 
     def _stop_test_worker(self) -> bool:
-        for attr in ("_test_worker", "_openalex_test_worker"):
+        for attr in ("_test_worker", "_openalex_test_worker", "_email_test_worker"):
             worker = getattr(self, attr, None)
             if worker is not None and worker.isRunning():
                 worker.requestInterruption()

@@ -90,11 +90,13 @@ class PubMedSearchWorker(QThread):
     finished = Signal(list)   # 文献 dict 列表（paper_to_dict 格式，含 source）
     error = Signal(str)
 
-    def __init__(self, queries: list[str], client=None, pool: list[dict] | None = None):
+    def __init__(self, queries: list[str], client=None, pool: list[dict] | None = None,
+                 blacklist=None):
         super().__init__()
         self._queries = queries
         self._client = client   # LLMClient | None（检索式生成）
         self._pool = pool or []
+        self._blacklist = blacklist
 
     def run(self):
         from ..core.literature_search import run_paper_search
@@ -105,6 +107,7 @@ class PubMedSearchWorker(QThread):
                 client=self._client, pool=self._pool, limit=10,
                 log_cb=self.progress.emit,
                 interrupt_cb=self.isInterruptionRequested,
+                blacklist=self._blacklist,
             )
             self.finished.emit(papers)
         except Exception as e:
@@ -265,26 +268,34 @@ class LitSearchDialog(QDialog):
 
         self._progress = QProgressBar()
         self._progress.setVisible(False)
-        self._progress.setMaximumHeight(14)
-        self._progress.setMaximumWidth(200)
+        self._progress.setMaximumHeight(18)
+        self._progress.setMaximumWidth(280)
+        # 覆写全局 QSS 的透明文字，否则 setFormat 的检索阶段说明不可见
         self._progress.setStyleSheet(
-            "QProgressBar { background-color: #e7eeeb; border: 1px solid #d9e1de; border-radius: 7px; }"
+            "QProgressBar { color: #3a3a3c; font-size: 11px; "
+            "background-color: #e7eeeb; border: 1px solid #d9e1de; "
+            "border-radius: 7px; text-align: center; }"
             "QProgressBar::chunk { background-color: #147c7c; border-radius: 6px; }"
         )
         btn_row.addWidget(self._progress)
         layout.addLayout(btn_row)
 
         # ---- 检索结果（初始隐藏） ----
-        results_header = QLabel("检索结果（OpenAlex / PubMed / arXiv）")
-        results_header.setStyleSheet("color: #1e3b42; font-weight: bold; font-size: 13px; padding: 2px 0;")
-        layout.addWidget(results_header)
+        self._results_header = QLabel("检索结果（OpenAlex / PubMed / arXiv）")
+        self._results_header.setStyleSheet("color: #1e3b42; font-weight: bold; font-size: 13px; padding: 2px 0;")
+        self._results_header.setVisible(False)
+        layout.addWidget(self._results_header)
 
         self._results_list = QListWidget()
+        self._results_list.setWordWrap(True)
+        self._results_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._results_list.setStyleSheet(
             "QListWidget { background-color: #fffdfa; border: 1px solid #e5e1d9; border-radius: 8px; font-size: 13px; color: #29434a; }"
             "QListWidget::item { padding: 8px; border-bottom: 1px solid #e5e1d9; }"
             "QListWidget::item:hover { background-color: #eef6f3; }"
         )
+        self._results_list.setVisible(False)  # 检索前不占位
         layout.addWidget(self._results_list, 1)
 
         # 底部按钮
@@ -478,7 +489,9 @@ class LitSearchDialog(QDialog):
         self._search_btn.setEnabled(False)
 
         from ..utils.threads import track
-        self._worker = PubMedSearchWorker(queries, client=self._client, pool=self._pool)
+        from ..core.search_records import get_blacklist
+        self._worker = PubMedSearchWorker(queries, client=self._client, pool=self._pool,
+                                          blacklist=get_blacklist())
         track(self._worker)
         self._worker.progress.connect(lambda msg: self._progress.setFormat(msg))
         self._worker.finished.connect(self._on_search_done)
@@ -494,12 +507,16 @@ class LitSearchDialog(QDialog):
     def _on_search_done(self, papers: list):
         self._set_busy(False)
         self.search_done.emit(len(papers))
+        from ..core.search_records import append_history
+        append_history("文献补充", " / ".join(self._search_keywords[:4]), len(papers))
         # 检索完成后重新启用反馈和检索按钮，支持循环
         self._refine_btn.setEnabled(True)
         self._search_btn.setEnabled(True)
         self._export_btn.setVisible(bool(papers))
         self._feed_btn.setVisible(bool(papers))
         self._insert_btn.setEnabled(bool(papers))
+        self._results_header.setVisible(True)
+        self._results_list.setVisible(True)
         self._results_list.clear()
         self._results_papers = list(papers)
 
@@ -592,6 +609,8 @@ class LitSearchDialog(QDialog):
         self._set_busy(False)
         self._refine_btn.setEnabled(True)
         self._search_btn.setEnabled(True)
+        self._results_header.setVisible(True)
+        self._results_list.setVisible(True)
         self._results_list.clear()
         self._results_list.addItem(f"检索失败: {err}")
         self._results_list.addItem("💡 可修改反馈后重新分析，再次检索。")

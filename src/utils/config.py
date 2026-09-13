@@ -125,6 +125,16 @@ DEFAULT_CONFIG: dict = {
     "easyscholar_api_key": "",  # EasyScholar 期刊影响因子密钥（可选；空 = 不显示 IF）
     "preparse_enabled": True,  # 后台全库预解析（空闲时本地解析 Zotero PDF，零 LLM）
     "custom_writing_types": {},  # 自定义写作类型: {key: {"label": str, "system_prompt": str}}
+    "email_notify": {          # 邮件通知（文献巡视/网页更新提醒）
+        "enabled": False,      # 总开关
+        "smtp_host": "",       # 如 smtp.qq.com / smtp.163.com / smtp.gmail.com
+        "smtp_port": 465,      # 465=SSL, 587=STARTTLS, 25=明文（不推荐）
+        "use_ssl": True,       # True=SMTP_SSL(465)，False=STARTTLS(587) 或明文
+        "username": "",        # 发件邮箱账号
+        "password": "",        # 授权码（邮箱服务商生成的授权码，非登录密码）
+        "sender": "",          # 发件人显示地址，空 = 用 username
+        "recipients": "",      # 收件人，多个用英文逗号分隔
+    },
 }
 
 
@@ -242,6 +252,20 @@ def get_scout_dir() -> Path:
 def get_stats_dir() -> Path:
     """统计工作台数据目录：{data_root}/.paperwb/stats/"""
     d = _resolve_data_dir() / "stats"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_search_dir() -> Path:
+    """检索记录库目录（检索历史 + 黑名单）：{data_root}/.paperwb/search/"""
+    d = _resolve_data_dir() / "search"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_watch_dir() -> Path:
+    """网页追踪数据目录（监控页配置 + 快照）：{data_root}/.paperwb/watch/"""
+    d = _resolve_data_dir() / "watch"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -415,6 +439,27 @@ def get_easyscholar_api_key(config: dict | None = None) -> str:
     if config is None:
         config = load_config()
     return str(config.get("easyscholar_api_key", "") or "").strip()
+
+
+def get_email_config(config: dict | None = None) -> dict:
+    """邮件通知配置（合并默认值，保证字段齐全）。"""
+    if config is None:
+        config = load_config()
+    merged = dict(DEFAULT_CONFIG["email_notify"])
+    saved = config.get("email_notify")
+    if isinstance(saved, dict):
+        merged.update({k: v for k, v in saved.items() if k in merged})
+    return merged
+
+
+def save_email_config(cfg: dict) -> None:
+    """保存邮件通知配置。"""
+    config = load_config()
+    merged = dict(DEFAULT_CONFIG["email_notify"])
+    if isinstance(cfg, dict):
+        merged.update({k: v for k, v in cfg.items() if k in merged})
+    config["email_notify"] = merged
+    save_config(config)
 
 
 def _is_vision_model(model: str) -> bool:
