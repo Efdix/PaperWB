@@ -1258,6 +1258,15 @@ class WritingPanel(QWidget):
         self._style_btn.setEnabled(False)
         kb_layout.addWidget(self._style_btn)
 
+        self._kb_sync_btn = QPushButton("📦 导出 / 导入知识库")
+        self._kb_sync_btn.setObjectName("secondaryBtn")
+        self._kb_sync_btn.setToolTip(
+            "把知识库打包成 .zip 搬到另一台电脑，导入后直接可用，\n"
+            "无需重新做风格分析（省 LLM 费用）。\n"
+            "可一并带上编辑器草稿、润色历史、已保存的草稿评价。")
+        self._kb_sync_btn.clicked.connect(self._on_kb_sync)
+        kb_layout.addWidget(self._kb_sync_btn)
+
         self._style_guide_view = StyleGuideView()
         kb_layout.addWidget(self._style_guide_view, 1)
 
@@ -3473,6 +3482,32 @@ class WritingPanel(QWidget):
         dialog.review_saved.connect(self._on_review_saved)
         self._track_dialog(dialog)
         dialog.show()
+
+    def _on_kb_sync(self):
+        """打开知识库导出/导入对话框（跨机同步，免于重建风格分析）。"""
+        if not self._cancel_all_workers():
+            QMessageBox.warning(
+                self, "请稍候", "当前写作任务尚未退出，请稍后再导出/导入。")
+            return
+        from .kb_sync_dialog import KbSyncDialog
+        dialog = KbSyncDialog(parent=None)
+        dialog.kb_imported.connect(self._on_kb_imported)
+        self._track_dialog(dialog)
+        dialog.show()
+
+    def _on_kb_imported(self):
+        """导入完成后刷新知识库下拉（保留当前选中库与编辑器内容）。"""
+        self.reload_knowledge_bases()
+        self._status_label.setText("知识库已导入，下拉列表已刷新")
+
+    def reload_knowledge_bases(self):
+        """重新扫描知识库目录并刷新下拉。
+
+        与 ``reload_storage`` 的区别：不动 Word 绑定、不重载草稿
+        （导出/导入后不应打断当前编辑）。
+        """
+        self._coach.reload_storage()
+        self._refresh_kb_dropdown()
 
     def _on_view_saved_review(self):
         """查看当前知识库最近保存的草稿整体评价（可继续编辑/导出）。"""

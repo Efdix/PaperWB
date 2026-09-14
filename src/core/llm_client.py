@@ -11,6 +11,12 @@ from openai import (
 )
 
 
+def _mentions_max_tokens(err: Exception) -> bool:
+    """判断 400 错误是否与 max_tokens 有关（各提供商上限不一）。"""
+    text = str(err).lower()
+    return "max_tokens" in text or "max output" in text or "maximum length" in text
+
+
 class LLMClient:
     """统一的 LLM API 客户端，封装 OpenAI 兼容接口。"""
 
@@ -54,7 +60,8 @@ class LLMClient:
                 yield delta.content
 
     def chat_sync(self, messages: list[dict], timeout: float = 120.0,
-                  max_tokens: int | None = None, json_mode: bool = False) -> str:
+                  max_tokens: int | None = None, json_mode: bool = False,
+                  return_meta: bool = False):
         """同步对话，返回完整回复文本。
 
         支持纯文本和视觉（图片+文本）两种消息格式。
@@ -66,6 +73,12 @@ class LLMClient:
             max_tokens: 最大生成 token 数（None=不限制）
             json_mode: 要求输出 JSON 对象（response_format=json_object）。
                        部分兼容服务不支持该参数时自动降级为普通请求。
+            return_meta: True 时返回 (text, meta)；meta 含 finish_reason，
+                       可据此判断输出是否因长度上限被截断（"length"）。
+                       用返回值而非实例属性传递，因为 client 被多线程共享。
+
+        Returns:
+            默认返回回复文本；return_meta=True 时返回 (文本, meta dict)。
         """
         kwargs: dict = dict(
             model=self.model,
@@ -82,14 +95,23 @@ class LLMClient:
 
         try:
             response = self._retry(lambda: self._client.chat.completions.create(**kwargs))
-        except BadRequestError:
+        except BadRequestError as e:
+            # 部分兼容服务不支持这些参数 → 逐个去掉后降级重试
+            retried = False
             if use_json:
-                # 该接口不支持 response_format → 降级普通请求
                 kwargs.pop("response_format", None)
-                response = self._retry(lambda: self._client.chat.completions.create(**kwargs))
-            else:
+                retried = True
+            if "max_tokens" in kwargs and _mentions_max_tokens(e):
+                kwargs.pop("max_tokens", None)
+                retried = True
+            if not retried:
                 raise
-        content = response.choices[0].message.content
+            response = self._retry(lambda: self._client.chat.completions.create(**kwargs))
+        choice = response.choices[0] if response.choices else None
+        content = choice.message.content if choice else ""
+        if return_meta:
+            finish = getattr(choice, "finish_reason", None) if choice else None
+            return content or "", {"finish_reason": finish}
         return content or ""
 
 

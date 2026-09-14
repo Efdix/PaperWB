@@ -83,9 +83,9 @@ DRAFT_REVIEW_PROMPT = """你是学术写作审稿专家。请对以下草稿进�
 
 ## 输出格式
 
-{{
+{
   "section_analysis": [
-    {{
+    {
       "section": "Introduction",
       "word_count": 350,
       "word_count_benchmark": 500,
@@ -100,45 +100,45 @@ DRAFT_REVIEW_PROMPT = """你是学术写作审稿专家。请对以下草稿进�
       "has_summary": false,
       "paragraph_size_issue": null,
       "other_issues": []
-    }}
+    }
   ],
-  "transition_summary_gaps": {{
-    "gaps": [{{"between": "Introduction → Results", "severity": "缺失", "suggestion": "建议添加..."}}],
+  "transition_summary_gaps": {
+    "gaps": [{"between": "Introduction → Results", "severity": "缺失", "suggestion": "建议添加..."}],
     "missing_summaries": []
-  }},
-  "coverage_analysis": {{
+  },
+  "coverage_analysis": {
     "covered_domains": [],
     "overrepresented": "",
     "missing_or_thin": "",
     "suggestion": ""
-  }},
-  "timeliness": {{
+  },
+  "timeliness": {
     "total_citations": 0,
     "recent_3yr": 0,
     "classic_before_3yr": 0,
     "assessment": "",
     "suggestion": ""
-  }},
-  "critical_depth": {{
+  },
+  "critical_depth": {
     "has_comparison": false,
     "has_contradiction_discussion": false,
     "has_gap_analysis": false,
     "has_future_directions": false,
     "assessment": "",
     "suggestion": ""
-  }},
-  "redundancy": {{
+  },
+  "redundancy": {
     "items": []
-  }},
-  "figure_suggestions": {{
+  },
+  "figure_suggestions": {
     "items": []
-  }},
-  "terminology_consistency": {{
+  },
+  "terminology_consistency": {
     "issues": []
-  }},
+  },
   "overall_grade": "B",
   "overall_summary": ""
-}}"""
+}"""
 
 
 class DraftReviewer:
@@ -198,23 +198,38 @@ class DraftReviewer:
         ]
 
         try:
-            response = write_client.chat_sync(messages, timeout=1800.0, json_mode=True)
+            from ..utils.config import get_max_output_tokens
+            response, meta = write_client.chat_sync(
+                messages, timeout=1800.0, json_mode=True,
+                max_tokens=get_max_output_tokens(), return_meta=True)
             if not response or not response.strip():
                 return {"error": "LLM 返回了空响应"}
             result = self._parse_response(response)
             if "error" in result:
                 return result
+            if str(meta.get("finish_reason") or "").lower() == "length":
+                # JSON 虽已修复解析，但内容确实被长度上限截断
+                result["_truncated"] = True
             return result
         except Exception as e:
             return {"error": str(e)}
 
     @staticmethod
     def _parse_response(raw: str) -> dict:
-        """解析 LLM 返回的 JSON（多层容错 + 兜底降级）。"""
-        from .json_utils import parse_json_response
-        result = parse_json_response(raw)
+        """解析 LLM 返回的 JSON（多层容错 + 兜底降级）。
+
+        输出被长度上限截断时，解析器会丢弃末尾不完整元素并补全括号，
+        返回已解析的前缀（标注 ``_truncated``），使报告仍可用。
+        """
+        from .json_utils import parse_json_response_verbose
+        result, info = parse_json_response_verbose(raw)
         if result is not None:
+            if info.get("truncated"):
+                result["_truncated"] = True
             return result
+        # 无法修复：完整原文落盘，供事后诊断（弹窗只显示前 200 字符）
+        from .json_utils import dump_failed_response
+        dump_failed_response("draft_review", raw)
         return {"error": f"JSON 解析失败，LLM 原始返回前 200 字符：{raw[:200]}"}
 
     @staticmethod

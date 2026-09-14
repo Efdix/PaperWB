@@ -119,6 +119,7 @@ DEFAULT_CONFIG: dict = {
         "description": "纯文本接口 — 论文问答、翻译、写作、文献检索、跨页整合共用",
     },
     "max_tokens": 1_000_000,
+    "llm_max_output_tokens": 8192,  # 单次生成输出上限（0 或负数 = 不限制）
     "data_root": "",          # 空字符串 = 未设置，需首次启动弹窗
     "zotero_data_dir": "",
     "openalex_api_key": "",   # OpenAlex 检索源密钥（可选；空 = 无 key 免费额度）
@@ -641,6 +642,38 @@ def save_polish_entry(profile_name: str, entry: dict) -> None:
         history = history[-MAX_POLISH_HISTORY:]
     f = get_polish_history_dir() / f"{profile_name}.json"
     f.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ========== LLM 输出上限 ==========
+
+DEFAULT_MAX_OUTPUT_TOKENS = 8192
+
+
+def get_max_output_tokens() -> int | None:
+    """单次 LLM 调用的输出上限（None = 不传该参数，由服务端决定）。
+
+    长报告类调用（草稿整体评价、风格分析）必须显式设置：不传时输出长度
+    完全由服务端默认值决定，长草稿容易撞上限导致 JSON 从中间截断。
+    """
+    try:
+        value = int(load_config().get("llm_max_output_tokens",
+                                      DEFAULT_MAX_OUTPUT_TOKENS))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_OUTPUT_TOKENS
+    return value if value > 0 else None
+
+
+# ========== 知识库导出/导入 ==========
+
+def get_sync_dir() -> str:
+    """上次知识库导出/导入所在的目录（空 = 未用过）。"""
+    return str(load_config().get("kb_sync_dir", "") or "")
+
+
+def set_sync_dir(path: str) -> None:
+    cfg = load_config()
+    cfg["kb_sync_dir"] = str(path or "")
+    save_config(cfg)
 
 
 # ========== Word 交互（最近文件 / 绑定记忆 / 修订写回偏好） ==========

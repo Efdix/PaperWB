@@ -39,8 +39,66 @@ check("代码块提取", parse_json_response('```json\n{"a": 2}\n```') == {"a": 
 check("空串→None", parse_json_response("") is None)
 check("None→None", parse_json_response(None) is None)
 
+# ---------- 2b. JSON 容错：LLM 常见畸形输出 ----------
+from src.core.json_utils import parse_json_response_verbose
+
+check("尾随逗号-对象", parse_json_response('{"a": 1,}') == {"a": 1})
+check("尾随逗号-数组", parse_json_response('{"a": [1,2,]}') == {"a": [1, 2]})
+# LLM 在字符串值里直接换行（未转义），旧解析器只能救回紧邻引号的情况
+check("字符串中段裸换行",
+      parse_json_response('{"s": "第一行\n第二行"}') == {"s": "第一行\n第二行"})
+check("字符串裸制表符",
+      parse_json_response('{"s": "a\tb"}') == {"s": "a\tb"})
+
+# 截断修复：输出撞长度上限，JSON 从中间断掉 → 保留完整项，丢弃残缺项
+_trunc = ('{"section_analysis": [{"section": "摘要", "word_count": 428}, '
+          '{"section": "引言", "word')
+_r, _info = parse_json_response_verbose(_trunc)
+check("截断→可解析", _r is not None, repr(_r))
+check("截断→标记 truncated", _info.get("truncated") is True, repr(_info))
+check("截断→保留完整项",
+      _r and len(_r.get("section_analysis", [])) == 1, repr(_r))
+check("截断→丢弃残缺项",
+      _r and _r["section_analysis"][0]["section"] == "摘要", repr(_r))
+# 无法修复时仍是 None（不臆造内容）
+check("垃圾输入→None（不臆造）", parse_json_response("完全不是 JSON") is None)
+check("正常输入不误标截断",
+      parse_json_response_verbose('{"a": 1}')[1].get("truncated") is False)
+
+# ---------- 2c. 草稿评价提示词与截断标记 ----------
+from src.core.draft_reviewer import DRAFT_REVIEW_PROMPT, DraftReviewer
+
+# 模板里的 JSON 示例必须用单花括号（填充走 .replace()，双花括号会原样发给模型）
+check("评价提示词无 {{", "{{" not in DRAFT_REVIEW_PROMPT)
+check("评价提示词无 }}", "}}" not in DRAFT_REVIEW_PROMPT)
+check("评价提示词保留占位符",
+      "{kb_benchmarks}" in DRAFT_REVIEW_PROMPT and "{draft_text}" in DRAFT_REVIEW_PROMPT)
+
+_r = DraftReviewer._parse_response(_trunc)
+check("评价解析带 _truncated", "error" not in _r and _r.get("_truncated") is True, repr(_r)[:80])
+# _truncated 不能污染润色指令生成
+check("_truncated 不进润色指令",
+      DraftReviewer.format_review_for_polish({"_truncated": True}) == "")
+
+# ---------- 2d. 输出上限配置 ----------
+from src.utils.config import get_max_output_tokens
+
+_v = get_max_output_tokens()
+check("输出上限可读且为正", _v is None or (isinstance(_v, int) and _v > 0), repr(_v))
+
+# ---------- 2e. 知识库导出/导入基础契约 ----------
+from src.core.kb_sync import human_size, sanitize_profile_config
+
+check("体积格式化", human_size(0) == "0 B" and human_size(2048).endswith("KB"),
+      f"{human_size(0)} / {human_size(2048)}")
+_cfg = sanitize_profile_config({
+    "personal_papers": [{"filename": "a.pdf",
+                         "original_path": r"C:\Other\a.pdf", "text": "t"}],
+})
+check("导入清洗绝对路径", _cfg["personal_papers"][0]["original_path"] == "")
+check("导入保留全文", _cfg["personal_papers"][0]["text"] == "t")
+
 # ---------- 3. draft_reviewer.format_review_for_polish 空采纳不注入 ----------
-from src.core.draft_reviewer import DraftReviewer
 
 review = {
     "section_analysis": [{"section": "Intro", "citation_status": "偏少"}],

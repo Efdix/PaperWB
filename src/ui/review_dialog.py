@@ -287,6 +287,16 @@ class ReviewDialog(QDialog):
 
     def _build_overall(self):
         result = self._result
+        if result.get("_truncated"):
+            warn = QLabel(
+                "⚠ 模型输出达到长度上限被截断，本报告的靠后部分（如术语一致性、"
+                "整体评价）可能缺失。可在「设置 → API 接口设置」提高输出上限后重新评价。")
+            warn.setWordWrap(True)
+            warn.setStyleSheet(
+                "color: #8a5a1c; background: #fdf4e6; border: 1px solid #eddcbe; "
+                "border-radius: 8px; padding: 8px 12px; font-size: 12px;"
+            )
+            self._cl.addWidget(warn)
         grade = result.get("overall_grade", "?")
         grade_color = {
             "A+": "#278273", "A": "#278273",

@@ -54,6 +54,7 @@ src/
 │   ├── email_notifier.py  # 邮件通知框架: EmailConfig(config email_notify 键，收件人支持中英文逗号/分号分隔) + send_notification_email（SMTP_SSL/STARTTLS 同步纯函数，QThread 中调用；失败返回 (False, 原因) 绝不抛 UI）+ EmailSendWorker + send_async + format_papers_digest/format_page_update 模板；未配置时所有提醒入口静默跳过（状态栏提示一次）
 │   ├── web_watch.py       # 网页追踪: WatchedPage(watch/pages.json，关键词过滤/周期/notify_email) + 文本快照比对(watch/snapshots/) + 合规抓取（robots.txt 按主机缓存判定，拒绝即停并提示；自标识 UA；单请求低频，手动检查 60s 冷却）+ compute_changes（新链接检出/关键词过滤/首次建基线不算变更/整站改版>50 新链接降噪）+ PageCheckWorker + WebWatchManager(每页 QTimer)
 │   ├── reference_match.py # 文献匹配公共口径: DOI/标题归一化（标题保留 CJK 字符，中文文献同样可比对） + 库内查重 + 可选 LLM 批量模糊比对（写作文献补充与巡视共用）
+│   ├── kb_sync.py         # 写作知识库导出/导入（跨机同步，纯本地零 LLM）: collect_sources 扫描+体积估算 / write_archive 打包 zip（镜像源目录 + manifest.json 记录格式版本与各库概要）/ read_manifest 格式与版本校验 / list_packages 导入预览（含本地同名冲突标记）/ import_archive 还原（三种同名策略「跳过/覆盖/存为副本」、覆盖前自动备份到 writing_kb/.backup/<时间戳>/、original_path 置空清洗、zip-slip 防护、逐文件 .tmp+os.replace 原子落盘）/ KbExportWorker・KbImportWorker 后台线程 + human_size；库名校验复用 writing_coach.validate_profile_name
 │   ├── read_marks.py      # 读完标记: 按规范化 PDF 路径存 states/read_marks.json，ReadMarkStore 单例带 changed 信号；阅读工具栏「✓ 标记已读」与左右文献列表 ✓ 前缀共用
 │   ├── unified_writer.py  # 统一润色+引文核查: 证据检索化(按声明检索相关段落) + json_mode + 多层容错 JSON
 │   ├── doc_diff.py        # 内联 diff 控制器(QTextEdit，DiffDialog 与写作面板修订共用): 渲染删除线/绿底 + 锚点导航/接受拒绝 + 从字符格式重建锚点（**charFormat() 返回光标前一个字符，探测须先选中该字符，否则锚点整体偏移一位 → 接受修订漏删首个删除线字符**）
@@ -71,7 +72,8 @@ src/
 │   ├── web_watch_panel.py # 网页追踪面板: WatchEditDialog(名称/URL/关键词/周期/邮件提醒/合规说明) + WatchCard(立即检查/网页↗/编辑/删除/启停) + WebWatchPanel 包装 WebWatchManager；page_updated → 邮件推送（workbench 接线）
 │   ├── search_records_dialogs.py # 检索记录库对话框: BlacklistDialog(黑名单查看/移除/清空，changed 标记供刷新) + SearchHistoryDialog(检索历史)
 │   ├── writing_panel.py   # 写作面板: 编辑器优先+可收起工具检查器(知识库/Zotero/批注/AI)+自动保存+字数统计；AI 辅助：润色核查/查看已保存评价/仅核查/中译英/补充参考文献/AI 续写(ComposeWorker，从光标前 1500 字上下文续写 1-3 段，只沿用已有引文标记，插入可撤销)/生成大纲(按写作类型结构+知识库风格)，均带状态栏进度条与取消按钮（选中即改的内联润色含「正在修改选中文字…」忙碌条）；「讨论」页签（头按钮「AI 讨论」一键切入）：ChatPanel 流式对话讨论写作方向/章节结构/摘要引言/内容正确性，系统提示注入写作类型结构指南+风格背景+当前草稿（≤8000 字直发，超长首尾截取，可开关），对话内存态、切知识库即清空；AI 润色结果统一过引文标记保护（_protect_citation_rewrap，按绑定 docx 的上标/域标记区间还原 1→[1] 类纯格式改写）；编辑器 Ctrl+滚轮缩放字号（9~28px，Ctrl+0 复位）+↶↷撤销重做按钮；知识库下拉只显示库名全名（统计信息移至 tooltip，弹层按最长库名加宽）；Word 交互：拖拽打开(.docx/.txt/.md, editor eventFilter 拦截)+「最近 ▾」菜单+「另存为」+「在 Word 中打开」(os.startfile)+「修订写回」开关(保存时 w:ins/w:del)+写回前自动备份(docx_backup 保留 20 份)+外部修改 mtime 检测(showEvent 静默提示/保存前询问)+按知识库绑定记忆(切库提示恢复)
-│   ├── review_dialog.py   # 草稿整体评价报告对话框: 逐项勾选/编辑建议；「保存评价」落盘 reviews/<知识库名>.json（覆盖式）且不关闭窗口——状态条显示完整路径 +「打开所在文件夹」；「导出 TXT」自选路径导出原始报告；打开已保存 JSON 时按 (category,title) 恢复勾选与编辑文本
+│   ├── review_dialog.py   # 草稿整体评价报告对话框: 逐项勾选/编辑建议；「保存评价」落盘 reviews/<知识库名>.json（覆盖式）且不关闭窗口——状态条显示完整路径 +「打开所在文件夹」；「导出 TXT」自选路径导出原始报告；打开已保存 JSON 时按 (category,title) 恢复勾选与编辑文本；结果含 _truncated（模型输出撞长度上限）时报告顶部显示警告条
+│   ├── kb_sync_dialog.py  # 知识库导出/导入对话框（写作面板「📦 导出 / 导入知识库」）: 导出页（知识库勾选+体积估算+可选带草稿/润色历史/评价+存 zip）/ 导入页（选包→预览包内库与同名冲突→逐库勾选+同名策略→结果汇总含备份目录）；同名库默认不勾选（需用户主动决定覆盖或另存）；导入完成发 kb_imported 刷新知识库下拉；非模态，记上次所在目录
 │   ├── diff_dialog.py     # 润色对比对话框: 内联 diff(单编辑框)+导航栏(上一处/下一处/接受/拒绝)+AI 对话+引用高亮
 │   ├── lit_search_dialog.py # 文献补充对话框: LLM 双轨推荐(已知文献+搜索词)→多源检索(带来源标注)→导出 CSV/加入推荐流（非模态）
 │   ├── settings_dialog.py # 设置对话框: API接口设置(多模态/纯文本/文献检索源-OpenAlex密钥可选,密钥用于三源检索与按库推荐/影响因子-EasyScholar/邮件通知-EmailNotifyTab: SMTP 主机/端口/SSL/授权码/收件人+发送测试邮件 _TestEmailWorker)+连接测试（Zotero/缓存路径在独立 DirectorySettingDialog，与 API 设置平级菜单）
@@ -184,6 +186,18 @@ src/
 - `（中文等，2024）` 中文括号
 - `Author等（2024）` 无括号中文
 
+### 写作知识库导出/导入（跨机同步，kb_sync）
+
+另一台电脑不必重建知识库——重建要重跑 LLM 风格分析（烧 token），而知识库本身是**自包含**的：范文全文内联在 `config.json` 的 `text` 字段，另有 `personal_papers/`、`journal_papers/` 下的 `.txt` 副本，所以整份打包搬过去即可用。
+
+- **入口**：写作工作台 → 知识库工具 → 「📦 导出 / 导入知识库」（非模态双页签对话框）
+- **包结构**（镜像源目录，零信息损失）：`manifest.json`（格式名/版本/导出时间/各库概要/文件清单）+ `writing_kb/<库名>/…`，可选 `drafts/`、`polish_history/`、`reviews/`（按库名关联的派生文件，三者在导出页分别开关）
+- **导入**：选包 → 预览（库名/范文数/是否含分析结果/体积/是否与本地同名）→ 逐库勾选 → 同名策略。同名库**默认不勾选**（需用户主动决定），策略三选一：跳过（保留本地）/ 覆盖（先把本地同名库及其草稿/润色历史/评价备份到 `writing_kb/.backup/<时间戳>/`，可回退）/ 存为副本（`原名_导入`、`原名_导入2`…）
+- **可移植性**：`config.json` 里 `personal_papers[].original_path` 是**导出机器**的 PDF 绝对路径（运行时从不读取，仅留档），导入时统一置空，避免在新机器留死路径；`_last_profile.txt` 不进包也不被导入（机器本地偏好）
+- **安全**：zip-slip 防护（拒绝绝对路径与含 `..` 的条目）、库名复用 `writing_coach.validate_profile_name` 校验、manifest 格式与版本校验（高于当前支持版本时明确拒收）、逐文件 `.tmp` + `os.replace` 原子落盘
+- **导入后**：发 `kb_imported` → 写作面板 `reload_knowledge_bases()`（只重扫知识库并刷新下拉，**不动 Word 绑定、不重载草稿**，不打断当前编辑）；`.backup/` 是知识库扫描的间接子目录，不会作为知识库出现在下拉里
+- 包放进网盘目录即可当半自动同步用（导出/导入各自记住上次所在目录）
+
 ### Zotero 集成（只读 + 周期同步）
 
 - 左侧面板 Tab1「Zotero 文献库」: 只读镜像 Zotero 集合树（集合→文献→PDF 附件），点击文献直接用两阶段管线阅读（不导入本地库）
@@ -202,7 +216,9 @@ src/
 - 使用 PySide6 Signals 进行组件间通信（不直接耦合）
 - 各对话框使用非模态 (`show()` + `accepted_signal`) 以支持并行操作
 - 对话框设置 `WindowMaximizeButtonHint | WindowMinimizeButtonHint | Window` 以支持任务栏独立分组
-- 无 max_tokens 硬限制（依赖模型自身容量）
+- **LLM 输出上限**：长报告类调用（草稿整体评价、风格分析合成）显式传 `max_tokens=get_max_output_tokens()`（config `llm_max_output_tokens`，默认 8192，≤0 = 不限制）。**不传时输出长度完全由服务端默认值决定，长草稿极易撞上限导致 JSON 从中间截断**（症状：弹「JSON 解析失败」而报文前 200 字符完全合法）；`chat_sync(return_meta=True)` 可拿到 `finish_reason`，`"length"` 即截断确证（用返回值而非实例属性，client 被多线程共享）。部分服务商限额更低时报 400，`chat_sync` 会自动去掉 `max_tokens` 重试（与 `response_format` 降级同风格）
+- **JSON 容错（`json_utils.parse_json_response`）**：7 层递进——直接解析 → 代码块提取 → 花括号提取 → 换行清洗 → **字符串内裸控制字符转义 + 尾随逗号清理** → 全角花括号替换 → **截断修复**（丢弃末尾不完整元素、补齐未闭合括号，返回已解析前缀）。`parse_json_response_verbose` 额外返回 `{strategy, truncated}` 供长报告判断完整性；截断修复命中的结果会带 `_truncated` 标记（`ReviewDialog` 据此在报告顶部显示警告条）。彻底无法修复时完整原文追加写入 `{日志目录}/diagnostics.log`（弹窗只显示前 200 字符，事后无法诊断）
+- 提示词里若含 JSON 示例，**只能用单花括号**：填充走 `.replace()` 而非 `.format()`，写成 `{{` 会把畸形模板原样发给模型
 
 ### 安装包分发与预置离线模型
 
@@ -219,4 +235,4 @@ src/
 - 所有 Python 文件使用 `from __future__ import annotations` 和类型注解
 - 测试数据在 `test/` 目录下（含示例 PDF、写作草稿、缓存快照）
 - 验收脚本: `test/validate_zotero.py`（Zotero 文献两阶段整合验收，`--count` 可调，默认 20，输出 JSON 报告）与 `test/capture_zotero_screenshots.py`（UI 截图验收，`--count` 可调，默认 20，输出 PNG）
-- 自测脚本: `test/selftest_bugfixes.py`（纯逻辑回归）、`test/selftest_docx_citations.py`（docx 引文标记保护：citation_key 口径/写回普通+修订模式零改动还原/真实改号仍生效/last_rpr 泄漏回归/编辑器侧文本还原，无 LLM 无网络）、`test/selftest_docdiff.py`（内联 diff：渲染/锚点重建/导航/接受拒绝/跨编辑器拷贝，含 charFormat 探测偏移回归）与 `test/selftest_workbench.py`（检索工作台与库内问答核心逻辑：匹配口径/索引/RAG 组装/巡视全链路假 PubMed/OpenAlex 解析与三源路由/检索式 v2 与两轮闭环/按库推荐/UI 离屏构建/两级接缝缓存与后台建库预解析（结构化抽取·prelim/final 状态迁移·队列过滤失败记忆·flush 复用·参考文献修剪）/检索黑名单与记录库/邮件通知框架（配置解析与模板，无网络）/网页追踪（HTML 解析·变更检测·序列化·面板离屏构建）/写作专业化（结构指南·续写与大纲提示词·设置与写作面板离屏构建·草稿评价保存不关窗/状态恢复/落盘路径提示·内联润色进度反馈·修订渲染后接受等于润色文本），无 LLM 无网络）；`test/selftest_ui_features.py`（阅读 UI 新特性回归：热力图自适应几何与月份标签避让、计划任务 edit_plan、「回到今天」按钮仅偏离今天时可见、任务文字自动折行（WrapCheckBox）、卡片提问 Ctrl+Enter（QALineEdit）、阅读字号增减（内联 px 口径 + 钳制）、卡片手动拆分/合并（连字符/中英拼接规则 + structured_document 落盘读回）、读完标记（ReadMarkStore 持久化/信号/路径归一/工具栏联动），QPA offscreen 无 LLM 无网络）；`test/smoke_workbench_app.py`（offscreen 全窗口集成冒烟，读真实配置与 Zotero 库但不调 LLM；设 PAPERWB_DISABLE_PREPARSE=1 跳过后台预解析）
+- 自测脚本: `test/selftest_bugfixes.py`（纯逻辑回归，含 JSON 容错：尾随逗号/字符串内裸换行与制表符/截断修复与 `_truncated` 标记/垃圾输入不臆造/评价提示词无 `{{` 模板残留）、`test/selftest_kb_sync.py`（知识库导出/导入：扫描与体积/清单校验/空目录与三种同名冲突策略/覆盖前备份/派生文件迁移/original_path 置空/zip-slip 拒绝/非法库名拒绝/空选择无操作，纯逻辑无 LLM 无网络）、`test/selftest_docx_citations.py`（docx 引文标记保护：citation_key 口径/写回普通+修订模式零改动还原/真实改号仍生效/last_rpr 泄漏回归/编辑器侧文本还原，无 LLM 无网络）、`test/selftest_docdiff.py`（内联 diff：渲染/锚点重建/导航/接受拒绝/跨编辑器拷贝，含 charFormat 探测偏移回归）与 `test/selftest_workbench.py`（检索工作台与库内问答核心逻辑：匹配口径/索引/RAG 组装/巡视全链路假 PubMed/OpenAlex 解析与三源路由/检索式 v2 与两轮闭环/按库推荐/UI 离屏构建/两级接缝缓存与后台建库预解析（结构化抽取·prelim/final 状态迁移·队列过滤失败记忆·flush 复用·参考文献修剪）/检索黑名单与记录库/邮件通知框架（配置解析与模板，无网络）/网页追踪（HTML 解析·变更检测·序列化·面板离屏构建）/写作专业化（结构指南·续写与大纲提示词·设置与写作面板离屏构建·草稿评价保存不关窗/状态恢复/落盘路径提示·内联润色进度反馈·修订渲染后接受等于润色文本），无 LLM 无网络）；`test/selftest_ui_features.py`（阅读 UI 新特性回归：热力图自适应几何与月份标签避让、计划任务 edit_plan、「回到今天」按钮仅偏离今天时可见、任务文字自动折行（WrapCheckBox）、卡片提问 Ctrl+Enter（QALineEdit）、阅读字号增减（内联 px 口径 + 钳制）、卡片手动拆分/合并（连字符/中英拼接规则 + structured_document 落盘读回）、读完标记（ReadMarkStore 持久化/信号/路径归一/工具栏联动），QPA offscreen 无 LLM 无网络）；`test/smoke_workbench_app.py`（offscreen 全窗口集成冒烟，读真实配置与 Zotero 库但不调 LLM；设 PAPERWB_DISABLE_PREPARSE=1 跳过后台预解析）

@@ -366,7 +366,7 @@ if __name__ == "__main__":
 
     app = QApplication(sys.argv)
     app.setApplicationName("PaperWB")
-    app.setApplicationVersion("0.1.2")
+    app.setApplicationVersion("0.1.3")
     app.setOrganizationName("PaperWB")
     app.setStyle("Fusion")  # 跨平台一致的 QSS 基础
     _icon = _app_icon_path()

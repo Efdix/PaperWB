@@ -123,6 +123,25 @@ class WritingProfile:
 # 写作教练
 # ============================================================
 
+MAX_PROFILE_NAME_LEN = 80
+
+
+def validate_profile_name(name: str) -> None:
+    """校验知识库名称可用于目录/文件名，不合法时抛 ValueError。
+
+    库名直接用作目录与文件名（config.json、drafts、polish_history、reviews），
+    含 Windows 非法字符或首尾空白会导致持久化静默失败。导入外部压缩包时
+    同样需要此校验（库名可能来自其它机器）。
+    """
+    if not name or re.search(r'[\\/:*?"<>|\r\n\t]', name) or name.strip() != name:
+        raise ValueError(
+            "知识库名称不能包含以下字符：\\ / : * ? \" < > |，"
+            "且不能以空格开头或结尾"
+        )
+    if len(name) > MAX_PROFILE_NAME_LEN:
+        raise ValueError(f"知识库名称过长（最多 {MAX_PROFILE_NAME_LEN} 个字符）")
+
+
 class WritingCoach:
     """写作教练 —— 管理知识库、生成风格指南、辅助写作。"""
 
@@ -221,15 +240,7 @@ class WritingCoach:
 
         if name in self._profiles:
             raise ValueError(f"知识库 '{name}' 已存在")
-        # 库名直接用作目录/文件名（config.json、drafts、polish_history、reviews），
-        # 含 Windows 非法字符时会导致持久化静默失败
-        if re.search(r'[\\/:*?"<>|\r\n\t]', name) or name.strip() != name or not name.strip():
-            raise ValueError(
-                "知识库名称不能包含以下字符：\\ / : * ? \" < > |，"
-                "且不能以空格开头或结尾"
-            )
-        if len(name) > 80:
-            raise ValueError("知识库名称过长（最多 80 个字符）")
+        validate_profile_name(name)
 
         now = datetime.now().isoformat()
         profile = WritingProfile(
@@ -941,7 +952,9 @@ class WritingCoach:
             ]
 
             try:
-                response = client.chat_sync(messages, timeout=600.0, json_mode=True)
+                from ..utils.config import get_max_output_tokens
+                response = client.chat_sync(messages, timeout=600.0, json_mode=True,
+                                            max_tokens=get_max_output_tokens())
                 analysis = self._parse_style_guide_response(response)
                 if analysis:
                     analysis["_source"] = filename
@@ -981,7 +994,9 @@ class WritingCoach:
         ]
 
         try:
-            response = client.chat_sync(synth_messages, timeout=300.0, json_mode=True)
+            from ..utils.config import get_max_output_tokens
+            response = client.chat_sync(synth_messages, timeout=300.0, json_mode=True,
+                                        max_tokens=get_max_output_tokens())
             habits = self._parse_style_guide_response(response)
             if habits:
                 # 附加计算性引用详略度指标（基于所有论文全文的纯统计）
