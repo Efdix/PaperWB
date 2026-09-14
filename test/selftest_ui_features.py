@@ -75,6 +75,42 @@ check("计划：PlanPage 有编辑按钮入口",
       page._edit_editor is None)
 tracker.delete_plan("daily", pid)
 
+# 任务排序：同日期内上移/下移，跨日期任务不受影响
+tracker.add_plan("daily", "任务一", today_key)
+tracker.add_plan("daily", "任务二", today_key)
+tracker.add_plan("daily", "任务三", today_key)
+other_key = (date.today() + timedelta(days=7)).isoformat()
+tracker.add_plan("daily", "下周任务", other_key)
+third_id = tracker.plans_for("daily", today_key)[2]["id"]
+tracker.move_plan("daily", third_id, -1)
+order = [p["text"] for p in tracker.plans_for("daily", today_key)]
+check("计划：move_plan 下移任务上移一位",
+      order == ["任务一", "任务三", "任务二"])
+check("计划：move_plan 不动其它日期任务",
+      [p["text"] for p in tracker.plans_for("daily", other_key)] == ["下周任务"])
+first_id = tracker.plans_for("daily", today_key)[0]["id"]
+tracker.move_plan("daily", first_id, -1)
+check("计划：已在顶部时上移无效",
+      [p["text"] for p in tracker.plans_for("daily", today_key)]
+      == ["任务一", "任务三", "任务二"])
+tracker.flush()
+tracker2 = StatsTracker(stats_dir=tmp)
+check("计划：排序结果随 plans.json 持久化",
+      [p["text"] for p in tracker2.plans_for("daily", today_key)]
+      == ["任务一", "任务三", "任务二"])
+# 清理本组测试任务，避免影响后续折行用例的行结构
+for p in list(tracker.plans_for("daily", today_key)
+              + tracker.plans_for("daily", other_key)):
+    tracker.delete_plan("daily", p["id"])
+tracker.flush()
+
+# 连续活跃天数不再展示（用户要求隐藏）
+from src.ui.stats_panel import StatsPanel as _StatsPanel  # noqa: E402
+_sp = _StatsPanel(tracker)
+app.processEvents()
+check("统计：今日概览不再显示连续活跃", not hasattr(_sp, "_streak_label"))
+_sp.shutdown()
+
 # 「回到今天」按钮：只在视图偏离今天时出现
 page._go_prev()
 check("计划：翻到昨天后显示「回到今天」", not page._today_btn.isHidden())

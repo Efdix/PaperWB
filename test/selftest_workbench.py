@@ -1729,9 +1729,156 @@ check("写作面板内联风格指南视图", hasattr(_wpanel, "_style_guide_vie
       and not hasattr(_wpanel, "_view_style_btn"))
 check("写作面板 Zotero 检测入口", hasattr(_wpanel, "_zotero_check_btn")
       and hasattr(_wpanel, "_zotero_result_list"))
+check("写作面板已保存评价入口", hasattr(_wpanel, "_view_review_btn")
+      and _wpanel._view_review_btn.text() == "📋 查看已保存评价"
+      and hasattr(_wpanel, "_on_view_saved_review"))
 check("批注列表自动换行", _wpanel._comment_list.wordWrap()
       and _wpanel._zotero_result_list.wordWrap())
+
+# 内联润色（选中即改）启动瞬间必须给出进度反馈，结束/失败后收起
+from unittest import mock as _mock_mod
+
+_wpanel.show()
+with _mock_mod.patch("src.ui.writing_panel.InlinePolishWorker") as _MW:
+    _MW.return_value.isRunning.return_value = False
+    _wpanel._text_client = object()
+    _wpanel._start_inline_polish("测试文本", "润色语言")
+    check("内联润色启动即显示进度条与取消按钮",
+          _wpanel._progress_bar.isVisible()
+          and _wpanel._progress_bar.minimum() == 0
+          and _wpanel._progress_bar.maximum() == 0
+          and "正在修改选中文字" in _wpanel._progress_bar.format()
+          and _wpanel._cancel_btn.isVisible(),
+          f"bar={_wpanel._progress_bar.isVisible()} "
+          f"fmt={_wpanel._progress_bar.format()!r} "
+          f"cancel={_wpanel._cancel_btn.isVisible()}")
+    _wpanel._rev_worker = None
+    _wpanel._on_inline_polish_done({})
+    check("内联润色结束收起进度反馈",
+          not _wpanel._progress_bar.isVisible()
+          and not _wpanel._cancel_btn.isVisible(),
+          f"bar={_wpanel._progress_bar.isVisible()} "
+          f"cancel={_wpanel._cancel_btn.isVisible()}")
+
+# AI 按批注修改同样要有进度反馈
+from types import SimpleNamespace as _SNS
+
+_wpanel.editor.setPlainText("这是第一段内容。")
+_wpanel._text_client = object()
+_wpanel._word_comments = [_SNS(paragraph_index=0, author="导师", text="补充文献")]
+with _mock_mod.patch("src.ui.writing_panel.CommentFixWorker") as _CW:
+    _CW.return_value.isRunning.return_value = False
+    _wpanel._on_ai_fix_comments()
+    check("按批注修改启动即显示进度条",
+          _wpanel._progress_bar.isVisible()
+          and "正在按批注修改" in _wpanel._progress_bar.format()
+          and _wpanel._cancel_btn.isVisible(),
+          f"bar={_wpanel._progress_bar.isVisible()} "
+          f"fmt={_wpanel._progress_bar.format()!r}")
+    _wpanel._comment_worker = None
+    _wpanel._on_comment_fix_done({})
+    check("按批注修改结束收起进度反馈",
+          not _wpanel._progress_bar.isVisible()
+          and not _wpanel._cancel_btn.isVisible())
+_wpanel._word_comments = []
+
+# 真实渲染路径：_render_revision → 接受修订后编辑器文本必须等于润色文本
+# （回归：锚点重建偏移会漏删首个删除线字符，保存到 Word 时该文字残留）
+_plain_before = "这是原始文本，包含一些内容。"
+_plain_after = "这是修改后的文本，包含更多内容。"
+_wpanel.editor.setPlainText(_plain_before)
+_wpanel._pending_cursor_pos = 0
+_wpanel._pending_cursor_end = len(_plain_before)
+_wpanel._render_revision(_plain_before, _plain_after)
+check("写作面板渲染修订后存在锚点",
+      _wpanel._rev_controller.anchor_count > 0,
+      str(_wpanel._rev_controller.change_anchors))
+_wpanel._rev_controller.accept_all()
+check("写作面板接受修订后文本等于润色文本",
+      _wpanel.editor.toPlainText() == _plain_after,
+      _wpanel.editor.toPlainText())
+_wpanel.editor.clear()
+_wpanel._pending_cursor_pos = -1
+_wpanel._pending_cursor_end = -1
+_wpanel.hide()
 _wpanel.shutdown()
+
+# 草稿评价对话框：保存不关窗 + 已保存状态恢复 + 落盘路径提示
+from pathlib import Path as _Path
+from src.ui.review_dialog import ReviewDialog as _ReviewDialog
+import src.utils.config as _cfg
+
+_review_result = {
+    "overall_grade": "B+",
+    "overall_summary": "总体尚可。",
+    "terminology_consistency": {"issues": [
+        {"concept": "scRNA-seq", "variants": ["scRNA-seq", "scRNAseq"],
+         "suggestion": "统一为 scRNA-seq。"},
+        {"concept": "BEPC", "variants": ["BEPC", "BEPCs"],
+         "suggestion": "统一单复数。"},
+    ]},
+    "_accepted_items": [
+        {"category": "术语不统一", "title": "scRNA-seq：scRNA-seq / scRNAseq",
+         "suggestion": "全文统一为 scRNA-seq。"},
+    ],
+    "_rejected_items": [
+        {"category": "术语不统一", "title": "BEPC：BEPC / BEPCs",
+         "suggestion": "该建议不采纳。"},
+    ],
+}
+
+_rdlg = _ReviewDialog(dict(_review_result), profile_name="")
+_rdlg.show()
+_ed_acc = [e for e in _rdlg._editors if e["title"].startswith("scRNA-seq")]
+_ed_rej = [e for e in _rdlg._editors if e["title"].startswith("BEPC")]
+check("评价对话框恢复已保存建议文本",
+      len(_ed_acc) == 1 and len(_ed_rej) == 1
+      and _ed_acc[0]["text_edit"].toPlainText() == "全文统一为 scRNA-seq。",
+      str([e["text_edit"].toPlainText() for e in _rdlg._editors]))
+check("评价对话框恢复勾选与只读态",
+      len(_ed_acc) == 1 and len(_ed_rej) == 1
+      and _ed_acc[0]["checkbox"].isChecked()
+      and not _ed_acc[0]["text_edit"].isReadOnly()
+      and not _ed_rej[0]["checkbox"].isChecked()
+      and _ed_rej[0]["text_edit"].isReadOnly())
+_rdlg._on_save()
+check("未绑定知识库时保存不落盘且给出提示",
+      _rdlg.isVisible() and "未保存到磁盘" in _rdlg._save_status_label.text(),
+      _rdlg._save_status_label.text())
+check("保存后结果写回内部状态（供导出/再保存）",
+      len(_rdlg._result.get("_accepted_items", [])) == 1
+      and _rdlg._result.get("_accepted_items")[0]["suggestion"] == "全文统一为 scRNA-seq。")
+_rdlg.close()
+
+# 绑定知识库时保存成功：状态条显示完整路径 + 打开文件夹按钮（临时重定向数据目录）
+_orig_resolve = _cfg._resolve_data_dir
+_tmp_reviews_root = _Path(tempfile.mkdtemp(prefix="paperwb_review_"))
+_cfg._resolve_data_dir = lambda: _tmp_reviews_root
+try:
+    _rdlg2 = _ReviewDialog(dict(_review_result), profile_name="测试库")
+    _rdlg2.show()
+    _rdlg2._on_save()
+    _saved_path = _tmp_reviews_root / "reviews" / "测试库.json"
+    check("保存评价落盘到 reviews/<知识库名>.json", _saved_path.exists())
+    check("保存后状态条显示落盘路径且窗口不关闭",
+          _rdlg2.isVisible()
+          and str(_saved_path) in _rdlg2._save_status_label.text()
+          and _rdlg2._open_dir_btn.isVisible()
+          and _rdlg2._cancel_btn.text() == "关闭",
+          _rdlg2._save_status_label.text())
+    _rdlg2.close()
+
+    _rdlg3 = _ReviewDialog(dict(_review_result), profile_name="测试库",
+                           source_path=_saved_path)
+    _rdlg3.show()
+    check("打开已保存评价时状态条标明来源",
+          str(_saved_path) in _rdlg3._save_status_label.text()
+          and _rdlg3._open_dir_btn.isVisible(),
+          _rdlg3._save_status_label.text())
+    _rdlg3.close()
+finally:
+    _cfg._resolve_data_dir = _orig_resolve
+    shutil.rmtree(_tmp_reviews_root, ignore_errors=True)
 
 # 复查修复：批注编号必须用文档真实段落号（否则会改错段落）
 from src.ui.writing_panel import (

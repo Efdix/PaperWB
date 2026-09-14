@@ -79,6 +79,101 @@ ctrl4._edit.textCursor().removeSelectedText()
 ctrl4.on_text_changed()
 check("手动编辑后重建不崩溃", ctrl4._edit.toPlainText() == "")
 
+# ---------- 6b. 锚点重建后接受/拒绝必须与 render 结果一致 ----------
+# 回归：charFormat() 返回光标「前一个」字符的格式，探测时若未先选中该字符，
+# 锚点区间会整体右移一位——接受修订时漏删首个删除线字符、纯删除还会误删后一字符。
+# 写作面板内联修订（_render_revision）正是走 recompute_anchors() 重建锚点。
+ctrl6 = DocDiffController(QTextEdit())
+ctrl6.render("ABCDEFG", "ABCXYZG")
+ctrl6.recompute_anchors()
+check("重建锚点与渲染一致", ctrl6.change_anchors == [(3, 9, "replace")],
+      repr(ctrl6.change_anchors))
+ctrl6._current_anchor_idx = 0
+ctrl6.apply_change(accept=True)
+check("重建后接受替换：删除线文本被真正删除",
+      ctrl6._edit.toPlainText() == "ABCXYZG", ctrl6._edit.toPlainText())
+
+ctrl7 = DocDiffController(QTextEdit())
+ctrl7.render("ABC DEF GHI", "ABC GHI")
+ctrl7.recompute_anchors()
+check("重建后纯删除锚点正确", ctrl7.change_anchors == [(4, 8, "delete")],
+      repr(ctrl7.change_anchors))
+ctrl7._current_anchor_idx = 0
+ctrl7.apply_change(accept=True)
+check("重建后接受删除：不多删相邻字符",
+      ctrl7._edit.toPlainText() == "ABC GHI", ctrl7._edit.toPlainText())
+
+ctrl8 = DocDiffController(QTextEdit())
+ctrl8.render(original, polished)
+ctrl8.recompute_anchors()
+ctrl8.accept_all()
+check("重建后全部接受等于润色文本", ctrl8.accepted_text() == polished,
+      ctrl8.accepted_text())
+
+ctrl9 = DocDiffController(QTextEdit())
+ctrl9.render(original, polished)
+ctrl9.recompute_anchors()
+ctrl9.reject_all()
+check("重建后全部拒绝等于原文", ctrl9.accepted_text() == original,
+      ctrl9.accepted_text())
+
+# 用户手动编辑（末尾追加）触发重建：已有锚点位置不受偏移影响
+ctrl10 = DocDiffController(QTextEdit())
+ctrl10.render("ABCDEFG", "ABCXYZG")
+_end = ctrl10._edit.textCursor()
+_end.movePosition(QTextCursor.MoveOperation.End)
+_end.insertText("!!!")
+ctrl10.on_text_changed()
+check("手动编辑后重建锚点仍准确", ctrl10.change_anchors == [(3, 9, "replace")],
+      repr(ctrl10.change_anchors))
+
+# ---------- 6c. 复刻写作面板 _render_revision：跨编辑器拷贝格式后重建 → 接受 ----------
+# 写作面板先把 diff 渲染到临时编辑器，再按 fragment 格式拷进正文编辑器，
+# 最后 recompute_anchors() 重建锚点。这里逐步复刻，确认格式（删除线/绿底）无损。
+_src = QTextEdit()
+_src_ctrl = DocDiffController(_src)
+_src_ctrl.render(original, polished, highlight_citations=False)
+_dst = QTextEdit()
+_cur = _dst.textCursor()
+_block = _src.document().firstBlock()
+while _block.isValid():
+    _it = _block.begin()
+    while not _it.atEnd():
+        _frag = _it.fragment()
+        if _frag is not None and _frag.text():
+            _cur.insertText(_frag.text(), _frag.charFormat())
+        _it += 1
+    if _block.next().isValid():
+        _cur.insertText("\n")
+    _block = _block.next()
+_dst_ctrl = DocDiffController(_dst)
+_dst_ctrl.recompute_anchors()
+check("跨编辑器拷贝后锚点与渲染一致",
+      _dst_ctrl.change_anchors == _src_ctrl.change_anchors,
+      f"{_dst_ctrl.change_anchors} vs {_src_ctrl.change_anchors}")
+_dst_ctrl.accept_all()
+check("跨编辑器拷贝后全部接受等于润色文本", _dst.toPlainText() == polished,
+      _dst.toPlainText())
+
+# ---------- 6d. 修订延伸到文档末尾（字符索引边界） ----------
+ctrl11 = DocDiffController(QTextEdit())
+ctrl11.render("ABC DEF", "ABC XYZ")
+ctrl11.recompute_anchors()
+check("末尾替换锚点正确", ctrl11.change_anchors == [(4, 10, "replace")],
+      repr(ctrl11.change_anchors))
+ctrl11.accept_all()
+check("末尾替换接受后文本正确", ctrl11._edit.toPlainText() == "ABC XYZ",
+      ctrl11._edit.toPlainText())
+
+ctrl12 = DocDiffController(QTextEdit())
+ctrl12.render("ABC DEF", "ABC ")
+ctrl12.recompute_anchors()
+check("末尾纯删除锚点正确", ctrl12.change_anchors == [(4, 7, "delete")],
+      repr(ctrl12.change_anchors))
+ctrl12.accept_all()
+check("末尾纯删除接受后文本正确", ctrl12._edit.toPlainText() == "ABC ",
+      ctrl12._edit.toPlainText())
+
 # ---------- 7. 引用高亮 ----------
 ctrl5 = DocDiffController(QTextEdit())
 ctrl5.render("引言 (Smith et al., 2020) 指出 [1,2] 相关。", "引言 (Smith et al., 2020) 指出 [1,2] 相关。")

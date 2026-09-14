@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import time
+import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -262,8 +263,10 @@ class StatsTracker(QObject):
     def add_plan(self, scope: str, text: str, date_key: str) -> None:
         if scope not in self._plans or not text.strip():
             return
+        # uuid 而非毫秒时间戳：连续快速添加会落在同一毫秒，id 重复会让
+        # 勾选/编辑/排序操作命中错误任务
         self._plans[scope].append({
-            "id": f"{int(time.time() * 1000)}",
+            "id": uuid.uuid4().hex[:12],
             "text": text.strip(),
             "done": False,
             "date": date_key,
@@ -296,6 +299,25 @@ class StatsTracker(QObject):
                 del items[i]
                 self._mark_dirty()
                 return
+
+    def move_plan(self, scope: str, plan_id: str, delta: int) -> None:
+        """在同日期的任务序列内上移/下移任务（delta=-1 上移，+1 下移）。
+
+        只与相邻的同日期任务交换位置，跨日期的任务互不打扰。
+        """
+        items = self._plans.get(scope, [])
+        idx = next((i for i, p in enumerate(items) if p["id"] == plan_id), -1)
+        if idx < 0:
+            return
+        date_key = items[idx].get("date")
+        step = 1 if delta > 0 else -1
+        j = idx + step
+        while 0 <= j < len(items) and items[j].get("date") != date_key:
+            j += step
+        if not (0 <= j < len(items)):
+            return
+        items[idx], items[j] = items[j], items[idx]
+        self._mark_dirty()
 
     def plans_for(self, scope: str, date_key: str) -> list[dict]:
         return [p for p in self._plans.get(scope, []) if p.get("date") == date_key]

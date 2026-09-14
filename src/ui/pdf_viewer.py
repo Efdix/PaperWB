@@ -982,19 +982,26 @@ class PDFViewerPanel(QWidget):
         self.auto_trans_btn.setEnabled(False)
         toolbar.addWidget(self.auto_trans_btn)
 
-        self.font_smaller_btn = QPushButton("−")
-        self.font_smaller_btn.setObjectName("secondaryBtn")
-        self.font_smaller_btn.setFixedWidth(30)
+        self.font_smaller_btn = QPushButton("A−")
+        self.font_smaller_btn.setObjectName("fontBtn")
         self.font_smaller_btn.setToolTip("减小阅读字号")
         self.font_smaller_btn.clicked.connect(lambda: self._change_font_delta(-1))
         toolbar.addWidget(self.font_smaller_btn)
 
-        self.font_bigger_btn = QPushButton("＋")
-        self.font_bigger_btn.setObjectName("secondaryBtn")
-        self.font_bigger_btn.setFixedWidth(30)
+        self.font_bigger_btn = QPushButton("A＋")
+        self.font_bigger_btn.setObjectName("fontBtn")
         self.font_bigger_btn.setToolTip("增大阅读字号")
         self.font_bigger_btn.clicked.connect(lambda: self._change_font_delta(1))
         toolbar.addWidget(self.font_bigger_btn)
+        self._update_font_btn_tips()
+
+        from PySide6.QtGui import QShortcut, QKeySequence
+        QShortcut(QKeySequence("Ctrl+-"), self,
+                  activated=lambda: self._change_font_delta(-1))
+        QShortcut(QKeySequence("Ctrl++"), self,
+                  activated=lambda: self._change_font_delta(1))
+        QShortcut(QKeySequence("Ctrl+="), self,
+                  activated=lambda: self._change_font_delta(1))
 
         self.read_mark_btn = QPushButton("✓ 标记已读")
         self.read_mark_btn.setObjectName("secondaryBtn")
@@ -1061,6 +1068,14 @@ class PDFViewerPanel(QWidget):
 
     # ---- 阅读字号与全屏 ----
 
+    def _update_font_btn_tips(self) -> None:
+        """按钮 tooltip 反映当前字号偏移，便于确认当前档位。"""
+        delta = self._font_delta
+        px = round(abs(delta) * 4 / 3)
+        tip = "默认字号" if delta == 0 else f"当前{'增大' if delta > 0 else '减小'}约 {px}px"
+        self.font_smaller_btn.setToolTip(f"减小阅读字号（Ctrl+-）· {tip}")
+        self.font_bigger_btn.setToolTip(f"增大阅读字号（Ctrl++）· {tip}")
+
     def _change_font_delta(self, step: int) -> None:
         """增减阅读字号（-2 ~ +6），应用到全部卡片并持久化。"""
         new_delta = max(-2, min(6, self._font_delta + step))
@@ -1072,6 +1087,7 @@ class PDFViewerPanel(QWidget):
         config["reader_font_delta"] = new_delta
         save_config(config)
         self._apply_font_delta_to_cards()
+        self._update_font_btn_tips()
 
     def _apply_font_delta_to_cards(self) -> None:
         anchor = self._capture_viewport_anchor()  # 全卡变高/变矮时保持阅读位置

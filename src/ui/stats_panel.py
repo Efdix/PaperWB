@@ -489,6 +489,20 @@ class PlanPage(QWidget):
             cb.toggled.connect(
                 lambda _c, pid=p["id"]: self._toggle_task(pid, _c))
             row_layout.addWidget(cb, 1)
+            up_btn = QPushButton("↑")
+            up_btn.setObjectName("iconBtn")
+            up_btn.setFixedWidth(26)
+            up_btn.setToolTip("上移任务")
+            up_btn.clicked.connect(
+                lambda _c=False, pid=p["id"]: self._move_task(pid, -1))
+            row_layout.addWidget(up_btn)
+            down_btn = QPushButton("↓")
+            down_btn.setObjectName("iconBtn")
+            down_btn.setFixedWidth(26)
+            down_btn.setToolTip("下移任务")
+            down_btn.clicked.connect(
+                lambda _c=False, pid=p["id"]: self._move_task(pid, 1))
+            row_layout.addWidget(down_btn)
             edit_btn = QPushButton("✎")
             edit_btn.setObjectName("iconBtn")
             edit_btn.setFixedWidth(26)
@@ -506,6 +520,10 @@ class PlanPage(QWidget):
             row_layout.addWidget(del_btn)
             self._list_layout.insertWidget(self._list_layout.count() - 1, row)
             self._task_rows.append((p["id"], cb, del_btn))
+
+    def _move_task(self, plan_id: str, delta: int) -> None:
+        self._tracker.move_plan(self._scope, plan_id, delta)
+        self._refresh()
 
 
 class StatsPanel(QWidget):
@@ -597,9 +615,6 @@ class StatsPanel(QWidget):
         t_title.setObjectName("titleLabel")
         t_header.addWidget(t_title)
         t_header.addStretch()
-        self._streak_label = QLabel()
-        self._streak_label.setObjectName("streakChip")
-        t_header.addWidget(self._streak_label)
         tv.addLayout(t_header)
         self._today_grid = QHBoxLayout()
         self._today_grid.setSpacing(8)
@@ -714,9 +729,7 @@ class StatsPanel(QWidget):
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             cv.addWidget(label)
             self._today_grid.addWidget(cell)
-        streak = self._tracker.streak_days()
-        self._streak_label.setText(f"🔥 连续活跃 {streak} 天")
-
+        # 连续活跃天数不再展示（用户要求隐藏）
         self._heatmap.set_data(
             self._tracker.daily_series(self._field, self._range_days),
             self._field)

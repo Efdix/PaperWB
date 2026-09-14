@@ -698,21 +698,31 @@ class WorkbenchPanel(QWidget):
         return panel
 
     def _build_scout_panel(self) -> QWidget:
-        """右栏巡视面板：方向管理在上，网页追踪居中，巡视结果在下。"""
+        """右栏巡视面板：单张卡片内三个分节（方向在上 · 网页追踪居中 · 结果在下）。
+
+        三个分节共享一张白色卡片、以细分隔线相隔，替代原先三个独立
+        白框叠加的"套娃"观感；分节头为小标题+说明+右侧内联按钮。
+        """
         container = QWidget()
         container.setMinimumWidth(340)
         v = QVBoxLayout(container)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(10)
+        v.setSpacing(0)
+
+        card = QFrame()
+        card.setObjectName("scoutPanel")
+        cv = QVBoxLayout(card)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.setSpacing(0)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setHandleWidth(6)
+        splitter.setHandleWidth(5)
         splitter.setOpaqueResize(False)
         splitter.addWidget(self._build_topic_panel())
         self._watch_panel = WebWatchPanel()
         splitter.addWidget(self._watch_panel)
         splitter.addWidget(self._build_feed_panel())
-        splitter.setSizes([260, 240, 430])
+        splitter.setSizes([270, 250, 430])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 0)
         splitter.setStretchFactor(2, 1)
@@ -720,29 +730,35 @@ class WorkbenchPanel(QWidget):
         splitter.setCollapsible(1, True)
         splitter.setCollapsible(2, False)
         self._scout_splitter = splitter
-        v.addWidget(splitter)
+        cv.addWidget(splitter)
+        v.addWidget(card)
         return container
 
     def _build_topic_panel(self) -> QFrame:
         panel = QFrame()
-        panel.setObjectName("topicPanel")
+        panel.setObjectName("scoutSection")
         v = QVBoxLayout(panel)
-        v.setContentsMargins(16, 14, 14, 12)
+        v.setContentsMargins(14, 12, 12, 10)
         v.setSpacing(8)
 
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(1)
         title = QLabel("定时巡视")
-        title.setObjectName("titleLabel")
-        v.addWidget(title)
-        subtitle = QLabel("按方向周期检索 PubMed · 自动滤除库内已有")
+        title.setObjectName("sectionLabel")
+        title_box.addWidget(title)
+        subtitle = QLabel("按方向周期检索 · 自动滤除库内已有")
         subtitle.setObjectName("subtitleLabel")
         subtitle.setWordWrap(True)
-        v.addWidget(subtitle)
-
+        title_box.addWidget(subtitle)
+        head.addLayout(title_box, 1)
         new_btn = QPushButton("+ 新方向")
-        new_btn.setObjectName("primaryBtn")
+        new_btn.setObjectName("secondaryBtn")
         new_btn.setToolTip("创建一个研究方向，定时检索 PubMed 新文献")
         new_btn.clicked.connect(self._on_new_topic)
-        v.addWidget(new_btn)
+        head.addWidget(new_btn)
+        v.addLayout(head)
 
         self._topic_scroll = QScrollArea()
         self._topic_scroll.setWidgetResizable(True)
@@ -757,13 +773,13 @@ class WorkbenchPanel(QWidget):
 
     def _build_feed_panel(self) -> QFrame:
         panel = QFrame()
-        panel.setObjectName("feedPanel")
+        panel.setObjectName("scoutSection")
         v = QVBoxLayout(panel)
-        v.setContentsMargins(16, 14, 14, 12)
+        v.setContentsMargins(14, 12, 12, 12)
         v.setSpacing(8)
 
         title = QLabel("巡视结果")
-        title.setObjectName("titleLabel")
+        title.setObjectName("sectionLabel")
         v.addWidget(title)
         self._feed_status = QLabel("未运行巡视 · 新文献自动推送至此")
         self._feed_status.setObjectName("subtitleLabel")

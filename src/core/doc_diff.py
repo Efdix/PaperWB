@@ -148,13 +148,17 @@ class DocDiffController:
         - 相邻 delete+insert 合并为 replace
         """
         doc = self._edit.document()
-        n = doc.characterCount()
+        n = doc.characterCount() - 1  # 真实字符数（characterCount 含末尾块分隔符）
         probe = QTextCursor(doc)  # QTextDocument 无 characterFormat，需经 cursor 探测
         deletes: list[tuple[int, int]] = []
         inserts: list[tuple[int, int]] = []
 
         def _fmt_at(pos: int):
+            # charFormat() 返回光标「前一个」字符的格式：必须先选中 pos 处字符，
+            # 否则探测整体左移一位，锚点区间右移，接受修订时漏删首个删除线字符
             probe.setPosition(pos)
+            probe.movePosition(QTextCursor.MoveOperation.NextCharacter,
+                               QTextCursor.MoveMode.KeepAnchor)
             return probe.charFormat()
 
         i = 0

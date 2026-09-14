@@ -23,8 +23,7 @@ QWidget#writingSurface,
 QWidget#libraryPanel,
 QWidget#zoteroPanel,
 QWidget#readerPanel,
-QWidget#chatPanel,
-QWidget#writingSidePanel {
+QWidget#chatPanel {
     background-color: #f5f5f7;
 }
 
@@ -242,6 +241,14 @@ QPushButton#paneToggle:checked {
     background-color: #e8f1ff;
     color: #2463c5;
     border-color: #c5d9ff;
+}
+
+QPushButton#fontBtn {
+    min-width: 42px;
+    padding: 7px 10px;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 1px;
 }
 
 /* ============================== 文本与输入 ============================== */
@@ -632,14 +639,25 @@ QFrame#workspaceHeader {
     border-radius: 12px;
 }
 
-QFrame#topicPanel,
 QFrame#qaPanel,
 QWidget#qaPanel,
-QFrame#aiSearchPanel,
-QFrame#feedPanel {
+QFrame#aiSearchPanel {
     background-color: #ffffff;
     border: 1px solid #e5e5ea;
     border-radius: 14px;
+}
+
+/* 巡视面板：单张卡片承载三个分节，分节本身透明无框 */
+QFrame#scoutPanel {
+    background-color: #ffffff;
+    border: 1px solid #e5e5ea;
+    border-radius: 14px;
+}
+
+QWidget#scoutSection,
+QFrame#scoutSection {
+    background-color: transparent;
+    border: none;
 }
 
 QFrame#topicCard,
@@ -723,16 +741,40 @@ QFrame#writingSideScroll {
     background-color: transparent;
 }
 
-QTabWidget#writingInspectorTabs::pane {
-    border: 1px solid #e5e5ea;
-    border-radius: 10px;
+/* 工具检查器：与编辑器同规格的白色卡片；页签无边框，分组去框留标题 */
+QFrame#writingSidePanel {
     background-color: #ffffff;
+    border: 1px solid #e5e5ea;
+    border-radius: 14px;
+}
+
+QTabWidget#writingInspectorTabs::pane {
+    border: none;
+    background: transparent;
 }
 
 QTabWidget#writingInspectorTabs QTabBar::tab {
-    padding: 7px 10px;
+    padding: 8px 9px;
     margin-right: 2px;
+    font-size: 12px;
+}
+
+QTabWidget#writingInspectorTabs QGroupBox {
+    background-color: transparent;
+    border: none;
+    border-radius: 0;
+    margin-top: 14px;
+    padding: 2px 2px 4px 2px;
+    font-weight: 700;
+}
+
+QTabWidget#writingInspectorTabs QGroupBox::title {
+    left: 2px;
+    padding: 0;
+    color: #6e6e73;
     font-size: 11px;
+    letter-spacing: 1px;
+    background-color: transparent;
 }
 
 /* ============================== 统计工作台 ============================== */

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QScrollArea, QWidget,
     QLabel, QFrame, QPushButton, QTextEdit, QCheckBox, QFileDialog,
@@ -14,15 +16,32 @@ class ReviewDialog(QDialog):
 
     信号:
         review_saved(dict): 用户保存评价时发出，携带最终的评价结果。
+
+    source_path: 从已保存的评价 JSON 打开时传入，用于在状态条标明来源。
     """
 
     review_saved = Signal(dict)
 
-    def __init__(self, result: dict, profile_name: str = "", parent=None):
+    _STATUS_COLORS = {"ok": "#278273", "warn": "#b87835", "error": "#b24f4a"}
+
+    def __init__(self, result: dict, profile_name: str = "", parent=None,
+                 source_path: str | Path | None = None):
         super().__init__(parent)
         self._result = result
         self._profile_name = profile_name
+        self._source_path = Path(source_path) if source_path else None
         self._editors: list[dict] = []  # [{element, checkbox, text_edit}]
+        # 已保存的勾选/编辑状态：构建卡片时按 (category, title) 逐项消费
+        self._pending_saved: list[dict] = []
+        for key, accepted in (("_accepted_items", True), ("_rejected_items", False)):
+            for item in result.get(key) or []:
+                if isinstance(item, dict):
+                    self._pending_saved.append({
+                        "category": item.get("category"),
+                        "title": item.get("title"),
+                        "suggestion": item.get("suggestion", ""),
+                        "accepted": accepted,
+                    })
         self.setWindowTitle("草稿整体评价报告")
         self.resize(640, 750)
         self.setMinimumSize(500, 450)
@@ -33,6 +52,9 @@ class ReviewDialog(QDialog):
             | Qt.WindowType.Window
         )
         self._setup_ui()
+        if self._source_path is not None:
+            self._set_save_status(
+                f"已加载保存的评价：{self._source_path}", "ok", show_dir=True)
 
     # ---- UI 构建 ----
 
@@ -82,6 +104,32 @@ class ReviewDialog(QDialog):
         scroll.setWidget(container)
         layout.addWidget(scroll)
 
+        # 保存状态条（默认隐藏：保存后显示落盘位置，或从已保存文件打开时显示来源）
+        self._save_status_bar = QFrame()
+        self._save_status_bar.setObjectName("saveStatusBar")
+        self._save_status_bar.setStyleSheet(
+            "QFrame#saveStatusBar { background: #eef7f3; border-top: 1px solid #d5e8e0; }"
+        )
+        status_lo = QHBoxLayout(self._save_status_bar)
+        status_lo.setContentsMargins(24, 8, 24, 0)
+        status_lo.setSpacing(8)
+        self._save_status_label = QLabel("")
+        self._save_status_label.setWordWrap(True)
+        self._save_status_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        status_lo.addWidget(self._save_status_label, 1)
+        self._open_dir_btn = QPushButton("\ud83d\udcc2 打开所在文件夹")
+        self._open_dir_btn.setStyleSheet(
+            "QPushButton { background: #e9efed; color: #29434a; "
+            "border-radius: 6px; padding: 4px 10px; font-size: 12px; }"
+            "QPushButton:hover { background: #dcebe7; }"
+        )
+        self._open_dir_btn.clicked.connect(self._open_reviews_dir)
+        self._open_dir_btn.setVisible(False)
+        status_lo.addWidget(self._open_dir_btn)
+        self._save_status_bar.setVisible(False)
+        layout.addWidget(self._save_status_bar)
+
         # 底部按钮
         btn_row = QWidget()
         btn_row.setStyleSheet("background: #f4f1eb;")
@@ -89,14 +137,14 @@ class ReviewDialog(QDialog):
         btn_lo.setContentsMargins(24, 10, 24, 16)
         btn_lo.addStretch()
 
-        cancel_btn = QPushButton("\u53d6\u6d88")
-        cancel_btn.clicked.connect(self.reject)
-        cancel_btn.setStyleSheet(
+        self._cancel_btn = QPushButton("\u53d6\u6d88")
+        self._cancel_btn.clicked.connect(self.reject)
+        self._cancel_btn.setStyleSheet(
             "QPushButton { background: #e9efed; color: #29434a; "
             "border-radius: 7px; padding: 7px 18px; font-size: 13px; }"
             "QPushButton:hover { background: #dcebe7; }"
         )
-        btn_lo.addWidget(cancel_btn)
+        btn_lo.addWidget(self._cancel_btn)
 
         save_btn = QPushButton("\ud83d\udcbe \u4fdd\u5b58\u8bc4\u4ef7")
         save_btn.clicked.connect(self._on_save)
@@ -146,9 +194,25 @@ class ReviewDialog(QDialog):
         )
         return body
 
+    def _take_saved_state(self, category: str, title: str) -> dict | None:
+        """取出与该卡片对应的已保存状态（按 category+title 匹配，取后移除）。"""
+        for i, item in enumerate(self._pending_saved):
+            if item["category"] == category and item["title"] == title:
+                return self._pending_saved.pop(i)
+        return None
+
     def _add_finding_card(self, category: str, title: str, suggestion: str = "",
                           accepted: bool = True) -> None:
-        """添加一个可交互的发现项卡片：复选框 + 标题 + 可编辑建议。"""
+        """添加一个可交互的发现项卡片：复选框 + 标题 + 可编辑建议。
+
+        若存在同 (category, title) 的已保存状态，则恢复其勾选与编辑后的建议。
+        """
+        saved = self._take_saved_state(category, title)
+        if saved is not None:
+            accepted = bool(saved["accepted"])
+            if saved["suggestion"]:
+                suggestion = str(saved["suggestion"])
+
         card = QFrame()
         card.setStyleSheet(
             "QFrame { background: #fffdfa; border: 1px solid #e5e1d9; border-radius: 8px; "
@@ -162,7 +226,6 @@ class ReviewDialog(QDialog):
         top_row = QHBoxLayout()
         top_row.setSpacing(8)
         cb = QCheckBox()
-        cb.setChecked(accepted)
         cb.setStyleSheet(
             "QCheckBox { color: #526b6c; font-size: 12px; }"
             "QCheckBox::indicator { width: 16px; height: 16px; }"
@@ -208,6 +271,8 @@ class ReviewDialog(QDialog):
                     "padding: 4px 6px; font-size: 11px; }"
                 )
 
+        cb.setChecked(accepted)
+        _on_toggle(accepted)  # 初始未采纳的卡片编辑框同步为只读灰底
         cb.toggled.connect(_on_toggle)
 
         self._editors.append({
@@ -447,8 +512,29 @@ class ReviewDialog(QDialog):
 
     # ---- 保存 ----
 
+    def _set_save_status(self, text: str, level: str = "ok",
+                         show_dir: bool = False) -> None:
+        """显示保存状态条（落盘位置 / 未落盘原因）。"""
+        color = self._STATUS_COLORS.get(level, "#526b6c")
+        self._save_status_label.setText(text)
+        self._save_status_label.setStyleSheet(
+            f"QLabel {{ color: {color}; font-size: 12px; background: transparent; }}")
+        self._open_dir_btn.setVisible(show_dir)
+        self._save_status_bar.setVisible(True)
+
+    def _open_reviews_dir(self) -> None:
+        """在系统文件管理器中打开评价存储目录。"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        from ..utils.config import get_reviews_dir
+        target = self._source_path.parent if self._source_path else get_reviews_dir()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+
     def _on_save(self):
-        """收集所有采纳项，构建结构化评价结果，持久化并发出信号。"""
+        """收集所有采纳项，构建结构化评价结果，持久化并发出信号。
+
+        保存后不关闭对话框：用户可继续编辑、再次保存或导出 TXT。
+        """
         review = dict(self._result)  # 浅拷贝
 
         # 收集采纳/忽略状态
@@ -467,14 +553,24 @@ class ReviewDialog(QDialog):
 
         review["_accepted_items"] = accepted_items
         review["_rejected_items"] = rejected_items
+        self._result = review  # 后续导出/再保存使用最新状态
 
         # 持久化
-        if self._profile_name:
+        if not self._profile_name:
+            self._set_save_status(
+                "⚠ 未选择知识库，评价未保存到磁盘（本次结果仅在当前窗口有效）", "warn")
+        else:
             from ..utils.config import save_review
-            save_review(self._profile_name, review)
+            try:
+                path = save_review(self._profile_name, review)
+            except OSError as e:
+                self._set_save_status(f"⚠ 保存失败：{e}", "error")
+            else:
+                self._source_path = Path(path)
+                self._set_save_status(f"✓ 已保存到：{path}", "ok", show_dir=True)
+                self._cancel_btn.setText("关闭")
 
         self.review_saved.emit(review)
-        self.accept()
 
     # ---- 导出 TXT ----
 

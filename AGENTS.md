@@ -56,7 +56,8 @@ src/
 │   ├── reference_match.py # 文献匹配公共口径: DOI/标题归一化（标题保留 CJK 字符，中文文献同样可比对） + 库内查重 + 可选 LLM 批量模糊比对（写作文献补充与巡视共用）
 │   ├── read_marks.py      # 读完标记: 按规范化 PDF 路径存 states/read_marks.json，ReadMarkStore 单例带 changed 信号；阅读工具栏「✓ 标记已读」与左右文献列表 ✓ 前缀共用
 │   ├── unified_writer.py  # 统一润色+引文核查: 证据检索化(按声明检索相关段落) + json_mode + 多层容错 JSON
-│   ├── docx_io.py         # Word(.docx) 读写核心 v2: run 级最小侵入写回（未变段落零改动；变了段落按字符 diff 重组 run，匹配片段按原 rPr 重建）+ 段落 SequenceMatcher 对齐（中间插段不错位，新段继承相邻样式）+ 批注锚点/书签/脚注引用/行内图片/超链接/域指令（fldSimple 与 fldChar 复杂域，Zotero 引用域安全）原位保留 + 可选修订(track changes)写回 w:ins/w:del（author=PaperWB，Word 可逐处接受/拒绝；域结果区/容器内改动退化整段修订）+ 批注解析（段落索引+字符偏移）
+│   ├── doc_diff.py        # 内联 diff 控制器(QTextEdit，DiffDialog 与写作面板修订共用): 渲染删除线/绿底 + 锚点导航/接受拒绝 + 从字符格式重建锚点（**charFormat() 返回光标前一个字符，探测须先选中该字符，否则锚点整体偏移一位 → 接受修订漏删首个删除线字符**）
+│   ├── docx_io.py         # Word(.docx) 读写核心 v2: run 级最小侵入写回（未变段落零改动；变了段落按字符 diff 重组 run，匹配片段按原 rPr 重建）+ 段落 SequenceMatcher 对齐（中间插段不错位，新段继承相邻样式）+ 批注锚点/书签/脚注引用/行内图片/超链接/域指令（fldSimple 与 fldChar 复杂域，Zotero 引用域安全）原位保留 + 可选修订(track changes)写回 w:ins/w:del（author=PaperWB，Word 可逐处接受/拒绝；域结果区/容器内改动退化整段修订）+ 引文标记保护（上标/引用域编号被 AI 改写成 [1] 等纯格式变化时写回零改动还原，citation_key 数字序列口径；protect_citations_in_text 供编辑器侧同口径还原；重建 run 一律用承载 span 自身 rPr，不再继承 last_rpr，防止紧跟上标的普通文字被误染上标）+ 批注解析（段落索引+字符偏移）
 │   ├── writing_coach.py   # 写作教练: 知识库管理/写作习惯分析/期刊格式分析/引用密度分析 + build_*_system_prompt 注入写作类型结构指南（writing_prompts.STRUCTURE_GUIDES）
 │   ├── writing_prompts.py # 四种写作类型的系统提示词（综述=综合而非罗列/展现研究间对话/批判性；论文=IMRaD 时态与统计规范；专利=权利要求与充分公开；软著）+ STRUCTURE_GUIDES 分节结构指南（get_structure_guide）
 │   └── pubmed_searcher.py # PubMed E-utilities 检索客户端（esearch + efetch）；PubMedPaper 统一文献模型(含 source/arxiv_id)
@@ -64,12 +65,13 @@ src/
 │   ├── pdf_viewer.py      # 结构化阅读面板: ParagraphCard 按 element_type 渲染+中英文翻译(标题/摘要/正文/关键词/图表注可译, 多并发+滚动自动翻译)+文字区 I 形光标；Stage1 完成后自动跨页整合；初步整合文献打开时后台 LLM 接缝精修(_refine_prelim_seams)；阅读工具栏：字号 −/＋（内联 px 落地，全局 QSS QWidget{font-size} 会盖掉 setFont）+「✓ 标记已读」+「⛶ 全屏阅读」沉浸模式(fullscreen_toggled 信号驱动主窗口隐藏菜单/顶栏/状态栏/工作台头部/左右面板，Esc/F11/再点退出)；段落卡右键菜单手动拆分/合并
 │   ├── pdf_list_panel.py  # 左侧面板: Tab1 Zotero 只读文献库 + Tab2 其它文献
 │   ├── zotero_panel.py    # Zotero 树形视图: 集合树+文献+PDF附件标记，周期同步/手动刷新驱动刷新
-│   ├── chat_panel.py      # 聊天面板: Markdown 气泡/流式渲染（阅读侧栏「本篇论文」页签）
+│   ├── chat_panel.py      # 聊天面板: Markdown 气泡/流式渲染（标题/欢迎语可定制；阅读侧栏「本篇论文」页签与写作台「讨论」页签共用）
 │   ├── library_qa_panel.py # 库内问答面板(阅读侧栏「全文献库」页签): 索引构建/流式回答+[n]角标/只问库/重建索引/参考文献跳转打开 PDF/「后台建库解析」开关与状态行 + item_key_for_pdf/refresh_engine_item/flush_engine 预解析协作
-│   ├── workbench_panel.py # 检索工作台(两栏): 左·AI 检索主区(自然语言→多源检索+结果卡片+「🕘 检索记录」) / 右·巡视面板(上·方向卡片+定时巡视，中·网页追踪 WebWatchPanel，下·巡视结果/推荐流 卡片+忽略/🚫拉黑/RIS/CSV/黑名单管理)
+│   ├── workbench_panel.py # 检索工作台(两栏): 左·AI 检索主区(自然语言→多源检索+结果卡片+「🕘 检索记录」) / 右·巡视面板(单张卡片三分节·细分隔线：定时巡视 / 网页追踪 WebWatchPanel / 巡视结果，分节头=小标题+说明+右侧内联按钮；卡片+忽略/🚫拉黑/RIS/CSV/黑名单管理)
 │   ├── web_watch_panel.py # 网页追踪面板: WatchEditDialog(名称/URL/关键词/周期/邮件提醒/合规说明) + WatchCard(立即检查/网页↗/编辑/删除/启停) + WebWatchPanel 包装 WebWatchManager；page_updated → 邮件推送（workbench 接线）
 │   ├── search_records_dialogs.py # 检索记录库对话框: BlacklistDialog(黑名单查看/移除/清空，changed 标记供刷新) + SearchHistoryDialog(检索历史)
-│   ├── writing_panel.py   # 写作面板: 编辑器优先+可收起工具检查器(知识库/Zotero/批注/AI)+自动保存+字数统计；AI 辅助：润色核查/仅核查/中译英/补充参考文献/AI 续写(ComposeWorker，从光标前 1500 字上下文续写 1-3 段，只沿用已有引文标记，插入可撤销)/生成大纲(按写作类型结构+知识库风格)；Word 交互：拖拽打开(.docx/.txt/.md, editor eventFilter 拦截)+「最近 ▾」菜单+「另存为」+「在 Word 中打开」(os.startfile)+「修订写回」开关(保存时 w:ins/w:del)+写回前自动备份(docx_backup 保留 20 份)+外部修改 mtime 检测(showEvent 静默提示/保存前询问)+按知识库绑定记忆(切库提示恢复)
+│   ├── writing_panel.py   # 写作面板: 编辑器优先+可收起工具检查器(知识库/Zotero/批注/AI)+自动保存+字数统计；AI 辅助：润色核查/查看已保存评价/仅核查/中译英/补充参考文献/AI 续写(ComposeWorker，从光标前 1500 字上下文续写 1-3 段，只沿用已有引文标记，插入可撤销)/生成大纲(按写作类型结构+知识库风格)，均带状态栏进度条与取消按钮（选中即改的内联润色含「正在修改选中文字…」忙碌条）；「讨论」页签（头按钮「AI 讨论」一键切入）：ChatPanel 流式对话讨论写作方向/章节结构/摘要引言/内容正确性，系统提示注入写作类型结构指南+风格背景+当前草稿（≤8000 字直发，超长首尾截取，可开关），对话内存态、切知识库即清空；AI 润色结果统一过引文标记保护（_protect_citation_rewrap，按绑定 docx 的上标/域标记区间还原 1→[1] 类纯格式改写）；编辑器 Ctrl+滚轮缩放字号（9~28px，Ctrl+0 复位）+↶↷撤销重做按钮；知识库下拉只显示库名全名（统计信息移至 tooltip，弹层按最长库名加宽）；Word 交互：拖拽打开(.docx/.txt/.md, editor eventFilter 拦截)+「最近 ▾」菜单+「另存为」+「在 Word 中打开」(os.startfile)+「修订写回」开关(保存时 w:ins/w:del)+写回前自动备份(docx_backup 保留 20 份)+外部修改 mtime 检测(showEvent 静默提示/保存前询问)+按知识库绑定记忆(切库提示恢复)
+│   ├── review_dialog.py   # 草稿整体评价报告对话框: 逐项勾选/编辑建议；「保存评价」落盘 reviews/<知识库名>.json（覆盖式）且不关闭窗口——状态条显示完整路径 +「打开所在文件夹」；「导出 TXT」自选路径导出原始报告；打开已保存 JSON 时按 (category,title) 恢复勾选与编辑文本
 │   ├── diff_dialog.py     # 润色对比对话框: 内联 diff(单编辑框)+导航栏(上一处/下一处/接受/拒绝)+AI 对话+引用高亮
 │   ├── lit_search_dialog.py # 文献补充对话框: LLM 双轨推荐(已知文献+搜索词)→多源检索(带来源标注)→导出 CSV/加入推荐流（非模态）
 │   ├── settings_dialog.py # 设置对话框: API接口设置(多模态/纯文本/文献检索源-OpenAlex密钥可选,密钥用于三源检索与按库推荐/影响因子-EasyScholar/邮件通知-EmailNotifyTab: SMTP 主机/端口/SSL/授权码/收件人+发送测试邮件 _TestEmailWorker)+连接测试（Zotero/缓存路径在独立 DirectorySettingDialog，与 API 设置平级菜单）
@@ -160,8 +162,9 @@ src/
 ### 写作系统
 
 - **WritingCoach**: 知识库(CRUD)→风格分析(六维度+引用密度)→AI辅助(润色/核查/文献补充)
-- **UnifiedWriter**: 统一润色+引文核查，支持常规模式和仅核查模式(verify_only)；引文证据按声明检索相关段落，不再整篇塞全文
+- **UnifiedWriter**: 统一润色+引文核查，支持常规模式和仅核查模式(verify_only)；引文证据按声明检索相关段落，不再整篇塞全文；提示词明确「期刊引用格式只约束新增引用，已有引文标记（上标/[1]/(Author, Year)）原样保留、禁止增删方括号或改上标」
 - **DiffDialog**: 内联 diff 展示 + 导航工具栏 + 逐项接受/拒绝 + 可编辑 diff + AI 对话（非模态）
+- **ReviewDialog（草稿整体评价）**: 打开 Word 后自动生成（DraftReviewer，注入知识库风格基准 + 本地实测章节统计），逐项勾选/编辑建议；「保存评价」覆盖式写入 `{data_root}/.paperwb/reviews/<知识库名>.json`（`_accepted_items`/`_rejected_items` 供 `format_review_for_polish` 注入「AI 润色与核查」；未选知识库时不落盘并明确提示），**保存后窗口不关闭**——状态条显示完整落盘路径 +「打开所在文件夹」，可继续编辑、再保存或导出 TXT；导出 TXT 为自选路径的原始报告文本（不含勾选/编辑状态）；写作面板「📋 查看已保存评价」随时回看（恢复勾选与编辑文本，可继续编辑/保存/导出）
 - **LitSearchDialog**: 双轨文献推荐——LLM 已知文献 + 多源检索词（非模态），结果可推入推荐流
 - 支持 4 种写作类型: 综述/研究型论文/专利/软著
 - 编辑器自动保存（每30秒）到 `{data_root}/.paperwb/drafts/`
@@ -216,4 +219,4 @@ src/
 - 所有 Python 文件使用 `from __future__ import annotations` 和类型注解
 - 测试数据在 `test/` 目录下（含示例 PDF、写作草稿、缓存快照）
 - 验收脚本: `test/validate_zotero.py`（Zotero 文献两阶段整合验收，`--count` 可调，默认 20，输出 JSON 报告）与 `test/capture_zotero_screenshots.py`（UI 截图验收，`--count` 可调，默认 20，输出 PNG）
-- 自测脚本: `test/selftest_bugfixes.py`（纯逻辑回归）与 `test/selftest_workbench.py`（检索工作台与库内问答核心逻辑：匹配口径/索引/RAG 组装/巡视全链路假 PubMed/OpenAlex 解析与三源路由/检索式 v2 与两轮闭环/按库推荐/UI 离屏构建/两级接缝缓存与后台建库预解析（结构化抽取·prelim/final 状态迁移·队列过滤失败记忆·flush 复用·参考文献修剪）/检索黑名单与记录库/邮件通知框架（配置解析与模板，无网络）/网页追踪（HTML 解析·变更检测·序列化·面板离屏构建）/写作专业化（结构指南·续写与大纲提示词·设置与写作面板离屏构建），无 LLM 无网络）；`test/selftest_ui_features.py`（阅读 UI 新特性回归：热力图自适应几何与月份标签避让、计划任务 edit_plan、「回到今天」按钮仅偏离今天时可见、任务文字自动折行（WrapCheckBox）、卡片提问 Ctrl+Enter（QALineEdit）、阅读字号增减（内联 px 口径 + 钳制）、卡片手动拆分/合并（连字符/中英拼接规则 + structured_document 落盘读回）、读完标记（ReadMarkStore 持久化/信号/路径归一/工具栏联动），QPA offscreen 无 LLM 无网络）；`test/smoke_workbench_app.py`（offscreen 全窗口集成冒烟，读真实配置与 Zotero 库但不调 LLM；设 PAPERWB_DISABLE_PREPARSE=1 跳过后台预解析）
+- 自测脚本: `test/selftest_bugfixes.py`（纯逻辑回归）、`test/selftest_docx_citations.py`（docx 引文标记保护：citation_key 口径/写回普通+修订模式零改动还原/真实改号仍生效/last_rpr 泄漏回归/编辑器侧文本还原，无 LLM 无网络）、`test/selftest_docdiff.py`（内联 diff：渲染/锚点重建/导航/接受拒绝/跨编辑器拷贝，含 charFormat 探测偏移回归）与 `test/selftest_workbench.py`（检索工作台与库内问答核心逻辑：匹配口径/索引/RAG 组装/巡视全链路假 PubMed/OpenAlex 解析与三源路由/检索式 v2 与两轮闭环/按库推荐/UI 离屏构建/两级接缝缓存与后台建库预解析（结构化抽取·prelim/final 状态迁移·队列过滤失败记忆·flush 复用·参考文献修剪）/检索黑名单与记录库/邮件通知框架（配置解析与模板，无网络）/网页追踪（HTML 解析·变更检测·序列化·面板离屏构建）/写作专业化（结构指南·续写与大纲提示词·设置与写作面板离屏构建·草稿评价保存不关窗/状态恢复/落盘路径提示·内联润色进度反馈·修订渲染后接受等于润色文本），无 LLM 无网络）；`test/selftest_ui_features.py`（阅读 UI 新特性回归：热力图自适应几何与月份标签避让、计划任务 edit_plan、「回到今天」按钮仅偏离今天时可见、任务文字自动折行（WrapCheckBox）、卡片提问 Ctrl+Enter（QALineEdit）、阅读字号增减（内联 px 口径 + 钳制）、卡片手动拆分/合并（连字符/中英拼接规则 + structured_document 落盘读回）、读完标记（ReadMarkStore 持久化/信号/路径归一/工具栏联动），QPA offscreen 无 LLM 无网络）；`test/smoke_workbench_app.py`（offscreen 全窗口集成冒烟，读真实配置与 Zotero 库但不调 LLM；设 PAPERWB_DISABLE_PREPARSE=1 跳过后台预解析）

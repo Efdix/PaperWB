@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import difflib
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -60,9 +61,22 @@ class DocxContent:
     comments: list[DocxComment] = field(default_factory=list)
     has_revisions: bool = False                            # 存在修订（track changes）
     path: str = ""
+    # 每段引文标记的精确区间 [(start, end, 文本)]（段内偏移；上标/引用域
+    # 结果中的纯编号）。供润色文本保护定位；写回侧直接从段落 XML 识别。
+    citation_tokens: list[list[tuple[int, int, str]]] = field(default_factory=list)
 
     def to_plain_text(self) -> str:
         return "\n".join(self.paragraphs)
+
+    def all_citation_tokens(self, offset_of_para: list[int] | None = None
+                            ) -> list[tuple[int, int, str]]:
+        """全文档引文标记，换算成全文坐标（offset_of_para 为每段起始偏移）。"""
+        out: list[tuple[int, int, str]] = []
+        for pi, toks in enumerate(self.citation_tokens):
+            base = offset_of_para[pi] if offset_of_para else 0
+            for s, e, t in toks:
+                out.append((base + s, base + e, t))
+        return out
 
 
 def _para_text(p) -> str:
@@ -95,7 +109,7 @@ def _para_style_name(p) -> str:
 
 
 def read_docx(path: str | Path) -> DocxContent:
-    """读取 .docx：段落文本 + 样式名 + 批注 + 修订标记。"""
+    """读取 .docx：段落文本 + 样式名 + 批注 + 修订标记 + 引文标记区间。"""
     path = str(path)
     doc = Document(path)
     content = DocxContent(path=path)
@@ -105,6 +119,24 @@ def read_docx(path: str | Path) -> DocxContent:
         content.styles.append(_para_style_name(p))
         if _para_has_revision(p):
             content.has_revisions = True
+        # 引文标记区间：连续上标/域结果 span 合并后是纯编号的片段
+        toks: list[tuple[int, int, str]] = []
+        idx = _index_paragraph(p)
+        buf_start = -1
+        buf = ""
+        for sp in idx.spans:
+            if sp.superscript or sp.in_field_result:
+                if buf_start < 0:
+                    buf_start = sp.start
+                buf += _run_text(sp.run)
+                continue
+            if buf and citation_key(buf) is not None:
+                toks.append((buf_start, buf_start + len(buf), buf))
+            buf_start = -1
+            buf = ""
+        if buf and citation_key(buf) is not None:
+            toks.append((buf_start, buf_start + len(buf), buf))
+        content.citation_tokens.append(toks)
 
     content.comments = _parse_comments(doc, content.paragraphs)
     return content
@@ -226,6 +258,108 @@ _ANCHOR_CONTENT_TAGS = frozenset({
     qn("w:commentReference"), qn("w:drawing"), qn("w:object"),
 })
 
+# ------------------------------------------------------------------
+# 引文标记保护：Word 文档里的引文编号通常是「上标数字」（手动格式）或
+# Zotero 引用域的域结果。编辑器是纯文本视图，AI 润色常把它改写成
+# "[1]" 之类的方括号样式 —— 写回后上标格式就丢了。这里给出统一口径：
+# 识别"引文样式"片段（上标 run 或域结果区）中的纯编号文本，写回时
+# 数字序列没变的格式改写一律还原为原文（连 run 都不动）。
+# ------------------------------------------------------------------
+_CITE_STRIP_RE = re.compile(r"^[\[\(（〔【]?([0-9]{1,3}(?:\s*[,，;；\-–—]\s*[0-9]{1,3}){0,8})[\]\)）〕】]?$")
+_CITE_CORE_RE = re.compile(r"^[0-9]{1,3}(?:\s*[,，;；\-–—]\s*[0-9]{1,3}){0,8}$")
+
+
+def citation_key(text: str) -> str | None:
+    """把引文标记文本规范化为数字序列键；非引文样式文本返回 None。
+
+    "1" / "[1]" / "6,7" / "[6-9]" / "（10,11）" → "1" / "1" / "6,7" / "6-9" / "10,11"；
+    分隔符统一成半角逗号/连字符，空白剔除。
+    """
+    s = (text or "").strip()
+    if not s or len(s) > 20:
+        return None
+    m = _CITE_STRIP_RE.match(s)
+    core = m.group(1) if m else (_CITE_CORE_RE.match(s).group(0) if _CITE_CORE_RE.match(s) else None)
+    if core is None:
+        return None
+    core = core.replace("，", ",").replace("；", ";").replace("；", ",")
+    core = core.replace(";", ",").replace("–", "-").replace("—", "-")
+    core = re.sub(r"\s*", "", core)
+    parts = [p.strip() for p in core.split(",")]
+    norm: list[str] = []
+    for p in parts:
+        if "-" in p:
+            a, _, b = p.partition("-")
+            if not (a.isdigit() and b.isdigit()):
+                return None
+            norm.append(f"{int(a)}-{int(b)}")
+        elif p.isdigit():
+            norm.append(str(int(p)))
+        else:
+            return None
+    return ",".join(norm)
+
+
+def _rpr_is_superscript(rpr) -> bool:
+    """rPr 是否为上标（w:vertAlign val="superscript"）。"""
+    if rpr is None:
+        return False
+    va = rpr.find(qn("w:vertAlign"))
+    return va is not None and va.get(qn("w:val")) == "superscript"
+
+
+_CITE_WINDOW_MAX_EVENTS = 8   # 格式改写窗口最多跨越的事件数
+_CITE_WINDOW_MAX_CHARS = 40   # 窗口新文本长度上限（防误扫长句）
+
+
+def protect_citations_in_text(original: str, polished: str,
+                              token_spans: list[tuple[int, int, str]]) -> str:
+    """文本级引文保护：撤销 polished 对已知引文标记的纯格式改写。
+
+    token_spans 是 original 坐标系内的引文标记精确区间 [(start, end, 文本)]
+    （来自绑定 docx 的上标/域结果识别）。AI 给上标编号套上方括号（1→[1]）、
+    或把 "[1]" 裸化时，polished 会被还原为原文标记；引文编号真实改动
+    （1→2）、全新的引用不受影响。
+    """
+    if not token_spans or not original or polished == original:
+        return polished
+    sm = difflib.SequenceMatcher(None, original, polished, autojunk=False)
+    ops = sm.get_opcodes()
+    edits: list[tuple[int, int, str]] = []  # (polished起, polished止, 替换文本)
+
+    for ts, te, tok in token_spans:
+        covering = [n for n, op in enumerate(ops) if op[1] < te and op[2] > ts]
+        if not covering:
+            continue
+        n0, n1 = covering[0], covering[-1]
+        # 窗口向外吸收相邻 insert（AI 新插入的配对方括号落在标记两侧）
+        while n0 > 0 and ops[n0 - 1][0] == "insert":
+            n0 -= 1
+        while n1 + 1 < len(ops) and ops[n1 + 1][0] == "insert":
+            n1 += 1
+        first, last = ops[n0], ops[n1]
+        old_combined = original[first[1]:last[2]]
+        new_combined = polished[first[3]:last[4]]
+        if old_combined != tok or new_combined == tok:
+            continue
+        if len(new_combined) <= _CITE_WINDOW_MAX_CHARS \
+                and citation_key(new_combined) == citation_key(tok) \
+                and citation_key(tok) is not None:
+            edits.append((first[3], last[4], tok))
+
+    if not edits:
+        return polished
+    out: list[str] = []
+    pos = 0
+    for a, b, repl in sorted(edits):
+        if a < pos:
+            continue  # 与上一个窗口重叠：放弃这条（保号优先）
+        out.append(polished[pos:a])
+        out.append(repl)
+        pos = b
+    out.append(polished[pos:])
+    return "".join(out)
+
 
 @dataclass
 class _Span:
@@ -237,6 +371,7 @@ class _Span:
     end: int
     rpr: object | None             # run 的字符格式（深拷贝，供重建片段）
     in_field_result: bool = False  # 位于 fldChar separate…end 的域结果区
+    superscript: bool = False      # rPr 为上标（引文编号常见样式）
 
 
 @dataclass
@@ -293,6 +428,7 @@ def _index_paragraph(p) -> _ParaIndex:
                 start=state["offset"], end=state["offset"] + len(text),
                 rpr=deepcopy(rpr) if rpr is not None else None,
                 in_field_result=(state["field"] == 2),
+                superscript=_rpr_is_superscript(rpr),
             ))
             state["offset"] += len(text)
             return
@@ -493,6 +629,90 @@ def _repair_comment_ranges(p_el) -> None:
         p_el.append(e_el)
 
 
+def _window_covering_citation_style(idx: _ParaIndex, pieces: list[list]) -> bool:
+    """窗口内所有旧文本区域是否都被引文样式 span（上标/域结果）完全覆盖。"""
+    regions = [(s, e) for _kind, _sp, s, e, _nf in pieces if e > s]
+    if not regions:
+        return False
+    for s, e in regions:
+        covering = [sp for sp in idx.spans if sp.start < e and sp.end > s]
+        if not covering or covering[0].start > s or covering[-1].end < e:
+            return False
+        if not all(sp.superscript or sp.in_field_result for sp in covering):
+            return False
+    return True
+
+
+def _frags_for_regions(idx: _ParaIndex, pieces: list[list]) -> list[list]:
+    """把窗口的旧文本区域按 span 铺成 frag 事件（原 run 原样保留）。"""
+    frags: list[list] = []
+    for _kind, _sp, s, e, _nf in pieces:
+        if e <= s:
+            continue
+        pos = s
+        while pos < e:
+            sp = _span_at(idx.spans, pos)
+            e2 = min(sp.end, e)
+            frags.append(["frag", sp, pos, e2, ""])
+            pos = e2
+    return frags
+
+
+def _brackets_balanced(s: str) -> bool:
+    """括号是否配平（中英文括号混计；用于判定改写窗口已闭合）。"""
+    opens = sum(s.count(c) for c in "[(（〔【{")
+    closes = sum(s.count(c) for c in "])）〕】}")
+    return opens == closes
+
+
+def _keep_citation_style_events(idx: _ParaIndex,
+                                merged: list[list]) -> list[list]:
+    """把「引文标记格式改写」的事件窗口还原为原样（原 run 零改动）。
+
+    识别两种形态（键 = 数字序列）：
+    - 单个 replace gap：旧 "1" → 新 "[1]"
+    - insert-equal-insert 窗口：equal "1" 两侧插入 "[" 与 "]"
+    判据：窗口旧文本是纯编号、新旧文本规范化后数字序列一致且括号配平
+    （防止 "[1" 处提前命中漏掉闭合括号），旧文本区域全部由上标/域结果
+    span 承载。命中则整个窗口回退为原文——上标引文不会因 AI 加方括号
+    而丢失格式，引用域结果也不会被改写。
+    必须在整段退化判定之前执行，否则域结果区的一处改写会毁掉整段引用域。
+    """
+    n = len(merged)
+    out: list[list] = []
+    i = 0
+    while i < n:
+        ev = merged[i]
+        if ev[0] != "gap":
+            out.append(ev)
+            i += 1
+            continue
+        pieces = [ev]
+        hit = False
+        while True:
+            old_buf = "".join(idx.text[s:e] for _k, _sp, s, e, _nf in pieces)
+            new_buf = "".join(
+                (nf if kind == "gap" else idx.text[s:e])
+                for kind, _sp, s, e, nf in pieces)
+            k_old = citation_key(old_buf)
+            if (k_old is not None and old_buf != new_buf
+                    and citation_key(new_buf) == k_old
+                    and _brackets_balanced(old_buf) and _brackets_balanced(new_buf)
+                    and _window_covering_citation_style(idx, pieces)):
+                out.extend(_frags_for_regions(idx, pieces))
+                i += len(pieces)
+                hit = True
+                break
+            if (i + len(pieces) >= n or len(pieces) >= _CITE_WINDOW_MAX_EVENTS
+                    or len(new_buf) > _CITE_WINDOW_MAX_CHARS):
+                break
+            pieces.append(merged[i + len(pieces)])
+        if not hit:
+            out.append(ev)
+            i += 1
+    return out
+
+
 def _merge_para_text(p, new_text: str, reviser: _Reviser | None,
                      _force: bool = False) -> None:
     """把段落文本合并为 new_text：run 粒度最小侵入。
@@ -524,17 +744,6 @@ def _merge_para_text(p, new_text: str, reviser: _Reviser | None,
     p_el = p._p
     sm = difflib.SequenceMatcher(None, idx.text, new_text, autojunk=False)
 
-    # 修订模式的边界情况：域结果区/容器内的改动退化为整段 del+ins，
-    # 避免 w:del 嵌进超链接等非法结构、或改写引用域结果
-    if reviser is not None:
-        for tag, i1, i2, _j1, _j2 in sm.get_opcodes():
-            if tag in ("delete", "replace"):
-                if any(sp.start < i2 and sp.end > i1
-                       and (sp.in_field_result or sp.container is not None)
-                       for sp in idx.spans):
-                    _replace_para_track(p, new_text, reviser, idx)
-                    return
-
     # ---- 事件化：equal→frag / delete·replace·insert→gap ----
     events: list[list] = []  # [kind, span, s, e, new_frag]
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
@@ -560,6 +769,22 @@ def _merge_para_text(p, new_text: str, reviser: _Reviser | None,
             merged[-1][4] += ev[4]
         else:
             merged.append(ev)
+
+    # 引文标记保护：仅格式改写（1→[1]）的数字序列视为未变，原 run 不动。
+    merged = _keep_citation_style_events(idx, merged)
+
+    # 修订模式的边界情况：域结果区/容器内的改动退化为整段 del+ins，
+    # 避免 w:del 嵌进超链接等非法结构、或改写引用域结果
+    if reviser is not None:
+        for ev in merged:
+            s, e = ev[2], ev[3]
+            if e <= s:
+                continue
+            if any(sp.start < e and sp.end > s
+                   and (sp.in_field_result or sp.container is not None)
+                   for sp in idx.spans):
+                _replace_para_track(p, new_text, reviser, idx)
+                return
 
     # 整段覆盖且未被切分的 span → 原样保留（零改动）
     frag_count: dict[int, list] = {}
@@ -609,9 +834,11 @@ def _merge_para_text(p, new_text: str, reviser: _Reviser | None,
             first_moved.append(el)
 
     for kind, sp, s, e, nf in ops:
+        # 一律以承载 span 自身的 rPr 重建：frag/orig 保持原片段格式，
+        # gap（删除区替换/插入点延续）取 hint span 的格式（替换谁就像谁、
+        # 插在前一个 run 后就延续谁）。不再回退 last_rpr —— 否则紧跟
+        # 上标引文的普通文字会被误染成上标。
         rpr = sp.rpr if sp is not None else None
-        if rpr is None:
-            rpr = last_rpr
         if kind == "orig":
             del_open = None
             last_was_del = False

@@ -710,10 +710,11 @@ def get_reviews_dir() -> Path:
     return d
 
 
-def save_review(profile_name: str, review: dict) -> None:
-    """保存整体评价结果（覆盖式）。"""
+def save_review(profile_name: str, review: dict) -> Path:
+    """保存整体评价结果（覆盖式），返回落盘文件路径。"""
     f = get_reviews_dir() / f"{profile_name}.json"
     f.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+    return f
 
 
 def load_review(profile_name: str) -> dict | None:

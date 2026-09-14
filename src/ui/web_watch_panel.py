@@ -235,7 +235,7 @@ class WebWatchPanel(QWidget):
 
     def __init__(self, parent=None, watch_dir=None):
         super().__init__(parent)
-        self.setObjectName("topicPanel")
+        self.setObjectName("scoutSection")
         self._manager = WebWatchManager(self, watch_dir)
         self._manager.pages_changed.connect(self._on_pages_changed)
         self._manager.pages_changed.connect(self.pages_changed)
@@ -245,23 +245,28 @@ class WebWatchPanel(QWidget):
         self._running: set[str] = set()
 
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 14, 14, 12)
+        v.setContentsMargins(14, 12, 12, 10)
         v.setSpacing(8)
 
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(1)
         title = QLabel("网页追踪")
-        title.setObjectName("titleLabel")
-        v.addWidget(title)
+        title.setObjectName("sectionLabel")
+        title_box.addWidget(title)
         subtitle = QLabel(
-            "定时检查公开网页（如机构主页通知）· 发现新内容可邮件提醒 · 遵守 robots.txt")
+            "定时检查公开网页（如机构主页通知）· 可邮件提醒 · 遵守 robots.txt")
         subtitle.setObjectName("subtitleLabel")
         subtitle.setWordWrap(True)
-        v.addWidget(subtitle)
-
+        title_box.addWidget(subtitle)
+        head.addLayout(title_box, 1)
         new_btn = QPushButton("+ 监控网页")
-        new_btn.setObjectName("primaryBtn")
+        new_btn.setObjectName("secondaryBtn")
         new_btn.setToolTip("添加一个公开网页（如 https://kiz.cas.cn/）作为监控目标")
         new_btn.clicked.connect(self._on_new_page)
-        v.addWidget(new_btn)
+        head.addWidget(new_btn)
+        v.addLayout(head)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)

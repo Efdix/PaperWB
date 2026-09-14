@@ -135,16 +135,17 @@ class ChatPanel(QWidget):
     send_message = Signal(str)       # 用户发送消息
     clear_requested = Signal()       # 请求清空对话
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, title: str = "论文问答",
+                 welcome: str | None = None):
         super().__init__(parent)
         self.setObjectName("chatPanel")
         self._bubbles: list[ChatBubble] = []
         self._current_ai_bubble: ChatBubble | None = None
         self._input_enabled = False
         self._busy = False
-        self._setup_ui()
+        self._setup_ui(title, welcome)
 
-    def _setup_ui(self):
+    def _setup_ui(self, title_text: str, welcome: str | None):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -153,7 +154,7 @@ class ChatPanel(QWidget):
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(12, 8, 12, 8)
 
-        title = QLabel("论文问答")
+        title = QLabel(title_text)
         title.setObjectName("titleLabel")
         toolbar.addWidget(title)
 
@@ -194,12 +195,12 @@ class ChatPanel(QWidget):
         self.msg_layout.addStretch()
 
         # 欢迎消息
-        welcome = QLabel(
+        welcome = QLabel(welcome or (
             "欢迎来到论文问答\n\n"
             "先从左侧 Zotero 文献库或其它文献中选择一篇 PDF，再在下方提出问题。\n"
             "AI 会基于当前论文内容回答，并保留你的对话记录。\n\n"
             "提示：首次使用请先在设置中配置阅读接口。"
-        )
+        ))
         welcome.setWordWrap(True)
         welcome.setStyleSheet(
             "color: #6e6e73; background-color: #f5f8ff; border: 1px solid #d9e5ff; "
