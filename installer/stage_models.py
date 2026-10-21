@@ -44,6 +44,48 @@ REQUIRED: dict[str, list[str]] = {
     ],
 }
 
+# 只检查“文件存在”会把空文件/半下载缓存打进安装包。阈值远低于真实体积
+# （heron ~164 MB、TableFormer accurate ~203 MB / fast ~80 MB），只拦明显
+# 损坏或空目录，不因上游小版本变化误报。
+MIN_BYTES: dict[str, dict[str, int]] = {
+    "models--docling-project--docling-layout-heron": {
+        os.path.join("model.safetensors"): 50 * 1024 * 1024,
+    },
+    "models--docling-project--docling-models": {
+        os.path.join("model_artifacts", "tableformer", "accurate"): 50 * 1024 * 1024,
+        os.path.join("model_artifacts", "tableformer", "fast"): 10 * 1024 * 1024,
+    },
+}
+
+
+def _path_bytes(path: Path) -> int:
+    if path.is_file():
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+    total = 0
+    if path.is_dir():
+        for root, _dirs, files in os.walk(path):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+    return total
+
+
+def _check_required(snap: Path, repo: str) -> str:
+    """校验快照含关键文件且体积合理；返回空串表示通过，否则返回原因。"""
+    for rel in REQUIRED[repo]:
+        p = snap / rel
+        if not p.exists():
+            return f"缺少 {rel}"
+        need = MIN_BYTES.get(repo, {}).get(rel, 1)
+        if _path_bytes(p) < need:
+            return f"{rel} 体积异常（{_path_bytes(p)} < {need}）"
+    return ""
+
 # docling 运行时按 revision 请求模型仓（离线模式下 huggingface_hub 靠 refs/<revision>
 # 解析到快照，缺 ref 即抛 LocalEntryNotFoundError）。prewarm 下载通常只写 refs/main，
 # 这里兜底正则提取已安装 docling 源码里的钉扎 revision；提取失败回退此表。
@@ -107,19 +149,23 @@ def _dir_size_mb(path: Path) -> float:
     return total / 1024 / 1024
 
 
-def _validate_repo(repo_dir: Path, required: list[str]) -> str:
+def _validate_repo(repo_dir: Path) -> str:
     """校验某个模型仓库缓存是否含带关键文件的快照，返回该快照路径（失败抛异常）。"""
     snaps = repo_dir / "snapshots"
     if not snaps.is_dir():
         raise FileNotFoundError(f"缺少 snapshots 目录: {repo_dir}")
+    reasons: list[str] = []
     for snap in sorted(snaps.iterdir()):
         if not snap.is_dir():
             continue
-        if all((snap / rel).exists() for rel in required):
+        reason = _check_required(snap, repo_dir.name)
+        if not reason:
             return str(snap)
+        reasons.append(f"{snap.name[:12]}: {reason}")
     raise FileNotFoundError(
-        f"{repo_dir.name} 的所有快照均缺关键文件 {required}。\n"
-        f"请先在本机启动 PaperWB 并解析任意 PDF 一次以预热模型缓存，再重跑本脚本。"
+        f"{repo_dir.name} 的所有快照均缺关键文件或体积异常：\n  "
+        + "\n  ".join(reasons[:4])
+        + "\n请先在本机启动 PaperWB 并解析任意 PDF 一次以预热模型缓存，再重跑本脚本。"
     )
 
 
@@ -141,7 +187,7 @@ def stage(dest_root: Path) -> int:
                   file=sys.stderr)
             return 1
         try:
-            snap = _validate_repo(src, required)
+            snap = _validate_repo(src)
         except FileNotFoundError as e:
             print(f"[FAIL] {e}", file=sys.stderr)
             return 1
@@ -188,6 +234,10 @@ def stage(dest_root: Path) -> int:
             p.read_text(encoding="utf-8").strip()
             for p in refs_dir.iterdir() if p.is_file()
         }
+        if not referenced:
+            print(f"[FAIL] {repo} 的 refs 为空，无法确定运行时快照；"
+                  "拒绝裁剪以免打出空模型包", file=sys.stderr)
+            return 1
         snaps_dir = dst / "snapshots"
         if snaps_dir.is_dir():
             for snap in snaps_dir.iterdir():
@@ -203,11 +253,9 @@ def stage(dest_root: Path) -> int:
             if not ref.is_file():
                 continue
             target = snaps_dir / ref.read_text(encoding="utf-8").strip()
-            if not target.is_dir() or not all(
-                (target / rel).exists() for rel in REQUIRED[repo]
-            ):
-                print(f"[FAIL] ref {ref.name} → 快照缺失或缺关键文件 {REQUIRED[repo]}",
-                      file=sys.stderr)
+            reason = _check_required(target, repo) if target.is_dir() else "快照目录不存在"
+            if reason:
+                print(f"[FAIL] ref {ref.name} → {reason}", file=sys.stderr)
                 return 1
 
         mb = _dir_size_mb(dst)

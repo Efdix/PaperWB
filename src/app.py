@@ -9,12 +9,15 @@ import uuid
 import weakref
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal as QtSignal
+from PySide6.QtCore import (
+    QByteArray, QObject, Qt, QThread, QTimer, Signal as QtSignal,
+)
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton,
-    QSplitter, QStatusBar, QTabWidget, QToolButton, QVBoxLayout, QWidget, QFrame,
+    QSizePolicy, QSplitter, QStatusBar, QTabWidget, QToolButton, QVBoxLayout,
+    QWidget, QFrame,
 )
 
 from .core.context_manager import ContextManager
@@ -39,8 +42,8 @@ from .ui.styles import STYLESHEET
 from .utils.config import (
     _default_data_root, _get_data_root,
     delete_chat_history, get_text_api, get_update_config, get_vision_api,
-    has_data_root, load_chat_history, load_config, save_chat_history,
-    save_config, set_update_last_check,
+    get_window_geometry, has_data_root, load_chat_history, load_config,
+    save_chat_history, save_config, set_update_last_check, set_window_geometry,
 )
 from .utils.threads import track
 from .utils.version import current_version
@@ -184,6 +187,38 @@ class LLMWorker(QThread):
             self.error.emit(str(e))
         finally:
             self.done.emit()
+
+
+class _ChipLabel(QLabel):
+    """接口状态胶囊：宽度受限时省略，而不是把整条应用栏撑爆。
+
+    QLabel 默认按完整文本参与最小宽度计算；模型名带日期后缀时会挤走
+    导航/设置按钮。这里保存全文用于 tooltip，显示文本按实际宽度 elide。
+    """
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full = text
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(70)
+        self.setMaximumWidth(210)
+        self.setToolTip(text)
+        self._apply_elide()
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._apply_elide()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_elide()
+
+    def _apply_elide(self) -> None:
+        width = max(20, self.width() - 16)
+        self.setText(self.fontMetrics().elidedText(
+            self._full, Qt.TextElideMode.ElideRight, width))
 
 
 class FirstLaunchDialog(QDialog):
@@ -333,6 +368,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._apply_styles()
         self._apply_accessible_names()
+        self._restore_window_state()
         self._init_all_clients()
         self._init_stats()
         # Zotero 启动加载会复制整个 sqlite 并逐条查询，放在构造期会让窗口
@@ -723,10 +759,10 @@ class MainWindow(QMainWindow):
         header_layout.addStretch()
 
         # 接口状态：只留两个圆点式小胶囊，鼠标悬停看完整模型名
-        self._status_vision_label = QLabel("多模态：未配置")
+        self._status_vision_label = _ChipLabel("多模态：未配置")
         self._status_vision_label.setObjectName("modelChip")
         header_layout.addWidget(self._status_vision_label)
-        self._status_text_label = QLabel("纯文本：未配置")
+        self._status_text_label = _ChipLabel("纯文本：未配置")
         self._status_text_label.setObjectName("modelChip")
         header_layout.addWidget(self._status_text_label)
 
@@ -917,6 +953,25 @@ class MainWindow(QMainWindow):
                 btn.setAccessibleName(tip or text)
             if tip:
                 btn.setAccessibleDescription(tip)
+
+    def _restore_window_state(self) -> None:
+        """恢复上次窗口大小/位置；首次启动时按屏幕可用区域收敛默认尺寸。"""
+        encoded = get_window_geometry()
+        if encoded:
+            try:
+                if self.restoreGeometry(QByteArray.fromBase64(encoded.encode("ascii"))):
+                    return
+            except (ValueError, UnicodeEncodeError):
+                pass
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        w = max(1024, min(1440, avail.width() - 40))
+        h = max(680, min(900, avail.height() - 60))
+        self.resize(w, h)
+        self.move(avail.x() + max(0, (avail.width() - w) // 2),
+                  avail.y() + max(0, (avail.height() - h) // 2))
 
     def _start_docling_warmup(self) -> None:
         """界面显示后再后台预热，避免拖慢窗口创建过程。
@@ -1512,6 +1567,14 @@ class MainWindow(QMainWindow):
                 break
             QApplication.processEvents()
             time.sleep(0.1)
+        # 测试/离屏运行不应把窗口尺寸写进真实配置
+        if (os.environ.get("QT_QPA_PLATFORM", "").lower() != "offscreen"
+                and not os.environ.get("PAPERWB_DISABLE_GEOMETRY")):
+            try:
+                set_window_geometry(
+                    bytes(self.saveGeometry().toBase64()).decode("ascii"))
+            except (OSError, ValueError, UnicodeDecodeError):
+                pass
         super().closeEvent(event)
 
     def _init_all_clients(self) -> None:
@@ -1537,7 +1600,10 @@ class MainWindow(QMainWindow):
             return f"{prefix}: 未配置"
 
         def _set_chip(label: QLabel, client: LLMClient | None, text: str) -> None:
-            label.setText(text)
+            if isinstance(label, _ChipLabel):
+                label.set_full_text(text)
+            else:
+                label.setText(text)
             label.setProperty("status", "ready" if client else "warning")
             label.style().unpolish(label)
             label.style().polish(label)

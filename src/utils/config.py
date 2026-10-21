@@ -453,6 +453,19 @@ def save_config(config: dict) -> None:
     atomic_write_json(cf, config)
 
 
+# ---- 窗口几何（记住用户调整过的大小/位置） ----
+
+def get_window_geometry() -> str:
+    return str(load_config().get("window_geometry", "") or "")
+
+
+def set_window_geometry(encoded: str) -> None:
+    """只改 window_geometry 键，避免覆盖期间别处写入的配置。"""
+    cfg = load_config()
+    cfg["window_geometry"] = str(encoded or "")
+    save_config(cfg)
+
+
 # ---- 自定义写作类型 ----
 
 def get_custom_writing_types() -> dict:
