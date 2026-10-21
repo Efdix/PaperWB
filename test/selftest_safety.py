@@ -193,6 +193,20 @@ def test_paper_identity() -> None:
           f"{paper_key(c)} / {paper_key(d)}")
 
 
+def test_state_meta() -> None:
+    from src.utils.config import _state_meta
+    meta = _state_meta({
+        "doc_format": "fast", "fast_version": 10, "pdf_size": 1,
+        "pdf_mtime_ns": 2, "seams_final": True,
+        "structured_document": {"display_elements": [{"text": "x" * 1000}]},
+    })
+    check("状态摘要含版本与指纹",
+          meta["doc_format"] == "fast" and meta["pdf_size"] == 1
+          and meta["has_structured_document"] is True)
+    check("状态摘要不携带正文", "structured_document" not in meta
+          and "display_elements" not in str(meta))
+
+
 def test_context_and_manifest() -> None:
     from src.core.context_manager import ContextManager
     from src.core.pdf_processor import PageManifest
@@ -215,7 +229,7 @@ def test_context_and_manifest() -> None:
 def main() -> int:
     for fn in (test_atomic, test_profile_names, test_kb_copy, test_zip_slip,
                test_docx_atomic, test_doc_id_migration, test_paper_identity,
-               test_context_and_manifest):
+               test_state_meta, test_context_and_manifest):
         print(f"\n--- {fn.__name__} ---")
         fn()
     print(f"\n{COUNT - len(FAILS)} passed, {len(FAILS)} failed")

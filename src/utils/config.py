@@ -689,16 +689,50 @@ def load_doc_state(file_path: str) -> dict:
     return {}
 
 
+_STATE_META_KEYS = (
+    "doc_format", "fast_version", "pdf_mtime", "pdf_size", "pdf_mtime_ns",
+    "seams_final",
+)
+
+
+def _state_meta(state: dict) -> dict:
+    meta = {k: state.get(k) for k in _STATE_META_KEYS if k in state}
+    meta["has_structured_document"] = bool(state.get("structured_document"))
+    return meta
+
+
 def save_doc_state(file_path: str, state: dict) -> None:
     atomic_write_json(_doc_file(get_states_dir(), file_path), state)
+    # 轻量 sidecar：建库队列/列表徽标只需几个字段，不能为比较版本去解析
+    # 整份含 structured_document 的 state（数百 KB 到数 MB）。
+    try:
+        atomic_write_json(
+            _doc_file(get_states_dir(), file_path, ".meta.json"),
+            _state_meta(state), indent=None, fsync=False)
+    except OSError:
+        pass
+
+
+def load_doc_state_meta(file_path: str) -> dict:
+    """读状态摘要；旧缓存没有 sidecar 时回退解析一次完整 state。"""
+    f = _doc_file(get_states_dir(), file_path, ".meta.json")
+    if f.exists():
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            backup_corrupt_file(f)
+    state = load_doc_state(file_path)
+    return _state_meta(state) if state else {}
 
 
 def delete_doc_state(file_path: str) -> None:
-    for f in _doc_paths(get_states_dir(), file_path):
-        try:
-            f.unlink(missing_ok=True)
-        except OSError:
-            pass
+    for suffix in (".json", ".meta.json"):
+        for f in _doc_paths(get_states_dir(), file_path, suffix):
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 # ========== 逐页解析缓存（Stage 1） ==========

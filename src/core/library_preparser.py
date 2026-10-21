@@ -23,7 +23,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from ..utils.atomic import atomic_write_json, backup_corrupt_file
 
 from .pdf_processor import FAST_DOCUMENT_VERSION, PDFProcessor
-from ..utils.config import get_lib_index_dir, load_doc_state
+from ..utils.config import get_lib_index_dir, load_doc_state_meta
 
 PREPARSE_STATE_VERSION = 1
 BETWEEN_DOCS_MS = 1500   # 篇间小憩：降低后台建库对交互的影响
@@ -38,12 +38,14 @@ def doc_state_is_parsed(pdf_path: str) -> bool:
     同一份缓存，谁先解析过另一边就不必再来一遍。
     """
     try:
-        state = load_doc_state(pdf_path)
+        # 只读 sidecar 摘要：不能为了判断“是否已解析”去解析整份
+        # structured_document（大库启动时会在主线程逐篇读几 MB JSON）。
+        state = load_doc_state_meta(pdf_path)
     except Exception:  # noqa: BLE001
         return False
     if state.get("doc_format") != "fast":
         return False
-    if not state.get("structured_document"):
+    if not state.get("has_structured_document"):
         return False
     try:
         if int(state.get("fast_version", 0) or 0) != FAST_DOCUMENT_VERSION:

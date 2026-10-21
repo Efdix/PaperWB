@@ -18,7 +18,7 @@ from PySide6.QtGui import QBrush, QColor, QDragEnterEvent, QDropEvent
 from ..utils.config import (
     load_config, save_config, load_library, save_library,
     add_pdf_to_library, get_library_folders,
-    load_doc_state, get_library_dir,
+    load_doc_state_meta, get_library_dir,
 )
 from ..utils.files import open_file_location
 from ..core import read_marks
@@ -181,12 +181,12 @@ class PDFListPanel(QWidget):
 
     @staticmethod
     def _is_integrated(path: str) -> bool:
-        """是否有跨页整合结果（structured_document 缓存）。"""
+        """是否有跨页整合结果（只读 sidecar 摘要，不解析整份文档）。"""
         try:
-            state = load_doc_state(path)
+            meta = load_doc_state_meta(path)
         except Exception:
             return False
-        return isinstance(state, dict) and bool(state.get("structured_document"))
+        return bool(meta.get("has_structured_document"))
 
     def _apply_integrated_badge(self, item: QTreeWidgetItem, path: str) -> None:
         if path and self._is_integrated(path):
