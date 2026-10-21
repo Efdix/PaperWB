@@ -324,7 +324,7 @@ def _run_selftest() -> int:
         except Exception as e:  # noqa: BLE001
             _fail("docling-parse", _exc_chain(e))
     elif pdf_arg:
-        _fail(f"docling-skip(pdf not found: {pdf_arg})")
+        _fail("docling-skip", f"pdf not found: {pdf_arg}")
 
     all_ok = True
     lines = []

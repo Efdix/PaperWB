@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .llm_client import LLMClient
+    from .retriever import Bm25Retriever
     from .zotero_parser import ZoteroLibrary
     from .writing_coach import WritingCoach
 
@@ -208,7 +209,7 @@ class UnifiedWriter:
     def __init__(self) -> None:
         # PDF 段落索引缓存（按 pdf_path），避免同一文献多次重复建索引；
         # 值为 (pdf_mtime, retriever)：文件 mtime 变化即重建，防止替换 PDF 后用旧索引核查
-        self._pdf_indexes: dict[str, tuple[float, object]] = {}
+        self._pdf_indexes: dict[str, tuple[float, "Bm25Retriever"]] = {}
 
     @staticmethod
     def _sentence_around(text: str, marker: str, max_prefix: int = 200) -> str:

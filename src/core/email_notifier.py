@@ -75,7 +75,7 @@ def send_notification_email(cfg: EmailConfig, subject: str, body: str) -> tuple[
         return False, "邮件通知未配置或未启用"
     sender_addr = cfg.sender or cfg.username
     msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = Header(subject, "utf-8")
+    msg["Subject"] = Header(subject, "utf-8")  # type: ignore[index]
     msg["From"] = formataddr((str(Header("PaperWB", "utf-8")), sender_addr))
     msg["To"] = ", ".join(cfg.recipients)
     msg["Date"] = formatdate(localtime=True)

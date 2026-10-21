@@ -185,7 +185,9 @@ def delete_snapshot(page_id: str, watch_dir: str | Path | None = None) -> None:
 # 抓取与解析（合规：robots.txt + 自标识 UA + 单请求低频）
 # ============================================================
 
-_robots_cache: dict[str, tuple[float, urllib.robotparser.RobotFileParser | None]] = {}
+_robots_cache: dict[
+    str, tuple[float, "urllib.robotparser.RobotFileParser | _RobotsUnreachable | None"]
+] = {}
 
 
 class RobotsDisallowed(RuntimeError):

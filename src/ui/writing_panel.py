@@ -1126,22 +1126,22 @@ class WritingPanel(QWidget):
         self._rev_prev_btn = QPushButton("◀ 上一处")
         self._rev_prev_btn.setObjectName("secondaryBtn")
         self._rev_prev_btn.setToolTip("跳转到上一处 AI 修改")
-        self._rev_prev_btn.clicked.connect(lambda: self._rev_controller.navigate(-1))
+        self._rev_prev_btn.clicked.connect(lambda: self._rev_navigate(-1))
         review_layout.addWidget(self._rev_prev_btn)
         self._rev_next_btn = QPushButton("下一处 ▶")
         self._rev_next_btn.setObjectName("secondaryBtn")
         self._rev_next_btn.setToolTip("跳转到下一处 AI 修改")
-        self._rev_next_btn.clicked.connect(lambda: self._rev_controller.navigate(1))
+        self._rev_next_btn.clicked.connect(lambda: self._rev_navigate(1))
         review_layout.addWidget(self._rev_next_btn)
         self._rev_accept_btn = QPushButton("✅ 接受")
         self._rev_accept_btn.setObjectName("successBtn")
         self._rev_accept_btn.setToolTip("接受当前修改")
-        self._rev_accept_btn.clicked.connect(lambda: self._rev_controller.apply_change(True))
+        self._rev_accept_btn.clicked.connect(lambda: self._rev_apply_change(True))
         review_layout.addWidget(self._rev_accept_btn)
         self._rev_reject_btn = QPushButton("❌ 拒绝")
         self._rev_reject_btn.setObjectName("dangerBtn")
         self._rev_reject_btn.setToolTip("拒绝当前修改")
-        self._rev_reject_btn.clicked.connect(lambda: self._rev_controller.apply_change(False))
+        self._rev_reject_btn.clicked.connect(lambda: self._rev_apply_change(False))
         review_layout.addWidget(self._rev_reject_btn)
         self._rev_accept_all_btn = QPushButton("全部接受")
         self._rev_accept_all_btn.setObjectName("secondaryBtn")
@@ -2337,6 +2337,14 @@ class WritingPanel(QWidget):
 
     # ================= AI 修订（人机双写） =================
 
+    def _rev_navigate(self, delta: int) -> None:
+        if self._rev_controller is not None:
+            self._rev_controller.navigate(delta)
+
+    def _rev_apply_change(self, accept: bool) -> None:
+        if self._rev_controller is not None:
+            self._rev_controller.apply_change(accept)
+
     def _schedule_rev_recompute(self) -> None:
         if self._rev_controller is not None:
             self._rev_recompute_timer.start(120)
@@ -2556,7 +2564,10 @@ class WritingPanel(QWidget):
             if start < 0:
                 start = len(plain)
             end = start + len(original)
-        self._rev_controller._skip_recompute = True
+        ctrl = self._rev_controller
+        if ctrl is None:
+            return
+        ctrl._skip_recompute = True
         self.editor.blockSignals(True)
         try:
             # 先删除原选区，再在光标处插入 diff 渲染文本。
@@ -2574,10 +2585,10 @@ class WritingPanel(QWidget):
             self._copy_doc_into(tmp_edit.document(), insert_cursor, start)
         finally:
             self.editor.blockSignals(False)
-            self._rev_controller._skip_recompute = False
+            ctrl._skip_recompute = False
         self._on_editor_text_changed()
         self._on_ai_highlight_schedule()
-        self._rev_controller.recompute_anchors()
+        ctrl.recompute_anchors()
 
     def _copy_doc_into(self, src_doc: QTextDocument, cursor: QTextCursor, base: int):
         """把 src_doc 的带格式内容插入到 cursor 位置。"""
@@ -2613,12 +2624,13 @@ class WritingPanel(QWidget):
             return
         self._ai_bar_anchor = (cursor.selectionStart(), cursor.selectionEnd())
         if self._ai_bar is None:
-            self._ai_bar = QFrame(self.editor.viewport())
-            self._ai_bar.setStyleSheet(
+            bar = QFrame(self.editor.viewport())
+            self._ai_bar = bar
+            bar.setStyleSheet(
                 "QFrame { background-color: #ffffff; border: 1px solid #cfe5dd; "
                 "border-radius: 8px; }"
             )
-            lay = QHBoxLayout(self._ai_bar)
+            lay = QHBoxLayout(bar)
             lay.setContentsMargins(6, 4, 6, 4)
             lay.setSpacing(4)
             for label, tip in (("润色", "润色语言并核查引文"),
@@ -3186,8 +3198,12 @@ class WritingPanel(QWidget):
             self._progress_bar.setFormat("AI 正在解析草稿中的引文...")
             self._status_label.setText("重试解析草稿中的引文...")
             QApplication.processEvents()
+            client = self._text_client
+            if client is None:
+                self._end_ai_busy()
+                return
             self._citation_worker = CitationExtractWorker(
-                self._text_client, text, self._count_citation_markers(text)
+                client, text, self._count_citation_markers(text)
             )
             track(self._citation_worker)
             self._citation_worker.finished_signal.connect(
@@ -3267,6 +3283,11 @@ class WritingPanel(QWidget):
     def _start_polish_worker(self, text: str, pre_citation_sources: str,
                              review_findings: str = "", mode: str = "polish"):
         """启动润色 worker（统一入口）。"""
+        client = self._text_client
+        if client is None:
+            self._status_label.setText("未配置写作 API，无法执行润色")
+            self._end_ai_busy()
+            return
         if mode == "cn2en":
             fmt = "正在中译英..."
         else:
@@ -3278,7 +3299,7 @@ class WritingPanel(QWidget):
         QApplication.processEvents()
 
         self._unified_worker = UnifiedWorker(
-            self._text_client, text, self._coach, self._zotero,
+            client, text, self._coach, self._zotero,
             self._current_writing_type, pre_citation_sources,
             review_findings=review_findings,
             verify_only=self._verify_only,

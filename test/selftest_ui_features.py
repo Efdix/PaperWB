@@ -175,6 +175,25 @@ panel._structured_doc = doc
 panel._render_document(doc)
 check("拆分合并：渲染出 3 张卡片", len(panel._cards) == 3)
 
+# 分批渲染：70 个元素先出首批，事件循环推进后补齐
+_big_doc = StructuredDocument(title="Big Paper")
+_big_doc.display_elements = [
+    StructuredElement(element_type="body", text=f"Paragraph {i}.", page=1,
+                      element_id=f"big_{i}")
+    for i in range(70)
+]
+_big_panel = PDFViewerPanel()
+_big_panel._current_path = ""
+_big_panel._render_document(_big_doc)
+check("分批渲染：先让出事件循环", len(_big_panel._cards) == 0)
+app.processEvents()
+check("分批渲染：首批卡片出现且未建完", 0 < len(_big_panel._cards) < 70)
+for _ in range(30):
+    app.processEvents()
+    if _big_panel._render_doc is None:
+        break
+check("分批渲染：最终卡片齐全", len(_big_panel._cards) == 70)
+
 card0 = panel._cards[0]
 check("拆分合并：普通正文卡可定位元素下标", panel._elem_index(card0) == 0)
 check("拆分合并：caption 卡可定位", panel._elem_index(panel._cards[2]) == 2)

@@ -201,6 +201,9 @@ class DocDiffController:
                 anchors.append((d[0], d[1], "delete"))
                 d_idx += 1
             else:
+                # 循环条件保证 deletes/inserts 至少有一个未消费；走到这里
+                # 必然是 insert 先于 delete（或 delete 已耗尽）。
+                assert ins is not None
                 anchors.append((ins[0], ins[1], "insert"))
                 ins_idx += 1
 

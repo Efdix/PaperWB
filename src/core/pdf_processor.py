@@ -563,7 +563,7 @@ def _guess_title_fallback(page_data: list[dict]) -> str:
         if _is_running_head(text):
             continue
         try:
-            b = e.get("bbox") or ()
+            b = e.get("bbox") or (0, 0, 0, 0)
             y_center = (float(b[1]) + float(b[3])) / 2.0
         except (TypeError, KeyError, IndexError, ValueError):
             continue
@@ -579,7 +579,7 @@ def _guess_title_fallback(page_data: list[dict]) -> str:
 def _figure_internal_text(e: dict, figure_bboxes: list[list[float]]) -> bool:
     """元素大部分落在同页某 figure/table 区域内 → 视为图内文字，不单独展示。"""
     try:
-        eb = e.get("bbox") or ()
+        eb = e.get("bbox") or (0, 0, 0, 0)
         ex0, ey0 = float(eb[0]), float(eb[1])
         ew = float(eb[2]) - ex0
         eh = float(eb[3]) - ey0
@@ -630,10 +630,11 @@ def _is_decorative_figure(element: dict, page_elements: list[dict],
     )
     if area < 2500.0:
         return True
-    boxes = [
-        e.get("bbox") for e in page_elements
-        if len(e.get("bbox") or []) == 4
-    ]
+    boxes = []
+    for e in page_elements:
+        b = e.get("bbox")
+        if isinstance(b, (list, tuple)) and len(b) == 4:
+            boxes.append(b)
     if not boxes:
         return False
     page_w = max(float(b[2]) for b in boxes)
@@ -1187,12 +1188,21 @@ def _figure_internal_short_text(e: dict, figure_bboxes: list[list[float]]) -> bo
 _TABLE_FRAGMENT_MAX_H = 45.0
 
 
+def _bbox4(raw) -> tuple[float, float, float, float]:
+    """把缓存里的 bbox 统一成四元组；缺字段/坏值一律回零。"""
+    b = raw or (0, 0, 0, 0)
+    try:
+        return (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+    except (TypeError, ValueError, IndexError):
+        return (0.0, 0.0, 0.0, 0.0)
+
+
 def _bbox_xywh(e: dict) -> tuple[float, float, float, float] | None:
     b = e.get("bbox") or []
     if len(b) != 4:
         return None
     try:
-        return tuple(float(v) for v in b)
+        return (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
     except (TypeError, ValueError):
         return None
 
@@ -1391,7 +1401,7 @@ def _nearest_figure_id(caption: dict, page_no: int,
                        taken: set[str]) -> str | None:
     """图注 → 最近未被占用的 figure/table 元素（含上一页兜底）。"""
     try:
-        ab = caption.get("bbox") or ()
+        ab = caption.get("bbox") or (0, 0, 0, 0)
         ax = (float(ab[0]) + float(ab[2])) / 2.0
         ay = (float(ab[1]) + float(ab[3])) / 2.0
     except (TypeError, KeyError, IndexError, ValueError):
@@ -1668,7 +1678,7 @@ def build_document_fast(page_data: list[dict],
                         section_name="",
                         display_priority="high",
                         element_id=eid,
-                        bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                        bbox=_bbox4(e.get("bbox")),
                     ))
                     i += 1
                     continue
@@ -1684,7 +1694,7 @@ def build_document_fast(page_data: list[dict],
                         section_name="",
                         display_priority="high",
                         element_id=eid,
-                        bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                        bbox=_bbox4(e.get("bbox")),
                     ))
                     i += 1
                     continue
@@ -1720,7 +1730,7 @@ def build_document_fast(page_data: list[dict],
                         section_name="",
                         display_priority="normal",
                         element_id=eid,
-                        bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                        bbox=_bbox4(e.get("bbox")),
                     ))
                     i += 1
                     continue
@@ -1735,7 +1745,7 @@ def build_document_fast(page_data: list[dict],
                         section_name="",
                         display_priority="normal",
                         element_id=eid,
-                        bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                        bbox=_bbox4(e.get("bbox")),
                     ))
                     fm_author_seen = True
                     i += 1
@@ -1750,7 +1760,7 @@ def build_document_fast(page_data: list[dict],
                             section_name="",
                             display_priority="collapsed",
                             element_id=eid,
-                            bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                            bbox=_bbox4(e.get("bbox")),
                         ))
                     display.append(StructuredElement(
                         element_type="affiliations",
@@ -1760,7 +1770,7 @@ def build_document_fast(page_data: list[dict],
                         section_name="",
                         display_priority="normal",
                         element_id=eid,
-                        bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                        bbox=_bbox4(e.get("bbox")),
                     ))
                     i += 1
                     continue
@@ -1781,7 +1791,7 @@ def build_document_fast(page_data: list[dict],
                         section_name="",
                         display_priority="normal",
                         element_id=eid,
-                        bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                        bbox=_bbox4(e.get("bbox")),
                     ))
                     i += 1
                     continue
@@ -1807,7 +1817,7 @@ def build_document_fast(page_data: list[dict],
                     section_name=current_section,
                     display_priority="normal",
                     element_id=eid,
-                    bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                    bbox=_bbox4(e.get("bbox")),
                 )
                 display.append(elem)
                 consumed_seam_targets.add(next_id)
@@ -1838,7 +1848,7 @@ def build_document_fast(page_data: list[dict],
                     section_name="",
                     display_priority="collapsed",
                     element_id=eid,
-                    bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                    bbox=_bbox4(e.get("bbox")),
                 ))
             continue
         if etype == "body" and _is_bare_number_text(text):
@@ -1857,7 +1867,7 @@ def build_document_fast(page_data: list[dict],
                     section_name="",
                     display_priority="normal",
                     element_id=eid,
-                    bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                    bbox=_bbox4(e.get("bbox")),
                 ))
             continue
         if etype == "figure" and _is_decorative_figure(
@@ -1916,7 +1926,7 @@ def build_document_fast(page_data: list[dict],
                     section_name="",
                     display_priority=priority,
                     element_id=eid,
-                    bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                    bbox=_bbox4(e.get("bbox")),
                 )
                 display.append(elem)
                 continue
@@ -1929,7 +1939,7 @@ def build_document_fast(page_data: list[dict],
                 section_name="",
                 display_priority=priority,
                 element_id=eid,
-                bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                bbox=_bbox4(e.get("bbox")),
             )
             display.append(elem)
             toc.append({
@@ -1951,7 +1961,7 @@ def build_document_fast(page_data: list[dict],
                 section_name="",
                 display_priority="high",
                 element_id=eid,
-                bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                bbox=_bbox4(e.get("bbox")),
             ))
             continue
         elif etype == "authors":
@@ -1965,7 +1975,7 @@ def build_document_fast(page_data: list[dict],
                 section_name="",
                 display_priority="normal",
                 element_id=eid,
-                bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+                bbox=_bbox4(e.get("bbox")),
             ))
             continue
         elif etype == "abstract_heading":
@@ -1993,7 +2003,7 @@ def build_document_fast(page_data: list[dict],
             section_name=current_section if etype in ("body", "abstract_body") else "",
             display_priority=priority,
             element_id=eid,
-            bbox=tuple(float(v) for v in (e.get("bbox") or [0, 0, 0, 0])),
+            bbox=_bbox4(e.get("bbox")),
             image_path=str(e.get("image_path") or ""),
             image_caption=image_caption,
         )
@@ -2601,16 +2611,17 @@ class PDFProcessor(QObject):
 
     def start_stage1(self) -> None:
         """启动 Stage 1 本地版式解析。"""
-        if self._manifest is None:
+        manifest = self._manifest
+        if manifest is None:
             self.stage1_error.emit(self._pdf_path, 0, "Manifest 初始化失败")
             return
 
         # 如果全部已完成，直接发信号
-        if self._manifest.is_complete:
+        if manifest.is_complete:
             self.stage1_progress.emit(
                 self._pdf_path,
-                self._manifest.done_count + self._manifest.error_count,
-                self._manifest.total_pages,
+                manifest.done_count + manifest.error_count,
+                manifest.total_pages,
             )
             self.stage1_complete.emit(self._pdf_path)
             return
@@ -2619,8 +2630,10 @@ class PDFProcessor(QObject):
 
     def _start_stage1_docling(self) -> None:
         """用 Docling 本地解析 Stage 1，不再回退到视觉模型。"""
+        manifest = self._manifest
+        assert manifest is not None
         self._docling_worker = DoclingParseWorker(
-            self._pdf_path, self._cache_dir, self._manifest
+            self._pdf_path, self._cache_dir, manifest
         )
         track(self._docling_worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._docling_worker.page_done.connect(
@@ -2632,7 +2645,8 @@ class PDFProcessor(QObject):
         self._docling_worker.status.connect(
             lambda message: self.stage1_status.emit(self._pdf_path, message)
         )
-        self._docling_worker.completed.connect(lambda: self._on_stage1_all_done(self._manifest))
+        self._docling_worker.completed.connect(
+            lambda m=manifest: self._on_stage1_all_done(m))
         self._docling_worker.error.connect(self._on_stage1_docling_error)
         track(self._docling_worker)  # 运行期间保活
         self._docling_worker.start()
@@ -2759,9 +2773,12 @@ class PDFProcessor(QObject):
 
     def _load_all_page_data(self) -> list[dict]:
         """加载所有已完成页的完整缓存（含 bbox），供规则组装使用。"""
+        manifest = self._manifest
+        if manifest is None:
+            return []
         results = []
-        for page_num in range(1, self._manifest.total_pages + 1):
-            status = self._manifest.pages.get(page_num, "pending")
+        for page_num in range(1, manifest.total_pages + 1):
+            status = manifest.pages.get(page_num, "pending")
             if status == "done":
                 cache = self.get_page_cache(page_num)
                 if cache:
@@ -2956,8 +2973,11 @@ class PDFProcessor(QObject):
 
     def _on_stage1_page_done(self, page_num: int, result: dict) -> None:
         """单页完成 → 发射进度信号。"""
-        done = self._manifest.done_count + self._manifest.error_count
-        self.stage1_progress.emit(self._pdf_path, done, self._manifest.total_pages)
+        manifest = self._manifest
+        if manifest is None:
+            return
+        done = manifest.done_count + manifest.error_count
+        self.stage1_progress.emit(self._pdf_path, done, manifest.total_pages)
         self.stage1_page_done.emit(self._pdf_path, page_num)
 
     def _on_stage1_all_done(self, manifest: PageManifest) -> None:

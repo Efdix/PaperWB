@@ -30,7 +30,7 @@ os.environ.setdefault("DOCLING_INFERENCE_COMPILE_TORCH_MODELS", "0")
 if "transformers.dependency_versions_check" not in sys.modules:
     import types
     _mock_dvc = types.ModuleType("transformers.dependency_versions_check")
-    _mock_dvc.dep_version_check = lambda *a, **k: None
+    setattr(_mock_dvc, "dep_version_check", lambda *a, **k: None)
     sys.modules["transformers.dependency_versions_check"] = _mock_dvc
 
 _hf_mirror = os.environ.get(
@@ -571,7 +571,7 @@ def parse_pdf(pdf_path: str, dpi: int = 150) -> list[dict]:
     span_map = _span_index(pdf_path, dpi=dpi)
     for item, _depth in doc.iterate_items(traverse_pictures=True):
         label = getattr(item, "label", None)
-        label_str = label.value if hasattr(label, "value") else str(label or "")
+        label_str = str(getattr(label, "value", label) or "")
         etype = _DOCLING_LABEL_MAP.get(label_str, "unknown")
 
         prov = getattr(item, "prov", None)

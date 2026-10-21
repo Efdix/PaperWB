@@ -8,6 +8,10 @@ import time
 import uuid
 import weakref
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .core.pdf_processor import PDFProcessor
 
 from PySide6.QtCore import (
     QByteArray, QObject, Qt, QThread, QTimer, Signal as QtSignal,
@@ -79,15 +83,17 @@ class UpdateManager(QObject):
         self._ensure_timer()
 
     def _ensure_timer(self) -> None:
-        if self._timer is None:
-            self._timer = QTimer(self)
-            self._timer.timeout.connect(lambda: self.check_now(manual=False))
+        timer = self._timer
+        if timer is None:
+            timer = QTimer(self)
+            self._timer = timer
+            timer.timeout.connect(lambda: self.check_now(manual=False))
         try:
             hours = max(1, int(get_update_config().get("interval_hours") or 24))
         except (TypeError, ValueError):
             hours = 24
         # 定时器精度不敏感（小时级），上限用 int 毫秒
-        self._timer.start(min(hours, 24) * 3600 * 1000)
+        timer.start(min(hours, 24) * 3600 * 1000)
 
     def stop(self) -> None:
         if self._timer is not None:
@@ -352,7 +358,7 @@ class MainWindow(QMainWindow):
         self._llm_worker: LLMWorker | None = None
         self._current_pdf_path: str = ""
 
-        self._processors: dict[str, object] = {}
+        self._processors: dict[str, "PDFProcessor"] = {}
         self._app_progress_connected: weakref.WeakSet = weakref.WeakSet()
         self._zotero: ZoteroLibrary | None = None
         self._zotero_watcher: ZoteroWatcher | None = None

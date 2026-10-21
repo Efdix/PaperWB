@@ -207,6 +207,14 @@ def test_state_meta() -> None:
           and "display_elements" not in str(meta))
 
 
+def test_theme_tokens() -> None:
+    from src.ui.styles import STYLESHEET
+    from src.ui.tokens import PRIMARY, SURFACE
+    check("QSS 无遗留 $ 占位符", "$" not in STYLESHEET)
+    check("QSS 主色来自 token", PRIMARY in STYLESHEET)
+    check("QSS 背景色来自 token", SURFACE in STYLESHEET)
+
+
 def test_context_and_manifest() -> None:
     from src.core.context_manager import ContextManager
     from src.core.pdf_processor import PageManifest
@@ -229,7 +237,7 @@ def test_context_and_manifest() -> None:
 def main() -> int:
     for fn in (test_atomic, test_profile_names, test_kb_copy, test_zip_slip,
                test_docx_atomic, test_doc_id_migration, test_paper_identity,
-               test_state_meta, test_context_and_manifest):
+               test_state_meta, test_theme_tokens, test_context_and_manifest):
         print(f"\n--- {fn.__name__} ---")
         fn()
     print(f"\n{COUNT - len(FAILS)} passed, {len(FAILS)} failed")

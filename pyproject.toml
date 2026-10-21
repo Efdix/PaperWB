@@ -17,3 +17,11 @@ exclude = [
 # 先只拦“一定会炸”的类别：语法错误、未定义名、重复定义。
 # 样式/未使用导入等留待后续逐步收紧，避免一次性制造上百条噪声。
 select = ["E9", "F63", "F7", "F82", "F811"]
+
+[tool.pyright]
+include = ["src", "main.py"]
+typeCheckingMode = "basic"
+# Pyright 在独立 Node 进程里解析不到 conda 环境的 PySide6/docling stubs；
+# 第三方导入交给运行时自检，这里只做项目内类型关系检查。
+reportMissingImports = false
+reportMissingTypeStubs = false

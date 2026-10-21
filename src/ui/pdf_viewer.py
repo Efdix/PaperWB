@@ -619,21 +619,23 @@ class ParagraphCard(QFrame):
         self.qa_btn = btn
 
     def _toggle_qa_edit(self):
-        if self._qa_edit is None:
-            self._qa_edit = QALineEdit()
-            self._qa_edit.setPlaceholderText("输入问题，Ctrl+回车发送到右侧对话区（输入框自动关闭）")
-            self._qa_edit.setStyleSheet(
+        edit = self._qa_edit
+        if edit is None:
+            edit = QALineEdit()
+            self._qa_edit = edit
+            edit.setPlaceholderText("输入问题，Ctrl+回车发送到右侧对话区（输入框自动关闭）")
+            edit.setStyleSheet(
                 "QLineEdit { border: 1px solid #bfddd6; border-radius: 6px; "
                 "padding: 6px 10px; font-size: 12px; }"
             )
-            self._qa_edit.submit_requested.connect(self._submit_qa)
-            self.layout().addWidget(self._qa_edit)
-            self._qa_edit.setFocus()
-        elif self._qa_edit.isVisible():
-            self._qa_edit.setVisible(False)
+            edit.submit_requested.connect(self._submit_qa)
+            self.layout().addWidget(edit)
+            edit.setFocus()
+        elif edit.isVisible():
+            edit.setVisible(False)
         else:
-            self._qa_edit.setVisible(True)
-            self._qa_edit.setFocus()
+            edit.setVisible(True)
+            edit.setFocus()
         self._sync_card_height(self.width())
 
     def _submit_qa(self):
@@ -833,10 +835,11 @@ class ImageCard(QFrame):
         page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(page_label)
         self._page_label = page_label
-        self._img_label = QLabel()
-        self._img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._img_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        layout.addWidget(self._img_label)
+        img_label = QLabel()
+        self._img_label = img_label
+        img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        img_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout.addWidget(img_label)
         if self._caption:
             cap = QLabel(self._caption)
             cap.setWordWrap(True)
@@ -858,44 +861,48 @@ class ImageCard(QFrame):
             layout.addWidget(desc)
             self._desc_label = desc
 
-        self._separator = QFrame()
-        self._separator.setFrameShape(QFrame.Shape.HLine)
-        self._separator.setFixedHeight(1)
-        self._separator.setStyleSheet("background-color: #e5e1d9;")
-        layout.addWidget(self._separator)
+        separator = QFrame()
+        self._separator = separator
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFixedHeight(1)
+        separator.setStyleSheet("background-color: #e5e1d9;")
+        layout.addWidget(separator)
 
-        self._qa_btn = QPushButton("🔍 解读图片" if etype == "figure" else "📊 解读表格")
-        self._qa_btn.setStyleSheet(
+        qa_btn = QPushButton("🔍 解读图片" if etype == "figure" else "📊 解读表格")
+        self._qa_btn = qa_btn
+        qa_btn.setStyleSheet(
             "QPushButton { background-color: #eaf4f1; color: #147c7c; "
             "border: 1px solid #bfddd6; border-radius: 6px; padding: 2px 12px; "
             "font-size: 11px; }"
             "QPushButton:hover { background-color: #dcefe9; }"
         )
-        self._qa_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._qa_btn.clicked.connect(self._toggle_qa_edit)
+        qa_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        qa_btn.clicked.connect(self._toggle_qa_edit)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        btn_row.addWidget(self._qa_btn)
+        btn_row.addWidget(qa_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
         self._load_pixmap()
 
     def _toggle_qa_edit(self):
-        if self._qa_edit is None:
-            self._qa_edit = QALineEdit()
-            self._qa_edit.setPlaceholderText("输入问题，Ctrl+回车发送到右侧对话区（输入框自动关闭）")
-            self._qa_edit.setStyleSheet(
+        edit = self._qa_edit
+        if edit is None:
+            edit = QALineEdit()
+            self._qa_edit = edit
+            edit.setPlaceholderText("输入问题，Ctrl+回车发送到右侧对话区（输入框自动关闭）")
+            edit.setStyleSheet(
                 "QLineEdit { border: 1px solid #bfddd6; border-radius: 6px; "
                 "padding: 6px 10px; font-size: 12px; }"
             )
-            self._qa_edit.submit_requested.connect(self._submit_qa)
-            self.layout().addWidget(self._qa_edit)
-            self._qa_edit.setFocus()
-        elif self._qa_edit.isVisible():
-            self._qa_edit.setVisible(False)
+            edit.submit_requested.connect(self._submit_qa)
+            self.layout().addWidget(edit)
+            edit.setFocus()
+        elif edit.isVisible():
+            edit.setVisible(False)
         else:
-            self._qa_edit.setVisible(True)
-            self._qa_edit.setFocus()
+            edit.setVisible(True)
+            edit.setFocus()
         self._sync_card_height()
 
     def _submit_qa(self):
@@ -958,6 +965,7 @@ class PDFViewerPanel(QWidget):
     pdf_path_changed = Signal(str)
     follow_up_question = Signal(str, str)  # (question, image_path 或 "")
     structured_document_updated = Signal(str)
+    render_finished = Signal(int)  # 分批渲染完成（参数 = 失败跳过的元素数）
     fullscreen_toggled = Signal(bool)  # 进入/退出沉浸全屏（主窗口据此隐藏周边界面）
 
     def __init__(self, parent=None):
@@ -971,6 +979,18 @@ class PDFViewerPanel(QWidget):
         self._trans_workers: dict[int, TranslationWorker] = {}
         self._retired_trans_workers: list[TranslationWorker] = []
         self._doc_generation: int = 0  # 每次重置视图时自增，过期结果/翻译直接丢弃
+        # 卡片分批渲染：大文档先出首屏，剩余每 30 张让出一次事件循环。
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.timeout.connect(self._render_next_chunk)
+        self.render_finished.connect(self._on_render_finished)
+        self._render_doc = None
+        self._render_index = 0
+        self._render_total = 0
+        self._render_failed = 0
+        self._render_image_base_dir = ""
+        self._render_translations: dict = {}
+        self._pending_scroll_restore: int | None = None
         self._auto_translate: bool = False
         self._stage1_complete: bool = False
         self._stage1_errors: int = 0
@@ -1379,10 +1399,11 @@ class PDFViewerPanel(QWidget):
         self.info_label.setText("正在构建结构化文档...")
         self.info_label.setStyleSheet("color: #a76d2b;")
         self._stage2_start_time = time.monotonic()
-        self._stage2_timer = QTimer(self)
-        self._stage2_timer.setInterval(5000)
-        self._stage2_timer.timeout.connect(self._update_stage2_waiting)
-        self._stage2_timer.start()
+        timer = QTimer(self)
+        self._stage2_timer = timer
+        timer.setInterval(5000)
+        timer.timeout.connect(self._update_stage2_waiting)
+        timer.start()
         self._processor.start_stage2()
 
     def _update_stage2_waiting(self):
@@ -1397,9 +1418,10 @@ class PDFViewerPanel(QWidget):
         self.info_label.setStyleSheet("color: #a76d2b;")
 
     def _stop_stage2_timer(self):
-        if getattr(self, "_stage2_timer", None) is not None:
-            self._stage2_timer.stop()
-            self._stage2_timer.deleteLater()
+        timer = getattr(self, "_stage2_timer", None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
             self._stage2_timer = None
 
     def _on_stage2_finished(self, pdf_path: str, doc: "StructuredDocument"):
@@ -1502,8 +1524,20 @@ class PDFViewerPanel(QWidget):
         self._auto_translate = False
         self._sync_auto_trans_btn()
 
+    _RENDER_CHUNK = 30  # 每批创建的卡片数：首屏优先，其余让出事件循环
+
     def _render_document(self, doc: "StructuredDocument") -> int:
-        """渲染结构化文档为卡片流。返回渲染失败（跳过）的元素个数。"""
+        """渲染结构化文档为卡片流（大文档分批），返回首批失败数。
+
+        真正的失败总数通过 ``render_finished`` 信号在全部批次结束后给出；
+        小文档（≤1 批）仍然同步完成，保持既有调用方的直观行为。
+        """
+        self._render_timer.stop()
+        self._render_doc = doc
+        self._render_index = 0
+        self._render_total = len(doc.display_elements)
+        self._render_failed = 0
+        self._render_translations = {}
         for card in self._cards:
             card.setParent(None)
             card.deleteLater()
@@ -1517,11 +1551,38 @@ class PDFViewerPanel(QWidget):
         self.placeholder.setVisible(False)
 
         from ..utils.config import get_page_cache_dir
-        image_base_dir = str(get_page_cache_dir(self._current_path))
+        self._render_image_base_dir = str(get_page_cache_dir(self._current_path))
 
-        total = len(doc.display_elements)
+        if self._render_total == 0:
+            self._finish_render()
+            return 0
+        if self._render_total <= self._RENDER_CHUNK:
+            self._render_failed += self._render_range(0, self._render_total)
+            self._finish_render()
+            return self._render_failed
+        self._render_timer.start(0)
+        return 0
+
+    def _render_next_chunk(self) -> None:
+        if self._render_doc is None:
+            return
+        end = min(self._render_index + self._RENDER_CHUNK, self._render_total)
+        self._render_failed += self._render_range(self._render_index, end)
+        self._render_index = end
+        if self._render_index < self._render_total:
+            self._render_timer.start(0)
+        else:
+            self._finish_render()
+
+    def _render_range(self, start: int, end: int) -> int:
+        """创建 [start, end) 的卡片，返回失败数。"""
         failed = 0
-        for i, elem in enumerate(doc.display_elements):
+        doc = self._render_doc
+        if doc is None:
+            return 0
+        image_base_dir = self._render_image_base_dir
+        for i in range(start, end):
+            elem = doc.display_elements[i]
             try:
                 if elem.element_type in ("figure", "table"):
                     elem.image_path = self._resolve_image_path(elem, image_base_dir)
@@ -1550,6 +1611,7 @@ class PDFViewerPanel(QWidget):
                             self._on_translate_request
                         )
                         caption_card.qa_requested.connect(self._on_card_qa)
+                        self._apply_pending_translation(caption_card)
                         self._cards.append(caption_card)
                         self.card_layout.addWidget(caption_card)
                     continue
@@ -1562,15 +1624,42 @@ class PDFViewerPanel(QWidget):
                 card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 card.customContextMenuRequested.connect(
                     lambda pos, c=card: self._show_card_menu(c, pos))
+                self._apply_pending_translation(card)
                 self._cards.append(card)
                 self.card_layout.addWidget(card)
             except Exception:
                 failed += 1
                 import traceback
                 traceback.print_exc()
+        return failed
+
+    def _apply_pending_translation(self, card) -> None:
+        if not isinstance(card, ParagraphCard) or not self._render_translations:
+            return
+        zh = self._render_translations.get(self._translation_key(card))
+        if zh:
+            card.show_translation(str(zh))
+
+    def _finish_render(self) -> None:
+        self._render_timer.stop()
         self._apply_font_delta_to_cards()
         self.card_layout.addStretch()
-        return failed
+        if self._pending_scroll_restore is not None:
+            self.scroll_area.verticalScrollBar().setValue(
+                self._pending_scroll_restore)
+            self._pending_scroll_restore = None
+        failed, self._render_failed = self._render_failed, 0
+        self._render_doc = None
+        self.render_finished.emit(failed)
+
+    def _on_render_finished(self, failed: int) -> None:
+        """分批渲染收尾：把失败数补进状态行（同步路径由调用方自行拼接）。"""
+        if not failed:
+            return
+        text = self.info_label.text()
+        if text and "渲染失败" not in text:
+            self.info_label.setText(
+                text + f"（{failed} 个元素渲染失败已跳过）")
 
     def _on_card_qa(self, element_id: str, question: str, image_path: str):
         """卡片问答：转发到主窗口，附带图片路径（视觉模型解读图片）。"""
@@ -1608,11 +1697,13 @@ class PDFViewerPanel(QWidget):
             next_ok = (idx + 1 < len(elems)
                        and elems[idx + 1].element_type == etype)
             act_prev = menu.addAction("⤴ 与上一段合并")
-            act_prev.setEnabled(prev_ok)
+            if act_prev is not None:
+                act_prev.setEnabled(prev_ok)
             act_next = menu.addAction("⤵ 与下一段合并")
-            act_next.setEnabled(next_ok)
+            if act_next is not None:
+                act_next.setEnabled(next_ok)
         chosen = menu.exec(card.mapToGlobal(pos))
-        if chosen is None:
+        if chosen is None or idx is None:
             return
         if chosen is act_split:
             self._split_card_dialog(card)
@@ -1681,9 +1772,10 @@ class PDFViewerPanel(QWidget):
         state["structured_document"] = self._structured_doc.to_dict()
         save_doc_state(self._current_path, state)
         scroll_pos = self.scroll_area.verticalScrollBar().value()
+        # 分批渲染时滚动条 max 还没到最终值，先记下，全部卡片建完再恢复。
+        self._pending_scroll_restore = scroll_pos
         self._render_document(self._structured_doc)
         self._restore_translation_state(state)
-        self.scroll_area.verticalScrollBar().setValue(scroll_pos)
         # 只发 updated（主窗口同步检索上下文），不发 pdf_loaded（会重置对话）
         self.structured_document_updated.emit(self._current_path)
 
@@ -1720,6 +1812,7 @@ class PDFViewerPanel(QWidget):
         translations = state.get("translations", {}) if isinstance(state, dict) else {}
         if not isinstance(translations, dict):
             return
+        self._render_translations = translations
         for card in self._cards:
             if not isinstance(card, ParagraphCard):
                 continue

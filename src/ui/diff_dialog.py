@@ -277,31 +277,43 @@ class DiffDialog(QDialog):
     # ============================================================
 
     def _render_diff(self):
-        self._diff_ctrl.render(self._original, self._polished)
-        self._anchor_label.setText(f"修改: {self._diff_ctrl.anchor_count} 处")
+        ctrl = self._diff_ctrl
+        assert ctrl is not None
+        ctrl.render(self._original, self._polished)
+        self._anchor_label.setText(f"修改: {ctrl.anchor_count} 处")
 
     def _on_anchors_changed(self):
         """锚点变化回调：刷新计数标签。"""
-        if self._anchor_label is not None:
-            self._anchor_label.setText(f"修改: {self._diff_ctrl.anchor_count} 处")
+        ctrl = self._diff_ctrl
+        if self._anchor_label is not None and ctrl is not None:
+            self._anchor_label.setText(f"修改: {ctrl.anchor_count} 处")
 
     def _on_diff_text_changed(self):
         """用户手动编辑 diff 后重算修改锚点（位置偏移后仍可正常导航/接受/拒绝）。"""
-        if self._skip_recompute:
+        if self._skip_recompute or self._diff_ctrl is None:
             return
         self._diff_ctrl.on_text_changed()
 
     def _navigate_change(self, delta: int):
-        self._diff_ctrl.navigate(delta)
-        self._current_anchor_idx = self._diff_ctrl._current_anchor_idx
+        ctrl = self._diff_ctrl
+        if ctrl is None:
+            return
+        ctrl.navigate(delta)
+        self._current_anchor_idx = ctrl._current_anchor_idx
 
     def _accept_current(self):
-        self._diff_ctrl.apply_change(accept=True)
-        self._current_anchor_idx = self._diff_ctrl._current_anchor_idx
+        ctrl = self._diff_ctrl
+        if ctrl is None:
+            return
+        ctrl.apply_change(accept=True)
+        self._current_anchor_idx = ctrl._current_anchor_idx
 
     def _reject_current(self):
-        self._diff_ctrl.apply_change(accept=False)
-        self._current_anchor_idx = self._diff_ctrl._current_anchor_idx
+        ctrl = self._diff_ctrl
+        if ctrl is None:
+            return
+        ctrl.apply_change(accept=False)
+        self._current_anchor_idx = ctrl._current_anchor_idx
 
     # ============================================================
     # 引文核查备注

@@ -162,7 +162,7 @@ class PubMedSearcher:
             if medline is None:
                 return None
             pmid_elem = medline.find("PMID")
-            pmid = pmid_elem.text if pmid_elem is not None else ""
+            pmid = (pmid_elem.text if pmid_elem is not None else "") or ""
 
             article_elem = medline.find("Article")
             if article_elem is None:

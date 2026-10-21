@@ -88,8 +88,10 @@ def _profile_plan(client, seeds: list[dict], year_from: int | None,
             src = str(item.get("source", "") or "").strip().lower()
             if not q:
                 continue
-            entry = {"source": src if src in VALID_SOURCES else "openalex",
-                     "query": q}
+            entry: dict[str, object] = {
+                "source": src if src in VALID_SOURCES else "openalex",
+                "query": q,
+            }
             _attach_plan_filters(item, entry)
             if year_from is not None and "year_from" not in entry:
                 entry["year_from"] = year_from

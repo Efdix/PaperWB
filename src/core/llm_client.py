@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Generator
+from typing import Literal, overload
 
 from openai import (
     OpenAI, BadRequestError, APIConnectionError, APITimeoutError,
@@ -59,9 +60,20 @@ class LLMClient:
             if delta and delta.content:
                 yield delta.content
 
+    @overload
+    def chat_sync(  # pyright: ignore[reportOverlappingOverload]
+                  self, messages: list[dict], timeout: float = 120.0,
+                  max_tokens: int | None = None, json_mode: bool = False,
+                  return_meta: Literal[False] = False) -> str: ...
+
+    @overload
     def chat_sync(self, messages: list[dict], timeout: float = 120.0,
                   max_tokens: int | None = None, json_mode: bool = False,
-                  return_meta: bool = False):
+                  return_meta: Literal[True] = ...) -> tuple[str, dict]: ...
+
+    def chat_sync(self, messages: list[dict], timeout: float = 120.0,
+                  max_tokens: int | None = None, json_mode: bool = False,
+                  return_meta: bool = False) -> str | tuple[str, dict]:
         """同步对话，返回完整回复文本。
 
         支持纯文本和视觉（图片+文本）两种消息格式。

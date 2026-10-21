@@ -195,18 +195,18 @@ class ChatPanel(QWidget):
         self.msg_layout.addStretch()
 
         # 欢迎消息
-        welcome = QLabel(welcome or (
+        label = QLabel(welcome or (
             "欢迎来到论文问答\n\n"
             "先从左侧 Zotero 文献库或其它文献中选择一篇 PDF，再在下方提出问题。\n"
             "AI 会基于当前论文内容回答，并保留你的对话记录。\n\n"
             "提示：首次使用请先在设置中配置阅读接口。"
         ))
-        welcome.setWordWrap(True)
-        welcome.setStyleSheet(
+        label.setWordWrap(True)
+        label.setStyleSheet(
             "color: #6e6e73; background-color: #f5f8ff; border: 1px solid #d9e5ff; "
             "border-radius: 12px; padding: 18px; font-size: 13px; line-height: 1.8;"
         )
-        self.msg_layout.insertWidget(0, welcome)
+        self.msg_layout.insertWidget(0, label)
 
         self.scroll_area.setWidget(self.msg_container)
         layout.addWidget(self.scroll_area, 1)

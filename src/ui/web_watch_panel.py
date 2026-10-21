@@ -348,11 +348,13 @@ class WebWatchPanel(QWidget):
                 "border: 1px solid #e1ebe7; border-radius: 12px; padding: 14px;")
             self._empty = empty
             self._cards_layout.insertWidget(0, empty)
-        elif getattr(self, "_empty", None) is not None:
-            self._empty.hide()
-            self._empty.setParent(None)
-            self._empty.deleteLater()
-            self._empty = None
+        else:
+            empty = getattr(self, "_empty", None)
+            if empty is not None:
+                empty.hide()
+                empty.setParent(None)
+                empty.deleteLater()
+                self._empty = None
 
     def _on_new_page(self) -> None:
         dlg = WatchEditDialog(None, self)

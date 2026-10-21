@@ -104,8 +104,11 @@ def llm_match_titles(client, candidates: list[dict], pool: list[dict],
         for m in data.get("match") or []:
             if not isinstance(m, dict):
                 continue
+            raw_c, raw_l = m.get("candidate"), m.get("library")
+            if raw_c is None or raw_l is None:
+                continue
             try:
-                ci, li = int(m.get("candidate")), int(m.get("library"))
+                ci, li = int(raw_c), int(raw_l)
             except (TypeError, ValueError):
                 continue
             if 0 <= ci < len(candidates) and 0 <= li < len(pool_limited):

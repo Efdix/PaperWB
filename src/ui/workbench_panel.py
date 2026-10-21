@@ -422,24 +422,28 @@ class ScoutCard(QFrame):
 
     def set_translation(self, text: str) -> None:
         """插入/更新译文块（摘要下方、按钮行上方）。"""
-        if self._trans_box is None:
-            self._trans_box = QWidget()
-            tbox = QVBoxLayout(self._trans_box)
+        box = self._trans_box
+        if box is None:
+            box = QWidget()
+            self._trans_box = box
+            tbox = QVBoxLayout(box)
             tbox.setContentsMargins(0, 0, 0, 0)
             tbox.setSpacing(3)
-            self._trans_label = QLabel()
-            self._trans_label.setObjectName("subtitleLabel")
-            self._trans_label.setWordWrap(True)
-            self._trans_label.setStyleSheet(
+            label = QLabel()
+            self._trans_label = label
+            label.setObjectName("subtitleLabel")
+            label.setWordWrap(True)
+            label.setStyleSheet(
                 "background-color: #f0f6fb; border: 1px solid #d5e5f2; "
                 "border-radius: 8px; padding: 6px 8px;")
-            tbox.addWidget(self._trans_label)
+            tbox.addWidget(label)
             # 译文块插在按钮行（layout 末尾）之前
-            self._layout.insertWidget(self._layout.count() - 1, self._trans_box)
-        if self._trans_label is not None:
-            self._trans_label.setText(text)
-            self._trans_label.setToolTip(text)
-        self._trans_box.show()
+            self._layout.insertWidget(self._layout.count() - 1, box)
+        label = self._trans_label
+        if label is not None:
+            label.setText(text)
+            label.setToolTip(text)
+        box.show()
         if self._trans_btn is not None:
             self._trans_btn.setText("收起译文")
             self._trans_btn.setToolTip("收起译文")
@@ -450,9 +454,10 @@ class ScoutCard(QFrame):
             text = text.strip()
         if not text:
             return
-        if getattr(self, "_if_chip", None) is not None:
-            self._if_chip.setText(text)
-            self._if_chip.setToolTip("数据来源 EasyScholar")
+        existing = getattr(self, "_if_chip", None)
+        if existing is not None:
+            existing.setText(text)
+            existing.setToolTip("数据来源 EasyScholar")
             return
         chip = QLabel(text)
         chip.setObjectName("feedChip")

@@ -459,7 +459,7 @@ class WritingCoach:
 
         # ---- 写作习惯基准 ----
         if profile.has_writing_habits:
-            habits = profile.writing_habits
+            habits = profile.writing_habits or {}
 
             # 引用密度（各章节引用数分布）
             cit_den = habits.get("citation_density", {})
@@ -546,7 +546,7 @@ class WritingCoach:
 
         # ---- 期刊格式基准 ----
         if profile.has_journal_style:
-            js = profile.journal_style
+            js = profile.journal_style or {}
 
             if js.get("section_structure"):
                 sections.append(
@@ -576,13 +576,14 @@ class WritingCoach:
         cfg = get_writing_type_config(writing_type)
         prompt = cfg["system_prompt"]
 
-        if not self._current_profile:
+        profile = self._current_profile
+        if profile is None:
             return prompt
 
         parts = []
 
-        if self._current_profile.has_writing_habits:
-            habits = self._current_profile.writing_habits
+        if profile.has_writing_habits:
+            habits = profile.writing_habits or {}
             if habits.get("sentence_templates"):
                 st = habits["sentence_templates"]
                 if isinstance(st, list):
@@ -662,12 +663,13 @@ class WritingCoach:
         prompt = cfg["system_prompt"]
         has_extra = False
 
-        if not self._current_profile:
+        profile = self._current_profile
+        if profile is None:
             return prompt
 
         # 写作习惯（来自写作范文分析）
-        if self._current_profile.has_writing_habits:
-            habits = self._current_profile.writing_habits
+        if profile.has_writing_habits:
+            habits = profile.writing_habits or {}
             parts = []
             if habits.get("terminology_preferences"):
                 parts.append(f"【术语偏好】\n{habits['terminology_preferences']}")
@@ -701,8 +703,8 @@ class WritingCoach:
                 has_extra = True
 
         # 期刊格式（来自期刊范文分析）
-        if self._current_profile.has_journal_style:
-            js = self._current_profile.journal_style
+        if profile.has_journal_style:
+            js = profile.journal_style or {}
             parts = []
             if js.get("citation_format"):
                 parts.append(f"【引用格式】\n{js['citation_format']}")
@@ -721,8 +723,8 @@ class WritingCoach:
                 prompt += f"\n\n{section_title}" + "\n\n".join(parts)
 
         # 兼容旧格式 style_guide（fallback）
-        if not has_extra and self._current_profile._legacy_style_guide:
-            guide = self._current_profile._legacy_style_guide
+        if not has_extra and profile._legacy_style_guide:
+            guide = profile._legacy_style_guide
             guide_text = self._format_style_guide(guide)
             if guide_text:
                 prompt += "\n\n---\n以下是你需要遵循的具体格式和风格规范（基于真实论文分析）：\n\n" + guide_text

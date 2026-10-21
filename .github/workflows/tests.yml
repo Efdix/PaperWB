@@ -24,6 +24,9 @@ jobs:
       - name: Static check (syntax / undefined names)
         run: python -m ruff check src main.py test/run_all.py
 
+      - name: Type check (pyright)
+        run: python -m pyright src main.py
+
       - name: Run logic + offscreen UI regression
         env:
           QT_QPA_PLATFORM: offscreen

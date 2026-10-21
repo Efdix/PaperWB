@@ -207,7 +207,8 @@ class DraftReviewer:
             result = self._parse_response(response)
             if "error" in result:
                 return result
-            if str(meta.get("finish_reason") or "").lower() == "length":
+            if isinstance(meta, dict) and str(
+                    meta.get("finish_reason") or "").lower() == "length":
                 # JSON 虽已修复解析，但内容确实被长度上限截断
                 result["_truncated"] = True
             return result

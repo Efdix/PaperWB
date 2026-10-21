@@ -17,11 +17,17 @@
 #   -SkipBuild      reuse existing dist\ (skip step 2)
 #   -SkipModels     reuse existing installer\models_cache (skip step 3)
 #   -SkipSelftest   skip step 4 (not recommended for release)
+#   -CertificateThumbprint <sha1>  optional: sign exe/installers with signtool
+#   -SignTool <path>              optional: signtool.exe path (auto-discovered)
+#   -TimestampUrl <url>           optional: RFC3161 timestamp server
 
 param(
     [string]$PythonExe = "",
     [string]$Iscc = "",
     [string]$SamplePdf = "",
+    [string]$SignTool = "",
+    [string]$CertificateThumbprint = "",
+    [string]$TimestampUrl = "http://timestamp.digicert.com",
     [switch]$SkipBuild,
     [switch]$SkipModels,
     [switch]$SkipSelftest
@@ -38,6 +44,32 @@ function Die([string]$Msg) {
 }
 function Step([string]$Msg) {
     Write-Host "`n==> $Msg" -ForegroundColor Cyan
+}
+function Get-SignToolPath {
+    if ($SignTool) { return $SignTool }
+    $Roots = @(
+        (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"),
+        (Join-Path $env:ProgramFiles "Windows Kits\10\bin")
+    )
+    foreach ($Root in $Roots) {
+        if (-not (Test-Path $Root)) { continue }
+        $Hit = Get-ChildItem $Root -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($Hit) { return $Hit.FullName }
+    }
+    return ""
+}
+function Sign-File([string]$Path) {
+    if (-not $CertificateThumbprint) { return }
+    $ST = Get-SignToolPath
+    if (-not $ST -or -not (Test-Path $ST)) {
+        Die "signtool.exe not found; pass -SignTool <path> or install Windows SDK"
+    }
+    & $ST sign /sha1 $CertificateThumbprint /fd sha256 /tr $TimestampUrl /td sha256 $Path
+    if ($LASTEXITCODE -ne 0) { Die "code signing failed: $Path" }
+    Write-Host "  signed: $Path" -ForegroundColor Green
 }
 function RunSelftestExe([string]$Pdf) {
     # windowed exe（console=False）：PowerShell `&` 对 GUI 程序不等待，
@@ -275,6 +307,14 @@ try {
         if (Test-Path $Rt) { Remove-Item $Rt -Recurse -Force }
     }
 
+    # ---------- 4.6 sign main exe (optional) ----------
+    if ($CertificateThumbprint) {
+        Step "Sign PaperWB.exe (payload)"
+        Sign-File "dist\PaperWB\PaperWB.exe"
+    } else {
+        Write-Host "  code signing skipped (no -CertificateThumbprint); SmartScreen may warn" -ForegroundColor Yellow
+    }
+
     # ---------- 5. compile installers (full + lite) ----------
     # 版本号唯一来源：src/utils/version.py 的 APP_VERSION（main.py 也读它设 QApplication 版本）
     $Ver = (Select-String -Path "src\utils\version.py" -Pattern 'APP_VERSION\s*=\s*"([^"]+)"')[0].
@@ -294,6 +334,12 @@ try {
     $OutLite = Join-Path $PSScriptRoot "Output\PaperWB-Setup-$Ver-lite.exe"
     if (-not (Test-Path $OutLite)) { Die "lite installer output missing: $OutLite" }
     $MbLite = [math]::Round((Get-Item $OutLite).Length / 1MB)
+
+    if ($CertificateThumbprint) {
+        Step "Sign installers"
+        Sign-File $Out
+        Sign-File $OutLite
+    }
 
     # ---------- 6. release manifest (hashes + sizes) ----------
     # 发布用清单：GitHub Release 会自动带 sha256（asset digest），但自建静态源

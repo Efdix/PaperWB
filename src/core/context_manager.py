@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .pdf_processor import StructuredDocument
 
 # 引用/文献类问题关键词：命中才附带完整参考文献列表（每问省 3-8k token）
 _REFERENCE_QUERY_RE = re.compile(
@@ -30,10 +34,10 @@ class ContextManager:
         # budget 永远为正，长对话会一路涨到服务端报 context length exceeded。
         self.max_tokens = max(8_000, min(requested, self.MAX_CONTEXT_TOKENS))
         self._pdf_text: str = ""
-        self._structured_doc: object | None = None  # StructuredDocument
+        self._structured_doc: "StructuredDocument | None" = None
         self._chat_history: list[dict] = []
         self._retriever = None  # Bm25Retriever（懒构建）
-        self._retriever_key: int = 0  # 结构化文档 id，用于索引失效判断
+        self._retriever_key: int | tuple[str, int] = 0  # 索引失效判断键
 
     # ---- 公共 API ----
 
@@ -44,12 +48,12 @@ class ContextManager:
         self._chat_history.clear()
         self._invalidate_retriever()
 
-    def load_structured_doc(self, doc: object) -> None:
+    def load_structured_doc(self, doc: "StructuredDocument") -> None:
         """加载结构化文档 —— 聊天时可引用 metadata/figures/references 等完整信息。"""
         self._structured_doc = doc
         self._invalidate_retriever()
 
-    def update_document(self, text: str, doc: object | None = None) -> None:
+    def update_document(self, text: str, doc: "StructuredDocument | None" = None) -> None:
         """更新当前文档内容但保留对话历史，用于后台跨页合并完成。"""
         self._pdf_text = text
         if doc is not None:

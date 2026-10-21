@@ -283,7 +283,10 @@ def citation_key(text: str) -> str | None:
     if not s or len(s) > 20:
         return None
     m = _CITE_STRIP_RE.match(s)
-    core = m.group(1) if m else (_CITE_CORE_RE.match(s).group(0) if _CITE_CORE_RE.match(s) else None)
+    core = m.group(1) if m else None
+    if core is None:
+        m2 = _CITE_CORE_RE.match(s)
+        core = m2.group(0) if m2 else None
     if core is None:
         return None
     core = core.replace("，", ",").replace("；", ";").replace("；", ",")
@@ -656,6 +659,8 @@ def _frags_for_regions(idx: _ParaIndex, pieces: list[list]) -> list[list]:
         pos = s
         while pos < e:
             sp = _span_at(idx.spans, pos)
+            if sp is None:
+                break
             e2 = min(sp.end, e)
             frags.append(["frag", sp, pos, e2, ""])
             pos = e2
@@ -755,6 +760,8 @@ def _merge_para_text(p, new_text: str, reviser: _Reviser | None,
             pos = i1
             while pos < i2:
                 sp = _span_at(idx.spans, pos)
+                if sp is None:
+                    break
                 e = min(sp.end, i2)
                 events.append(["frag", sp, pos, e, ""])
                 pos = e
@@ -844,12 +851,14 @@ def _merge_para_text(p, new_text: str, reviser: _Reviser | None,
         # 上标引文的普通文字会被误染成上标。
         rpr = sp.rpr if sp is not None else None
         if kind == "orig":
+            assert sp is not None  # 未变片段必然对应一个原始 span
             del_open = None
             last_was_del = False
             prev_elem = sp.run
             last_rpr = sp.rpr if sp.rpr is not None else last_rpr
             continue
         if kind == "frag":
+            assert sp is not None  # 匹配片段必然对应一个原始 span
             del_open = None
             last_was_del = False
             r = _new_run(p_el, idx.text[s:e], rpr)

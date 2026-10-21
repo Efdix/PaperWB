@@ -54,7 +54,7 @@ def atomic_write_text(path: str | Path, text: str, encoding: str = "utf-8",
     atomic_write_bytes(path, text.encode(encoding), fsync=fsync)
 
 
-def atomic_write_json(path: str | Path, data: object, *, indent: int = 2,
+def atomic_write_json(path: str | Path, data: object, *, indent: int | None = 2,
                       fsync: bool = True) -> None:
     atomic_write_text(
         path,
