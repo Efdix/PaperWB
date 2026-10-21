@@ -46,6 +46,7 @@ from ..utils.threads import track
 
 if TYPE_CHECKING:
     from ..core.llm_client import LLMClient
+    from ..core.literature_search import PaperSearchWorker
     from ..core.zotero_parser import ZoteroLibrary
 
 
