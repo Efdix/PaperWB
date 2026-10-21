@@ -2386,6 +2386,42 @@ class DoclingParseWorker(QThread):
                           self._manifest.to_dict())
 
 
+class Stage2BuildWorker(QThread):
+    """后台执行 Stage 2 的纯本地部分：读页缓存、规则组装、接缝扫描。
+
+    这三步在百页论文上可达数秒；此前在 UI 线程同步执行，点开文献会整窗
+    冻结。LLM 接缝复核仍由 ``PDFProcessor`` 在构建完成后再启动。
+    """
+
+    built = Signal(object, object, object)   # (doc, seams, merged_final)
+    failed = Signal(str)
+
+    def __init__(self, processor: "PDFProcessor"):
+        super().__init__()
+        self._processor = processor
+
+    def run(self) -> None:
+        try:
+            page_data = self._processor._load_all_page_data()
+            if not page_data:
+                self.failed.emit("没有可用的页面缓存数据，请等待 Stage 1 完成")
+                return
+            if self.isInterruptionRequested():
+                return
+            merged_final, merged_prelim = self._processor._load_seam_caches()
+            doc = build_document_fast(
+                page_data, {**merged_prelim, **merged_final})
+            if not doc.display_elements:
+                self.failed.emit("规则组装结果为空（页面缓存可能异常），请重新解析")
+                return
+            if self.isInterruptionRequested():
+                return
+            seams = find_cross_page_seams(page_data)
+            self.built.emit(doc, seams, merged_final)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
 # ============================================================
 # PDFProcessor —— 协调者：管理两阶段流程
 # ============================================================
@@ -2422,6 +2458,7 @@ class PDFProcessor(QObject):
         self._pdf_path = pdf_path
         self._client = llm_client
         self._docling_worker: DoclingParseWorker | None = None
+        self._stage2_worker: Stage2BuildWorker | None = None
         self._seam_worker: SeamMergeWorker | None = None
         self._manifest: PageManifest | None = None
         self._cache_dir: str = ""
@@ -2532,7 +2569,9 @@ class PDFProcessor(QObject):
 
     @property
     def is_stage2_running(self) -> bool:
-        return self._seam_worker is not None and self._seam_worker.isRunning()
+        build = self._stage2_worker is not None and self._stage2_worker.isRunning()
+        seam = self._seam_worker is not None and self._seam_worker.isRunning()
+        return build or seam
 
     @property
     def is_busy(self) -> bool:
@@ -2629,16 +2668,52 @@ class PDFProcessor(QObject):
             self.stage2_error.emit(self._pdf_path, "没有已完成的页面，请等待 Stage 1 完成")
             return
 
-        page_data = self._load_all_page_data()
-        if not page_data:
-            self.stage2_error.emit(self._pdf_path, "没有可用的页面缓存数据，请等待 Stage 1 完成")
-            return
+        if self.is_stage2_running:
+            return  # 已有构建/接缝任务在途
 
-        merged_final, merged_prelim = self._load_seam_caches()
-        doc = build_document_fast(page_data, {**merged_prelim, **merged_final})
-        if not doc.display_elements:
-            self.stage2_error.emit(self._pdf_path, "规则组装结果为空（页面缓存可能异常），请重新解析")
+        worker = Stage2BuildWorker(self)
+        track(worker)
+        self._stage2_worker = worker
+        gen = self._generation
+        worker.built.connect(
+            lambda doc, seams, final, g=gen, p=preliminary:
+                self._on_stage2_built_if_current(g, doc, seams, final, p))
+        worker.failed.connect(
+            lambda msg, g=gen: self._on_stage2_build_error_if_current(g, msg))
+        worker.start()
+
+    def wait_for_stage2(self, timeout_ms: int = 20_000) -> bool:
+        """等待后台 Stage 2 构建完成（测试/同步调用方用），返回是否已结束。"""
+        worker = self._stage2_worker
+        if worker is not None:
+            worker.wait(timeout_ms)
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            for _ in range(20):
+                app.processEvents()
+        return not self.is_stage2_running
+
+    def _on_stage2_built_if_current(self, gen: int, doc, seams: list,
+                                    merged_final: dict,
+                                    preliminary: bool) -> None:
+        """丢弃取消/重跑后迟到的 Stage 2 结果。"""
+        if gen != self._generation:
             return
+        self._on_stage2_built(doc, seams, merged_final, preliminary)
+
+    def _on_stage2_build_error_if_current(self, gen: int, message: str) -> None:
+        if gen != self._generation:
+            return
+        self._stage2_worker = None
+        self.stage2_error.emit(self._pdf_path, message)
+
+    def _on_stage2_built(self, doc, seams: list, merged_final: dict,
+                         preliminary: bool) -> None:
+        """Stage 2 本地构建完成（UI 线程）：落盘、发信号、决定是否送 LLM。"""
+        # 构建结果已到手，worker 正在收尾；先清引用，避免 UI 侧的
+        # _refine_prelim_seams 把“正在 emit”误判成“仍在构建”而跳过精修。
+        self._stage2_worker = None
         # 检查跨页接缝：只处理到本次请求的级别（final 定稿后幂等；
         # prelim 之后的 final 请求是阅读精修，仍要重新送 LLM 复核）。
         # 级别在 emit stage2_finished 之前更新，UI 侧回调可据此触发阅读精修。
@@ -2649,7 +2724,6 @@ class PDFProcessor(QObject):
         self._on_stage2_finished(doc)
         if skip_seams:
             return
-        seams = find_cross_page_seams(page_data)
         if merged_final:
             # 只按定稿缓存过滤：初步版接缝在阅读精修时仍要重新评估
             cached_keys = {str(key) for key in merged_final}
@@ -2868,6 +2942,9 @@ class PDFProcessor(QObject):
         保活自行退出。
         """
         self._generation += 1  # 使在途后台结果的回调全部失效
+        if self._stage2_worker and self._stage2_worker.isRunning():
+            self._stage2_worker.requestInterruption()
+            self._stage2_worker.wait(5_000)
         if self._seam_worker and self._seam_worker.isRunning():
             self._seam_worker.requestInterruption()
         if self._docling_worker and self._docling_worker.isRunning():

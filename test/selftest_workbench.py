@@ -992,6 +992,7 @@ try:
     proc = PDFProcessor(pdf2, None)
     check("页缓存识别为完整", proc.is_stage1_complete)
     proc.start_stage2(preliminary=True)
+    check("Stage2 后台构建结束", proc.wait_for_stage2(20_000))
     state = load_doc_state(pdf2)
     check("初步规则合并入独立缓存",
           len(state.get("merged_seams_prelim") or {}) == 2
@@ -1008,6 +1009,7 @@ try:
     # --- 阅读定稿（无 API：规则合并直接定稿，与旧行为一致） ---
     proc2 = PDFProcessor(pdf2, None)
     proc2.start_stage2()
+    check("Stage2 后台构建结束（定稿）", proc2.wait_for_stage2(20_000))
     state2 = load_doc_state(pdf2)
     check("无 API 阅读定稿", len(state2.get("merged_seams") or {}) == 2
           and state2.get("seams_final") is True, repr(state2.get("seams_final")))

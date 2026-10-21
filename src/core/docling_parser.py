@@ -59,12 +59,18 @@ def bundled_models_hub_dir() -> str:
     try:
         if getattr(sys, "frozen", False):
             base = os.path.dirname(os.path.abspath(sys.executable))
+            candidates = [os.path.join(base, "models", "hub")]
         else:
-            # src/core/docling_parser.py → 仓库根
+            # src/core/docling_parser.py → 仓库根。开发模式额外复用 prewarm
+            # 缓存（models/hf_cache/hub），避免每次都往 data/.paperwb 再下载一遍。
             base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        hub = os.path.join(base, "models", "hub")
-        if all(os.path.isdir(os.path.join(hub, r)) for r in _BUNDLED_REQUIRED_REPOS):
-            return hub
+            candidates = [
+                os.path.join(base, "models", "hub"),
+                os.path.join(base, "models", "hf_cache", "hub"),
+            ]
+        for hub in candidates:
+            if all(os.path.isdir(os.path.join(hub, r)) for r in _BUNDLED_REQUIRED_REPOS):
+                return hub
     except Exception:
         pass
     return ""
