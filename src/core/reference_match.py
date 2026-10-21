@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 from .json_utils import parse_json_response
 
@@ -17,6 +18,7 @@ _DOI_PREFIX_RE = re.compile(
     r"^(https?://(dx\.)?doi\.org/|doi:\s*|info:doi/)", re.IGNORECASE)
 
 
+@lru_cache(maxsize=8192)
 def normalize_doi(doi: str) -> str:
     """规范化 DOI：去首尾空白、统一小写、剥掉 doi.org 前缀。"""
     if not doi:
@@ -30,6 +32,7 @@ def normalize_doi(doi: str) -> str:
 _CJK_RANGES = "\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af"
 
 
+@lru_cache(maxsize=8192)
 def normalize_title(title: str) -> str:
     """规范化标题：保留小写字母数字与 CJK 字符（中文/日文/韩文标题也能比对），
     其余符号、空格、大小写差异一律剥掉，用于精确比对。"""

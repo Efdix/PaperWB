@@ -36,6 +36,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
+from ..utils.atomic import atomic_write_json
 from ..utils.config import get_watch_dir
 from ..utils.threads import track
 
@@ -142,12 +143,8 @@ def load_pages(watch_dir: str | Path | None = None) -> list[WatchedPage]:
 
 def save_pages(pages: list[WatchedPage], watch_dir: str | Path | None = None) -> None:
     try:
-        d = _dir(watch_dir)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "pages.json").write_text(
-            json.dumps({"pages": [p.to_dict() for p in pages]},
-                       ensure_ascii=False, indent=2),
-            encoding="utf-8")
+        atomic_write_json(_dir(watch_dir) / "pages.json",
+                          {"pages": [p.to_dict() for p in pages]})
     except OSError:
         pass
 
@@ -170,10 +167,7 @@ def load_snapshot(page_id: str, watch_dir: str | Path | None = None) -> dict | N
 def save_snapshot(page_id: str, snapshot: dict,
                   watch_dir: str | Path | None = None) -> None:
     try:
-        d = _snapshot_file(page_id, watch_dir).parent
-        d.mkdir(parents=True, exist_ok=True)
-        _snapshot_file(page_id, watch_dir).write_text(
-            json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+        atomic_write_json(_snapshot_file(page_id, watch_dir), snapshot, indent=None)
     except OSError:
         pass
 
@@ -241,6 +235,23 @@ def _robots_allowed(url: str, now: float | None = None) -> bool:
         return False
 
 
+class _RobotsAwareRedirect(urllib.request.HTTPRedirectHandler):
+    """跟随重定向前重新检查目标 URL 的 robots 与 scheme。
+
+    urllib 默认自动跟随 3xx；只校验初始 URL 会让重定向绕过 robots，
+    也可能被跳到内网/ftp 等非预期目标。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urllib.parse.urlsplit(newurl)
+        if parsed.scheme not in ("http", "https"):
+            raise RobotsDisallowed("网页重定向到了非 HTTP(S) 地址，已中止")
+        if not _robots_allowed(newurl):
+            raise RobotsDisallowed(
+                "重定向目标被 robots.txt 禁止抓取，已按规范停止检查")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch_page(url: str) -> tuple[int, str]:
     """抓取网页，返回 (status, html)。robots 拒绝抛 RobotsDisallowed。"""
     if not _robots_allowed(url):
@@ -251,7 +262,8 @@ def fetch_page(url: str) -> tuple[int, str]:
         "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     })
-    with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
+    opener = urllib.request.build_opener(_RobotsAwareRedirect())
+    with opener.open(req, timeout=FETCH_TIMEOUT) as resp:
         status = int(resp.status)
         raw = resp.read(MAX_HTML_BYTES + 1)
         if len(raw) > MAX_HTML_BYTES:

@@ -974,59 +974,24 @@ class WritingPanel(QWidget):
         self.setObjectName("writingSurface")
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(12)
+        main_layout.setSpacing(0)
 
-        # ===== 页面标题 =====
-        writing_header = QFrame()
-        writing_header.setObjectName("writingHeader")
-        header_layout = QHBoxLayout(writing_header)
-        header_layout.setContentsMargins(18, 14, 18, 14)
-        header_text = QVBoxLayout()
-        header_text.setSpacing(1)
-        eyebrow = QLabel("写作与引用")
-        eyebrow.setObjectName("eyebrowLabel")
-        header_text.addWidget(eyebrow)
-        title = QLabel("写作工作台")
-        title.setObjectName("titleLabel")
-        header_text.addWidget(title)
-        intro = QLabel("把观点写清楚，把每一处引用都落到证据上")
-        intro.setObjectName("subtitleLabel")
-        header_text.addWidget(intro)
-        header_layout.addLayout(header_text)
-        header_layout.addStretch()
-        self._history_btn = QPushButton("查看润色历史")
-        self._history_btn.setObjectName("secondaryBtn")
-        self._history_btn.setToolTip("查看当前知识库的润色历史，可复制或回插到编辑器")
-        self._history_btn.clicked.connect(self._on_polish_history)
-        header_layout.addWidget(self._history_btn, alignment=Qt.AlignmentFlag.AlignBottom)
-        self._chat_btn = QPushButton("💬 AI 讨论")
-        self._chat_btn.setObjectName("secondaryBtn")
-        self._chat_btn.setToolTip("与 AI 讨论写作方向、章节结构与内容正确性（不只是语法）")
-        self._chat_btn.clicked.connect(self._focus_chat)
-        header_layout.addWidget(self._chat_btn, alignment=Qt.AlignmentFlag.AlignBottom)
-        self._inspector_btn = QPushButton("工具栏")
-        self._inspector_btn.setObjectName("secondaryBtn")
-        self._inspector_btn.setCheckable(True)
-        self._inspector_btn.setChecked(True)
-        self._inspector_btn.setToolTip("显示或隐藏写作工具检查器")
-        self._inspector_btn.toggled.connect(self._set_inspector_visible)
-        header_layout.addWidget(self._inspector_btn, alignment=Qt.AlignmentFlag.AlignBottom)
-        main_layout.addWidget(writing_header)
-
-        # ===== 工作上下文 =====
+        # ===== 单条动作行：写作类型 / 知识库 / 高频操作合一 =====
+        # 原先「标题横幅 + 上下文栏」两行、合计约 130px，其中大半是标题字样；
+        # 合并为一行后省下的高度全部给编辑器。
         context_bar = QFrame()
-        context_bar.setObjectName("controlBar")
+        context_bar.setObjectName("actionBar")
         context_layout = QHBoxLayout(context_bar)
-        context_layout.setContentsMargins(14, 10, 14, 10)
+        context_layout.setContentsMargins(12, 5, 10, 5)
         context_layout.setSpacing(8)
 
         type_label = QLabel("写作类型")
-        type_label.setObjectName("sectionLabel")
+        type_label.setObjectName("actionStatus")
         context_layout.addWidget(type_label)
 
         self._type_combo = QComboBox()
         self._type_combo.setEditable(True)
-        self._type_combo.setMinimumWidth(150)
+        self._type_combo.setMinimumWidth(140)
         self._type_combo.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._type_combo.customContextMenuRequested.connect(self._on_type_context_menu)
         from ..core.writing_prompts import get_all_writing_types
@@ -1037,12 +1002,12 @@ class WritingPanel(QWidget):
         self._type_combo.currentIndexChanged.connect(self._on_writing_type_changed)
         context_layout.addWidget(self._type_combo)
 
-        kb_label = QLabel("当前知识库")
-        kb_label.setObjectName("sectionLabel")
+        kb_label = QLabel("知识库")
+        kb_label.setObjectName("actionStatus")
         context_layout.addWidget(kb_label)
 
         self._kb_combo = QComboBox()
-        self._kb_combo.setMinimumWidth(200)
+        self._kb_combo.setMinimumWidth(190)
         self._kb_combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self._kb_combo.setMinimumContentsLength(12)
@@ -1051,7 +1016,27 @@ class WritingPanel(QWidget):
         self._kb_combo.currentIndexChanged.connect(self._on_kb_changed)
         context_layout.addWidget(self._kb_combo, 1)
 
-        context_layout.addStretch()
+        self._history_btn = QPushButton("🕘 润色历史")
+        self._history_btn.setObjectName("paneToggle")
+        self._history_btn.setToolTip("查看当前知识库的润色历史，可复制或回插到编辑器")
+        self._history_btn.clicked.connect(self._on_polish_history)
+        context_layout.addWidget(self._history_btn)
+
+        self._chat_btn = QPushButton("💬 AI 讨论")
+        self._chat_btn.setObjectName("paneToggle")
+        self._chat_btn.setToolTip("与 AI 讨论写作方向、章节结构与内容正确性（不只是语法）")
+        self._chat_btn.clicked.connect(self._focus_chat)
+        context_layout.addWidget(self._chat_btn)
+
+        self._inspector_btn = QPushButton("🧰 工具")
+        self._inspector_btn.setObjectName("paneToggle")
+        self._inspector_btn.setCheckable(True)
+        self._inspector_btn.setChecked(True)
+        self._inspector_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._inspector_btn.setToolTip("显示或隐藏写作工具检查器")
+        self._inspector_btn.toggled.connect(self._set_inspector_visible)
+        context_layout.addWidget(self._inspector_btn)
+
         main_layout.addWidget(context_bar)
 
         # ===== 主区域: 编辑器 | 右侧栏 =====
@@ -1063,24 +1048,15 @@ class WritingPanel(QWidget):
         editor_frame = QFrame()
         editor_frame.setObjectName("editorCard")
         editor_layout = QVBoxLayout(editor_frame)
-        editor_layout.setContentsMargins(16, 14, 16, 16)
-        editor_layout.setSpacing(10)
+        editor_layout.setContentsMargins(12, 10, 12, 12)
+        editor_layout.setSpacing(8)
 
-        editor_head = QHBoxLayout()
-        editor_title = QLabel("正文编辑器")
-        editor_title.setObjectName("sectionLabel")
-        editor_head.addWidget(editor_title)
-        editor_hint = QLabel("选中文字后，可使用右侧 AI 工具 · Ctrl+滚轮缩放")
-        editor_hint.setObjectName("subtitleLabel")
-        editor_head.addWidget(editor_hint)
-        editor_head.addStretch()
-
-        editor_layout.addLayout(editor_head)
-
-        # Word 文件操作单独占一行，避免窄窗口下与标题互相挤压。
+        # 撤销/重做是编辑器自身的操作，直接放进 Word 动作行右端，
+        # 不再单占一条「正文编辑器」标题行。
         word_head = QHBoxLayout()
-        self._open_word_btn = QPushButton("打开 Word")
-        self._open_word_btn.setObjectName("secondaryBtn")
+        word_head.setSpacing(6)
+        self._open_word_btn = QPushButton("📄 打开 Word")
+        self._open_word_btn.setObjectName("paneToggle")
         self._open_word_btn.setToolTip("打开 .docx 文档直接编辑（run 级保真写回，批注只读展示）")
         self._open_word_btn.clicked.connect(self._on_open_word)
         word_head.addWidget(self._open_word_btn)
@@ -1123,10 +1099,9 @@ class WritingPanel(QWidget):
         word_head.addWidget(self._track_changes_cb)
 
         self._word_file_label = ElidedLabel("未绑定文件")
-        self._word_file_label.setObjectName("subtitleLabel")
+        self._word_file_label.setObjectName("actionStatus")
         self._word_file_label.setToolTip("当前绑定的 Word 文档路径")
         word_head.addWidget(self._word_file_label, 1)
-        word_head.addStretch()
         editor_layout.addLayout(word_head)
 
         # 修订审阅工具栏（有 AI 修订时显示）
@@ -1195,17 +1170,17 @@ class WritingPanel(QWidget):
         QShortcut(QKeySequence("Ctrl+0"), self, activated=self._reset_editor_zoom)
         editor_layout.addWidget(self.editor)
 
-        # 撤销/重做（editor_head 已布局，插到标题行末尾）
+        # 撤销/重做挂在编辑器动作行右端（紧邻编辑器，符合操作位置直觉）
         self._undo_btn = QPushButton("↶")
         self._undo_btn.setObjectName("iconBtn")
         self._undo_btn.setToolTip("撤销（Ctrl+Z）")
         self._undo_btn.clicked.connect(self.editor.undo)
-        editor_head.addWidget(self._undo_btn)
+        word_head.addWidget(self._undo_btn)
         self._redo_btn = QPushButton("↷")
         self._redo_btn.setObjectName("iconBtn")
         self._redo_btn.setToolTip("重做（Ctrl+Y）")
         self._redo_btn.clicked.connect(self.editor.redo)
-        editor_head.addWidget(self._redo_btn)
+        word_head.addWidget(self._redo_btn)
 
         splitter.addWidget(editor_frame)
 
@@ -1496,7 +1471,10 @@ class WritingPanel(QWidget):
         if hasattr(self, "_inspector_scroll"):
             self._inspector_scroll.setVisible(self._inspector_visible)
         if hasattr(self, "_inspector_btn"):
-            self._inspector_btn.setText("隐藏工具栏" if self._inspector_visible else "显示工具栏")
+            # 按钮是 checkable 开关，文字固定（勾选态即显示态），说明进 tooltip
+            self._inspector_btn.setToolTip(
+                "隐藏写作工具检查器" if self._inspector_visible
+                else "显示写作工具检查器")
 
     # ---- AI 写作讨论 ----
 
@@ -2062,7 +2040,8 @@ class WritingPanel(QWidget):
             import shutil
             from ..utils.config import get_docx_backup_dir, MAX_DOCX_BACKUPS
             stem = os.path.splitext(os.path.basename(path))[0]
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # 微秒级时间戳：同一秒连续保存两次不会覆盖上一份备份。
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             dest = get_docx_backup_dir() / f"{stem}_{stamp}.docx"
             shutil.copy2(path, dest)
             backups = sorted(
@@ -2076,6 +2055,21 @@ class WritingPanel(QWidget):
             return str(dest)
         except Exception:  # noqa: BLE001 — 备份失败不阻塞保存
             return ""
+
+    def _editor_paragraphs(self) -> list[str]:
+        """按 QTextBlock 取段落，保留段内软换行 U+2028。
+
+        ``toPlainText()`` 会把 QChar::LineSeparator 归一成 ``\\n``，导致 Word
+        里同一段的软换行在保存后变成新段落。``QTextBlock.text()`` 保留
+        U+2028，与 docx_io 的读取口径一致。
+        """
+        doc = self.editor.document()
+        out: list[str] = []
+        block = doc.begin()
+        while block.isValid():
+            out.append(block.text())
+            block = block.next()
+        return out
 
     def _on_save_word(self):
         """把编辑器内容写回绑定的 Word 文档（run 级保真写回）。"""
@@ -2097,11 +2091,17 @@ class WritingPanel(QWidget):
         if not self._check_external_word_change():
             return
         backup = self._backup_word_file(self._word_path)
+        if os.path.exists(self._word_path) and not backup:
+            QMessageBox.critical(
+                self, "备份失败，已取消保存",
+                "无法在写回前创建原文档备份。\n"
+                "为避免损坏你的论文稿，本次保存已取消，原文件未做任何修改。\n"
+                "请检查数据目录是否可写、磁盘是否已满，然后重试。")
+            return
         track = self._track_changes_cb.isChecked()
         try:
             from ..core.docx_io import write_docx
-            text = self.editor.toPlainText().replace("\u2029", "\n")
-            paragraphs = text.split("\n")
+            paragraphs = self._editor_paragraphs()
             write_docx(self._word_path, paragraphs,
                        styles=self._word_styles, comments=self._word_comments,
                        track_changes=track)
@@ -2152,8 +2152,7 @@ class WritingPanel(QWidget):
         track = self._track_changes_cb.isChecked()
         try:
             from ..core.docx_io import write_docx
-            text = self.editor.toPlainText().replace("\u2029", "\n")
-            paragraphs = text.split("\n")
+            paragraphs = self._editor_paragraphs()
             write_docx(path, paragraphs, track_changes=track)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "保存失败", f"无法写入 Word 文档：\n{e}")

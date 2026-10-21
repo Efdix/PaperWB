@@ -39,6 +39,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from ..utils.atomic import is_path_inside
 from ..utils.config import (
     get_drafts_dir, get_polish_history_dir, get_reviews_dir, get_writing_kb_dir,
 )
@@ -205,13 +206,24 @@ def sanitize_profile_config(data: dict) -> dict:
 
 
 def _is_safe_arcname(name: str) -> bool:
-    """拒绝绝对路径与含 ``..`` 的压缩包条目（zip-slip 防护）。"""
+    """拒绝绝对路径、盘符、NTFS 数据流和 ``..`` 条目（zip-slip 防护）。
+
+    只检查整串第一个字符不够：``writing_kb/foo/C:/Users/x/evil.exe`` 的
+    ``rel`` 是 ``C:/Users/x/evil.exe``，在 Windows 上会被 ``dest / rel``
+    解析成绝对路径。因此逐段检查冒号（盘符或 ADS）。
+    """
     if not name or name.startswith("/") or name.startswith("\\"):
         return False
-    if len(name) > 1 and name[1] == ":":  # Windows 盘符
+    normalized = name.replace("\\", "/")
+    if normalized.startswith("//"):
         return False
-    parts = name.replace("\\", "/").split("/")
-    return not any(p == ".." for p in parts)
+    parts = normalized.split("/")
+    for part in parts:
+        if part in ("", ".", ".."):
+            return False
+        if ":" in part:  # C: / a.txt:stream
+            return False
+    return True
 
 
 # ========== 导出 ==========
@@ -403,6 +415,10 @@ def list_packages(zip_path: str | Path, kb_dir: Path | None = None) -> list[KbPa
     for name, info in sorted(profiles.items()):
         if not isinstance(info, dict):
             continue
+        try:
+            validate_profile_name(str(name))
+        except ValueError:
+            continue  # 恶意/损坏包里的非法库名不进入预览
         out.append(KbPackage(
             name=str(name),
             writing_type=str(info.get("writing_type", "") or ""),
@@ -525,6 +541,11 @@ def import_archive(zip_path: str | Path, selected: list[str],
                     except OSError as e:
                         report.failed.append((pkg_name, f"无法替换旧库：{e}"))
                         continue
+            # 解析后的目标目录必须严格位于知识库根目录内。即使名字通过了
+            # 字符校验，也不能让 ``..``/盘符/符号链接把写入带到根目录之外。
+            if not is_path_inside(dest_dir, root):
+                report.failed.append((pkg_name, "目标目录不在知识库目录内，已拒绝"))
+                continue
             taken.add(target_name)
 
             prefix = f"{KB_ROOT}/{pkg_name}/"
@@ -542,8 +563,12 @@ def import_archive(zip_path: str | Path, selected: list[str],
                         try:
                             cfg = json.loads(data.decode("utf-8"))
                             if isinstance(cfg, dict):
-                                data = json.dumps(sanitize_profile_config(cfg),
-                                                  ensure_ascii=False,
+                                cfg = sanitize_profile_config(cfg)
+                                # 副本改名后配置里的 name 也必须跟着改，否则
+                                # WritingCoach 会按旧名索引，后续保存写回原库。
+                                if target_name != pkg_name:
+                                    cfg["name"] = target_name
+                                data = json.dumps(cfg, ensure_ascii=False,
                                                   indent=2).encode("utf-8")
                         except (json.JSONDecodeError, UnicodeDecodeError):
                             pass
@@ -553,22 +578,24 @@ def import_archive(zip_path: str | Path, selected: list[str],
                 report.failed.append((pkg_name, str(e)))
 
             if ok:
-                # 派生单文件：仅当包内确实含有且目标库名未变时才还原
-                if target_name == pkg_name:
-                    for src_root, base_dir in ((DRAFTS_ROOT, d_dir),
-                                               (HISTORY_ROOT, h_dir),
-                                               (REVIEWS_ROOT, r_dir)):
-                        for arcname in names:
-                            if not arcname.startswith(f"{src_root}/"):
-                                continue
-                            fname = arcname[len(src_root) + 1:]
-                            if "/" in fname or Path(fname).stem != pkg_name:
-                                continue
-                            try:
-                                _write_bytes_atomic(base_dir / fname,
-                                                    zf.read(arcname))
-                            except (OSError, zipfile.BadZipFile):
-                                continue
+                # 派生单文件：草稿/润色历史/评价按库名关联。副本导入时目标名
+                # 变了，文件名也要跟着改成新库名，否则副本既读不到自己的历史，
+                # 又可能覆盖原库的同名文件。
+                for src_root, base_dir in ((DRAFTS_ROOT, d_dir),
+                                           (HISTORY_ROOT, h_dir),
+                                           (REVIEWS_ROOT, r_dir)):
+                    for arcname in names:
+                        if not arcname.startswith(f"{src_root}/"):
+                            continue
+                        fname = arcname[len(src_root) + 1:]
+                        if "/" in fname or Path(fname).stem != pkg_name:
+                            continue
+                        dest_name = f"{target_name}{Path(fname).suffix}"
+                        try:
+                            _write_bytes_atomic(base_dir / dest_name,
+                                                zf.read(arcname))
+                        except (OSError, zipfile.BadZipFile):
+                            continue
                 if target_name != pkg_name:
                     report.renamed = [r for r in report.renamed
                                       if r[1] != target_name] + [(pkg_name, target_name)]

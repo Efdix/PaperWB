@@ -14,6 +14,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
+from ..utils.atomic import atomic_write_json
 from ..utils.config import get_states_dir
 
 _MARKS_FILE = "read_marks.json"
@@ -57,11 +58,7 @@ class ReadMarkStore(QObject):
 
     def _save(self) -> None:
         try:
-            d = self._marks_file()
-            d.parent.mkdir(parents=True, exist_ok=True)
-            d.write_text(
-                json.dumps(self._marks, ensure_ascii=False, indent=1),
-                encoding="utf-8")
+            atomic_write_json(self._marks_file(), self._marks, indent=1)
         except OSError:
             pass
 

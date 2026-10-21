@@ -542,32 +542,7 @@ class StatsPanel(QWidget):
     # ================= UI 构建 =================
 
     def _setup_ui(self) -> None:
-        header = QFrame()
-        header.setObjectName("workspaceHeader")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(16, 10, 16, 10)
-        header_layout.setSpacing(8)
-        title_box = QVBoxLayout()
-        title_box.setSpacing(1)
-        eyebrow = QLabel("工作强度与计划")
-        eyebrow.setObjectName("eyebrowLabel")
-        title_box.addWidget(eyebrow)
-        title = QLabel("统计工作台")
-        title.setObjectName("titleLabel")
-        title_box.addWidget(title)
-        header_layout.addLayout(title_box)
-        subtitle = QLabel("每日工作热力图与阅读/检索/写作统计，日周月计划打勾管理")
-        subtitle.setObjectName("subtitleLabel")
-        header_layout.addWidget(subtitle)
-        header_layout.addStretch()
-
-        self._plans_toggle = QPushButton("计划面板")
-        self._plans_toggle.setObjectName("paneToggle")
-        self._plans_toggle.setCheckable(True)
-        self._plans_toggle.setChecked(True)
-        self._plans_toggle.setToolTip("显示或隐藏右侧计划面板（每日/每周/每月）")
-        header_layout.addWidget(self._plans_toggle)
-
+        # 不再单占一条标题行：标题并入左侧数据面板顶部，面板开关放到那里右端
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(3)
         splitter.setOpaqueResize(False)
@@ -581,28 +556,53 @@ class StatsPanel(QWidget):
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, True)
         self._stats_splitter = splitter
-        self._plans_toggle.toggled.connect(self._set_plans_visible)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-        layout.addWidget(header)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(0)
         layout.addWidget(splitter, 1)
+
+    # 侧栏宽度按窗口比例分配，与阅读/检索工作台同一口径
+    _PLANS_W_MIN, _PLANS_W_MAX = 340, 430
 
     def _set_plans_visible(self, visible: bool) -> None:
         self._plans_panel.setVisible(bool(visible))
         if visible:
-            self._stats_splitter.setSizes([max(500, self.width() - 420), 400])
+            plans_w = max(self._PLANS_W_MIN,
+                          min(self._PLANS_W_MAX, int(self.width() * 0.30)))
+            self._stats_splitter.setSizes(
+                [max(560, self.width() - plans_w - 20), plans_w])
         else:
-            self._stats_splitter.setSizes([max(500, self.width() - 40), 0])
+            self._stats_splitter.setSizes([max(560, self.width() - 40), 0])
 
     def _build_data_panel(self) -> QScrollArea:
         panel = QFrame()
         panel.setObjectName("statsDataPanel")
         panel.setMinimumWidth(420)
         v = QVBoxLayout(panel)
-        v.setContentsMargins(16, 14, 14, 12)
+        v.setContentsMargins(12, 12, 12, 12)
         v.setSpacing(10)
+
+        # 标题行：标题 + 计划面板开关（替代原先那条近乎空白的整宽标题带）
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        title = QLabel("工作强度与计划")
+        title.setObjectName("actionTitle")
+        head.addWidget(title)
+        hint = QLabel("阅读 / 检索 / 写作统计 · 日周月计划")
+        hint.setObjectName("actionStatus")
+        head.addWidget(hint)
+        head.addStretch()
+
+        self._plans_toggle = QPushButton("🗓 计划面板")
+        self._plans_toggle.setObjectName("paneToggle")
+        self._plans_toggle.setCheckable(True)
+        self._plans_toggle.setChecked(True)
+        self._plans_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._plans_toggle.setToolTip("显示或隐藏右侧计划面板（每日/每周/每月）")
+        self._plans_toggle.toggled.connect(self._set_plans_visible)
+        head.addWidget(self._plans_toggle)
+        v.addLayout(head)
 
         # 今日概览卡
         today_card = QFrame()
@@ -616,9 +616,16 @@ class StatsPanel(QWidget):
         t_header.addWidget(t_title)
         t_header.addStretch()
         tv.addLayout(t_header)
+        # 今日概览格子：容器承载多行网格，行数随宽度自适应（见 _relayout_today_grid）
+        self._today_host = QWidget()
+        today_host_layout = QVBoxLayout(self._today_host)
+        today_host_layout.setContentsMargins(0, 0, 0, 0)
+        today_host_layout.setSpacing(8)
         self._today_grid = QHBoxLayout()
         self._today_grid.setSpacing(8)
-        tv.addLayout(self._today_grid)
+        self._today_grid.setContentsMargins(0, 0, 0, 0)
+        today_host_layout.addLayout(self._today_grid)
+        tv.addWidget(self._today_host)
         v.addWidget(today_card)
 
         # 热力图卡
@@ -632,23 +639,18 @@ class StatsPanel(QWidget):
         h_title.setObjectName("titleLabel")
         h_header.addWidget(h_title)
         h_header.addStretch()
-        self._field_combo = QComboBox()
-        for f in FIELDS:
-            self._field_combo.addItem(FIELD_LABELS[f], f)
-        self._field_combo.currentIndexChanged.connect(self._on_field_changed)
-        h_header.addWidget(self._field_combo)
-        self._range_combo = QComboBox()
-        for label, days in RANGE_OPTIONS:
-            self._range_combo.addItem(label, days)
-        self._range_combo.currentIndexChanged.connect(self._on_range_changed)
-        h_header.addWidget(self._range_combo)
         hv.addLayout(h_header)
+
+        # 热力图是 7 行 × 周数的日历网格，宽度由周数决定（3 个月仅 13 周
+        # ≈ 340px），不会随窗口变宽而放大。因此把 Top 榜与它并排放进同一行：
+        # 宽窗口下右半边由 Top 榜填充，而不是让热力图孤零零占一张大卡、
+        # 右边留出几百像素的空气。
         self._heatmap = HeatmapWidget()
         self._heatmap.date_picked.connect(self._on_date_picked)
         hv.addWidget(self._heatmap)
+
         legend = QHBoxLayout()
         legend.setSpacing(4)
-        legend.addStretch()
         less = QLabel("少")
         less.setObjectName("subtitleLabel")
         legend.addWidget(less)
@@ -660,23 +662,49 @@ class StatsPanel(QWidget):
         more = QLabel("多")
         more.setObjectName("subtitleLabel")
         legend.addWidget(more)
+        legend.addSpacing(18)
+
+        self._field_combo = QComboBox()
+        for f in FIELDS:
+            self._field_combo.addItem(FIELD_LABELS[f], f)
+        self._field_combo.currentIndexChanged.connect(self._on_field_changed)
+        legend.addWidget(self._field_combo)
+        self._range_combo = QComboBox()
+        for label, days in RANGE_OPTIONS:
+            self._range_combo.addItem(label, days)
+        self._range_combo.currentIndexChanged.connect(self._on_range_changed)
+        legend.addWidget(self._range_combo)
         legend.addStretch()
         hv.addLayout(legend)
-        v.addWidget(heat_card)
 
-        # 阅读 Top 榜卡
+        # 阅读 Top 榜（与热力图同行，撑满右半边）
         top_card = QFrame()
         top_card.setObjectName("topPapersCard")
         topv = QVBoxLayout(top_card)
         topv.setContentsMargins(14, 12, 14, 12)
-        topv.setSpacing(8)
+        topv.setSpacing(6)
         top_title = QLabel("阅读 Top 榜（累计时长）")
         top_title.setObjectName("titleLabel")
         topv.addWidget(top_title)
-        self._top_list = QVBoxLayout()
+        top_scroll = QScrollArea()
+        top_scroll.setWidgetResizable(True)
+        top_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        top_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        top_host = QWidget()
+        self._top_list = QVBoxLayout(top_host)
+        self._top_list.setContentsMargins(0, 2, 6, 0)
         self._top_list.setSpacing(4)
-        topv.addLayout(self._top_list)
-        v.addWidget(top_card)
+        self._top_list.addStretch()
+        top_scroll.setWidget(top_host)
+        topv.addWidget(top_scroll, 1)
+
+        # 热力图列宽由周数决定（不会随卡片变宽而放大），等分两栏即可：
+        # 给热力图 3 份反而在卡片内留出大片空白，不如让两卡等宽齐整。
+        charts_row = QHBoxLayout()
+        charts_row.setSpacing(10)
+        charts_row.addWidget(heat_card, 1)
+        charts_row.addWidget(top_card, 1)
+        v.addLayout(charts_row)
         v.addStretch()
 
         scroll = QScrollArea()
@@ -705,6 +733,51 @@ class StatsPanel(QWidget):
 
     # ================= 刷新 =================
 
+    # 单个概览格子的最小可用宽度：再窄数值与标签就会挤成上下两行窄条
+    _TODAY_CELL_MIN_W = 104
+
+    def _relayout_today_grid(self) -> None:
+        """按可用宽度给今日概览格子分行：宽窗口一行铺满，窄窗口自动折行。
+
+        7 个格子固定挤在一行时，1024px 窗口下每个只剩约 75px，
+        数值与标签会被压成两行窄条；折行后每格都保持可读宽度。
+        """
+        cells = getattr(self, "_today_cells", [])
+        host_layout = self._today_host.layout()
+        if not cells or host_layout is None:
+            return
+        avail = self._today_host.width() or self.width() or 900
+        per_row = max(1, min(len(cells),
+                             (avail + 8) // (self._TODAY_CELL_MIN_W + 8)))
+        # 按「需要几行」反算每行格数，使各行长度均衡：
+        # 直接按容量切会得到 5+2、末行两格拉得远宽于首行；改为 4+3 后行内行间齐整。
+        if len(cells) > per_row:
+            rows_needed = -(-len(cells) // per_row)  # 向上取整
+            per_row = -(-len(cells) // rows_needed)
+        # 拆掉现有行（格子部件本身保留，仅重新分配所属行）
+        while host_layout.count():
+            item = host_layout.takeAt(0)
+            lay = item.layout()
+            if lay is not None:
+                while lay.count():
+                    lay.takeAt(0)
+                lay.deleteLater()
+        rows = [cells[i:i + per_row] for i in range(0, len(cells), per_row)]
+        for row in rows:
+            row_layout = QHBoxLayout()
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+            for cell in row:
+                row_layout.addWidget(cell, 1)
+            host_layout.addLayout(row_layout)
+        # 兼容既有引用：_today_grid 指向首行
+        self._today_grid = (host_layout.itemAt(0).layout()
+                            if host_layout.count() else self._today_grid)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._relayout_today_grid()
+
     def _refresh(self) -> None:
         summary = self._tracker.today_summary()
         # 今日概览格子
@@ -714,9 +787,11 @@ class StatsPanel(QWidget):
             if w is not None:
                 w.setParent(None)
                 w.deleteLater()
+        self._today_cells = []
         for f in FIELDS:
             cell = QFrame()
             cell.setObjectName("todayCell")
+            cell.setMinimumWidth(self._TODAY_CELL_MIN_W)
             cv = QVBoxLayout(cell)
             cv.setContentsMargins(8, 6, 8, 6)
             cv.setSpacing(2)
@@ -728,7 +803,8 @@ class StatsPanel(QWidget):
             label.setObjectName("subtitleLabel")
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             cv.addWidget(label)
-            self._today_grid.addWidget(cell)
+            self._today_cells.append(cell)
+        self._relayout_today_grid()
         # 连续活跃天数不再展示（用户要求隐藏）
         self._heatmap.set_data(
             self._tracker.daily_series(self._field, self._range_days),
@@ -741,7 +817,8 @@ class StatsPanel(QWidget):
             if w is not None:
                 w.setParent(None)
                 w.deleteLater()
-        for i, p in enumerate(self._tracker.top_papers(10), start=1):
+        top = self._tracker.top_papers(10)
+        for i, p in enumerate(top, start=1):
             row = QLabel(
                 f"{i}. {p.get('title', '')[:48]}"
                 f"{'…' if len(p.get('title', '')) > 48 else ''}"
@@ -749,10 +826,12 @@ class StatsPanel(QWidget):
             row.setObjectName("topRow")
             row.setWordWrap(True)
             self._top_list.addWidget(row)
-        if not self._tracker.top_papers(1):
+        if not top:
             empty = QLabel("还没有阅读记录，打开一篇论文开始积累吧")
             empty.setObjectName("subtitleLabel")
+            empty.setWordWrap(True)
             self._top_list.addWidget(empty)
+        self._top_list.addStretch()  # 行数少时行贴顶，不被拉伸摊开
 
     def _on_field_changed(self, _index: int) -> None:
         self._field = self._field_combo.currentData()

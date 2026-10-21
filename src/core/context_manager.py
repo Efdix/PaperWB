@@ -18,10 +18,17 @@ class ContextManager:
     不再区分短文/长文走不同策略。
     """
 
-    CHARS_PER_TOKEN = 2  # 保守估算：中英文混合约 2 字符 ≈ 1 token
+    CHARS_PER_TOKEN = 2  # 截断用的保守字符/ token 比
+    MAX_CONTEXT_TOKENS = 200_000  # 再大的“上下文”多半是配置误填，按上限钳制
 
-    def __init__(self, max_tokens: int = 1_000_000) -> None:
-        self.max_tokens = max_tokens
+    def __init__(self, max_tokens: int = 128_000) -> None:
+        try:
+            requested = int(max_tokens)
+        except (TypeError, ValueError):
+            requested = 128_000
+        # 旧配置默认 1_000_000，但主流模型窗口是 128k/200k。不钳制的话
+        # budget 永远为正，长对话会一路涨到服务端报 context length exceeded。
+        self.max_tokens = max(8_000, min(requested, self.MAX_CONTEXT_TOKENS))
         self._pdf_text: str = ""
         self._structured_doc: object | None = None  # StructuredDocument
         self._chat_history: list[dict] = []
@@ -68,8 +75,16 @@ class ContextManager:
         return self._build_full_context() + history_text
 
     def estimate_tokens(self, text: str) -> int:
-        """粗略估算文本占用的 token 数。"""
-        return len(text) // self.CHARS_PER_TOKEN
+        """估算 token 数：CJK 约 1 字/token，英文约 4 字符/token。
+
+        旧实现统一 ``len/2`` 会把中文低估一半、英文高估一倍；中文长文档
+        因此更容易撞服务端上下文上限。
+        """
+        if not text:
+            return 0
+        cjk = sum(1 for ch in text if ord(ch) >= 0x2E80)
+        other = len(text) - cjk
+        return cjk + (other + 3) // 4
 
     def add_to_history(self, role: str, content: str) -> None:
         """向对话历史追加一条消息。"""
@@ -89,7 +104,8 @@ class ContextManager:
 
         # 为 AI 回复预留约 4000 token
         used = self.estimate_tokens(system_prompt) + self.estimate_tokens(user_query)
-        budget = self.max_tokens - used - 4000
+        # 永远留出正预算：负 budget 会让 _truncate_text 的 head/tail 切片错位。
+        budget = max(2_000, self.max_tokens - used - 4_000)
 
         # 构建完整上下文（兜底路径也按问题决定是否附完整参考文献）
         full_context = self._build_full_context(user_query)

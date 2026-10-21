@@ -56,27 +56,58 @@ SYSTEM_PROMPT = (
 )
 
 
-def extract_pdf_chunks(pdf_path: str) -> list[dict]:
+def _chunk_text(text: str, max_chars: int) -> list[str]:
+    """把长段落切成不丢内容的块，优先在句末/空格处断开。"""
+    max_chars = max(1, int(max_chars))
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return [text] if text else []
+    out: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_chars, len(text))
+        if end < len(text):
+            window = text[start:end]
+            cut = max(
+                window.rfind("。"), window.rfind("！"), window.rfind("？"),
+                window.rfind(". "), window.rfind("! "), window.rfind("? "),
+                window.rfind("; "), window.rfind(" "),
+            )
+            if cut >= int(max_chars * 0.5):
+                end = start + cut + 1
+        piece = text[start:end].strip()
+        if piece:
+            out.append(piece)
+        start = end
+    return out
+
+
+def extract_pdf_chunks(pdf_path: str, interrupt_cb=None) -> list[dict] | None:
     """用 PyMuPDF 抽取 PDF 段落块（只读打开）。
 
     Returns:
-        [{"p": 页码(1基), "t": 段落文本}, ...]；失败返回空列表。
+        [{"p": 页码(1基), "t": 段落文本}, ...]；成功但无文本返回 []，
+        打开/读取失败返回 None（调用方必须区分这两者，不能把失败记成已索引）。
     """
     try:
         import fitz
         with fitz.open(pdf_path) as doc:
             chunks: list[dict] = []
             for pno, page in enumerate(doc, 1):
+                # 逐页响应中断：大 PDF 抽取可能几十秒，关窗/停止索引不该等整篇。
+                if interrupt_cb is not None and interrupt_cb():
+                    return None  # 中断 ≠ 抽取完成，不能把半篇索引当成有效结果
                 text = page.get_text()
                 if not text:
                     continue
                 for p in split_paragraphs(text, MIN_PARA_CHARS):
-                    chunks.append({"p": pno, "t": p[:MAX_CHUNK_CHARS]})
-                    if len(chunks) >= MAX_CHUNKS_PER_PDF:
-                        return chunks
+                    for piece in _chunk_text(p, MAX_CHUNK_CHARS):
+                        chunks.append({"p": pno, "t": piece})
+                        if len(chunks) >= MAX_CHUNKS_PER_PDF:
+                            return chunks
             return chunks
-    except Exception:
-        return []
+    except Exception:  # noqa: BLE001 — 加密/损坏/权限问题
+        return None
 
 
 def extract_structured_chunks(pdf_path: str) -> list[dict] | None:
@@ -102,8 +133,12 @@ def extract_structured_chunks(pdf_path: str) -> list[dict] | None:
     try:
         if int(state.get("fast_version", 0) or 0) != FAST_DOCUMENT_VERSION:
             return None
-        if abs(float(state.get("pdf_mtime", 0.0) or 0.0)
-               - os.path.getmtime(pdf_path)) > 1.0:
+        st = os.stat(pdf_path)
+        if state.get("pdf_size") or state.get("pdf_mtime_ns"):
+            if int(state.get("pdf_size", 0) or 0) != st.st_size \
+                    or int(state.get("pdf_mtime_ns", 0) or 0) != st.st_mtime_ns:
+                return None
+        elif abs(float(state.get("pdf_mtime", 0.0) or 0.0) - st.st_mtime) > 1.0:
             return None
     except (OSError, TypeError, ValueError):
         return None
@@ -120,20 +155,29 @@ def extract_structured_chunks(pdf_path: str) -> list[dict] | None:
         text = (e.get("text") or "").strip()
         if len(text) < MIN_PARA_CHARS:
             continue
-        chunks.append({
-            "p": int(e.get("page", 0) or 0),
-            "s": (e.get("section_name") or "").strip()[:60],
-            "t": text[:MAX_CHUNK_CHARS],
-        })
+        section = (e.get("section_name") or "").strip()[:60]
+        for piece in _chunk_text(text, MAX_CHUNK_CHARS):
+            chunks.append({
+                "p": int(e.get("page", 0) or 0),
+                "s": section,
+                "t": piece,
+            })
+            if len(chunks) >= MAX_CHUNKS_PER_PDF:
+                break
         if len(chunks) >= MAX_CHUNKS_PER_PDF:
             break
     return chunks
 
 
-def extract_chunks(pdf_path: str) -> list[dict]:
-    """全文抽取统一口径：优先结构化缓存（去噪+章节），否则 PyMuPDF 裸文本。"""
+def extract_chunks(pdf_path: str, interrupt_cb=None) -> list[dict] | None:
+    """全文抽取统一口径：优先结构化缓存（去噪+章节），否则 PyMuPDF 裸文本。
+
+    None = 抽取失败（加密/损坏/权限），与“成功但没有文本”的 [] 区分开。
+    """
     chs = extract_structured_chunks(pdf_path)
-    return chs if chs else extract_pdf_chunks(pdf_path)
+    if chs:
+        return chs
+    return extract_pdf_chunks(pdf_path, interrupt_cb=interrupt_cb)
 
 
 def _short_authors(authors: list[str]) -> str:
@@ -289,9 +333,17 @@ class LibraryQAEngine:
                 items_map[key] = {"pdf": pdf, "mtime": 0.0, "error": True}
                 chunks_by_key.pop(key, None)
             elif force or entry.get("mtime") != mtime:
-                chs = extract_chunks(pdf)
-                chunks_by_key[key] = chs
-                items_map[key] = {"pdf": pdf, "mtime": mtime, "error": False}
+                chs = extract_chunks(pdf, interrupt_cb=interrupt_cb)
+                if interrupt_cb is not None and interrupt_cb():
+                    break  # 中断：这一篇保持旧状态，下次继续
+                if chs is None:
+                    # 抽取失败必须记成 error，否则下次启动不会重试，界面还会
+                    # 把这篇算进“已索引”的全文篇数。
+                    chunks_by_key.pop(key, None)
+                    items_map[key] = {"pdf": pdf, "mtime": mtime, "error": True}
+                else:
+                    chunks_by_key[key] = chs
+                    items_map[key] = {"pdf": pdf, "mtime": mtime, "error": False}
                 changed = True
             # else: 缓存仍有效，跳过
 
@@ -310,7 +362,14 @@ class LibraryQAEngine:
             except OSError:
                 continue
             if entry.get("mtime") == mtime and not entry.get("error"):
-                chunks_by_key[key] = extract_chunks(pdf)
+                chs = extract_chunks(pdf, interrupt_cb=interrupt_cb)
+                if interrupt_cb is not None and interrupt_cb():
+                    break
+                if chs is None:
+                    chunks_by_key.pop(key, None)
+                    items_map[key] = {"pdf": pdf, "mtime": mtime, "error": True}
+                else:
+                    chunks_by_key[key] = chs
                 changed = True
 
         chunks_flat = [
@@ -369,12 +428,15 @@ class LibraryQAEngine:
         chs = extract_chunks(pdf)
         with self._lock:
             chunks = [c for c in state.get("chunks", []) if c.get("k") != key]
-            chunks.extend(
-                {"k": key, "p": c["p"], "s": c.get("s", ""), "t": c["t"]}
-                for c in chs)
+            if chs is None:
+                items_map[key] = {"pdf": pdf, "mtime": mtime, "error": True}
+            else:
+                chunks.extend(
+                    {"k": key, "p": c["p"], "s": c.get("s", ""), "t": c["t"]}
+                    for c in chs)
             state["chunks"] = chunks
             self._ft_dirty = True
-        return True
+        return chs is not None
 
     def flush(self, reindex: bool = True) -> None:
         """把 refresh_item 累积的变更落盘；reindex 时同步重建全文检索器。
@@ -446,17 +508,27 @@ class LibraryQAEngine:
         ft_only = sorted((k for k, e in picked.items() if e["meta"] <= 0),
                          key=lambda k: picked[k]["ft"], reverse=True)
         limit = META_MAX_ITEMS if metadata_only else CTX_MAX_ITEMS
-        ordered_keys = (meta_keys + ft_only)[:limit]
+        if metadata_only:
+            ordered_keys = meta_keys[:limit]
+        else:
+            # 先放“标题命中且有正文证据”的条目，再放纯全文命中，最后才是
+            # 只有元数据的条目。此前 meta_keys 永远整体排在前面，8 篇标题
+            # 相似的文献就能把真正回答问题的正文证据全部挤出上下文。
+            meta_with_ft = [k for k in meta_keys if picked[k]["chunks"]]
+            meta_without_ft = [k for k in meta_keys if not picked[k]["chunks"]]
+            ordered_keys = (meta_with_ft + ft_only + meta_without_ft)[:limit]
 
         references: list[dict] = []
         blocks: list[str] = []
-        for n, k in enumerate(ordered_keys, 1):
+        ref_n = 0
+        for k in ordered_keys:
             d = items.get(k)
             if d is None:
                 continue
+            ref_n += 1
             e = picked[k]
             author_str = _short_authors(d["authors"])
-            head = f"[{n}] {author_str} ({d['year'] or '?'}). {d['title']}"
+            head = f"[{ref_n}] {author_str} ({d['year'] or '?'}). {d['title']}"
             if d["publication"]:
                 head += f". {d['publication']}"
             if d["doi"]:
@@ -470,7 +542,7 @@ class LibraryQAEngine:
                 lines.append(f"    （{where}）{text[:CTX_CHUNK_CHARS]}")
             blocks.append("\n".join(lines))
             references.append({
-                "n": n, "key": k, "title": d["title"], "authors": author_str,
+                "n": ref_n, "key": k, "title": d["title"], "authors": author_str,
                 "year": d["year"], "pdf_path": d["pdf_path"],
                 "page": e["chunks"][0][0] if e["chunks"] else 0,
                 "has_pdf": bool(d["pdf_path"]),
@@ -509,11 +581,8 @@ class LibraryQAEngine:
 
     def _save_state(self, state: dict) -> None:
         try:
+            from ..utils.atomic import atomic_write_json
             self._index_dir.mkdir(parents=True, exist_ok=True)
-            f = self._state_path()
-            tmp = f.with_suffix(".tmp")
-            tmp.write_text(
-                json.dumps(state, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(f)
+            atomic_write_json(self._state_path(), state, indent=None)
         except OSError:
             pass  # 磁盘异常时放弃落盘，内存索引仍然可用

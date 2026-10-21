@@ -416,10 +416,16 @@ def _append_missing_page_texts(pdf_path: str, doc, rows: list[dict],
     except Exception:
         return
     try:
-        pages_with_rows: set[int] = {r["page"] for r in rows}
+        # 只把“有正文/图片/表格等有效元素”的页视为已有输出。仅有页眉页脚
+        # 的页也会出现在 rows 里，但后续会被过滤成空页；若因此跳过兜底，
+        # 整页正文会静默消失。
+        pages_with_content: set[int] = {
+            r["page"] for r in rows
+            if r.get("type") not in ("header_footer", "unknown")
+        }
         for page_no in range(1, len(pdf) + 1):
-            if page_no in pages_with_rows:
-                continue  # 该页 docling 已有输出，不重复兜底
+            if page_no in pages_with_content:
+                continue  # 该页 docling 已有有效输出，不重复兜底
             try:
                 blocks = pdf[page_no - 1].get_text("blocks")
             except Exception:
@@ -534,6 +540,15 @@ def parse_pdf(pdf_path: str, dpi: int = 150) -> list[dict]:
     扫描版 PDF 回退到 OCR 解析（do_ocr=True）。Raises:
         Exception: 解析失败（调用方显示错误并允许用户重试）。
     """
+    # 以 PDF 实际页数为准。Docling 的 doc.pages 可能缺尾部页，不能用它
+    # 决定 total_pages，否则缺页会被当成“解析完整”。
+    try:
+        import fitz
+        with fitz.open(pdf_path) as _pdf:
+            actual_pages = len(_pdf)
+    except Exception:  # noqa: BLE001 — 页数探测失败时退回 Docling 结果
+        actual_pages = 0
+
     do_ocr = not has_text_layer(pdf_path)
     if do_ocr:
         print("[Docling] 检测到扫描版 PDF（无文本层），回退到 OCR 解析（速度较慢）")
@@ -601,7 +616,8 @@ def parse_pdf(pdf_path: str, dpi: int = 150) -> list[dict]:
     for r in rows:
         pages.setdefault(r["page"], []).append(r)
 
-    total = max(doc.pages.keys()) if doc.pages else (max(pages) if pages else 0)
+    docling_total = max(doc.pages.keys()) if doc.pages else (max(pages) if pages else 0)
+    total = max(actual_pages, docling_total)
     out: list[dict] = []
     for page_no in range(1, total + 1):
         elems = pages.get(page_no, [])

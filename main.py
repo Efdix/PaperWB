@@ -45,6 +45,14 @@ def _wait_for_extraction(timeout: int = 240) -> None:
     meipass = getattr(sys, "_MEIPASS", None)
     if not meipass:
         return
+    # onedir 下 _MEIPASS 就是 exe 所在目录，没有“解压完成”这回事。
+    # 继续等标记文件只会在路径不匹配时空等 240 秒。
+    try:
+        if os.path.normcase(os.path.abspath(meipass)) == os.path.normcase(
+                os.path.abspath(os.path.dirname(sys.executable))):
+            return
+    except OSError:
+        pass
     markers = [
         os.path.join(meipass, "sqlite3.dll"),
         os.path.join(meipass, "PySide6", "QtGui.pyd"),
@@ -104,15 +112,21 @@ def _preload_torch() -> None:
                 pass
 
 
-def _preload_heavy_libs() -> None:
+def _preload_heavy_libs(strict: bool = False) -> list[str]:
     """打包版急切导入 numpy/pandas/scipy/sklearn/PIL 等含编译子模块的库。
 
     PyInstaller frozen 环境下，这些库的编译子模块若按意外顺序被懒加载，
     会出现 "No module named 'numpy.random._generator' / 'pandas._libs.algos'"
     之类错误。预先完整初始化即可规避（仅打包版有此问题，开发模式无害）。
+
+    Returns:
+        导入失败的模块列表；strict=False（正常启动）只吞掉错误，strict=True
+        （自检）由调用方决定是否判 FAIL。旧实现内部 ``except: pass``，导致
+        自检的 heavy-libs-eager 永远 PASS，打包缺库也发现不了。
     """
     if not getattr(sys, "frozen", False):
-        return
+        return []
+    failures: list[str] = []
     for _mod in ("numpy", "numpy.random", "numpy.linalg",
                  "numpy.fft", "numpy.polynomial", "pandas",
                  "scipy", "scipy.ndimage", "scipy.signal", "scipy.optimize",
@@ -120,8 +134,9 @@ def _preload_heavy_libs() -> None:
                  "PIL", "cv2"):
         try:
             __import__(_mod)
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            failures.append(f"{_mod}: {e}")
+    return failures
 
 
 def _preload_docling() -> None:
@@ -241,11 +256,11 @@ def _run_selftest() -> int:
     except Exception as e:  # noqa: BLE001
         _fail("sqlite3-import", str(e))
     # 急切导入 numpy，规避 frozen 下 torch→numpy 懒加载循环导入
-    try:
-        _preload_heavy_libs()
+    failures = _preload_heavy_libs(strict=True)
+    if failures:
+        _fail("heavy-libs-eager", "; ".join(failures[:4]))
+    else:
         _ok("heavy-libs-eager")
-    except Exception as e:  # noqa: BLE001
-        _fail("heavy-libs-eager", str(e))
     if getattr(sys, "frozen", False):
         try:
             import ctypes
@@ -309,7 +324,7 @@ def _run_selftest() -> int:
         except Exception as e:  # noqa: BLE001
             _fail("docling-parse", _exc_chain(e))
     elif pdf_arg:
-        _ok(f"docling-skip(pdf not found: {pdf_arg})")
+        _fail(f"docling-skip(pdf not found: {pdf_arg})")
 
     all_ok = True
     lines = []
@@ -364,9 +379,12 @@ if __name__ == "__main__":
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Efdix.PaperWB")
 
+    from src.utils.version import APP_VERSION
+
     app = QApplication(sys.argv)
     app.setApplicationName("PaperWB")
-    app.setApplicationVersion("0.1.3")
+    # 版本号单一来源：src/utils/version.py（构建脚本正则也从那里抓）
+    app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName("PaperWB")
     app.setStyle("Fusion")  # 跨平台一致的 QSS 基础
     _icon = _app_icon_path()

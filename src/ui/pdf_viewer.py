@@ -84,6 +84,41 @@ MERGEABLE_TYPES = frozenset({
 })
 
 
+class _ElidedStatusLabel(QLabel):
+    """按宽度省略的状态标签（完整文本放 tooltip）。
+
+    阅读工具栏右侧是一排固定宽度按钮，长状态（文件名/解析进度）若按原文宽度
+    占位会把按钮挤出可视区；水平策略设为 Ignored 后状态只吃剩余空间。
+    """
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           self.sizePolicy().verticalPolicy())
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802 (保持 Qt 命名)
+        self._full_text = text or ""
+        self.setToolTip(self._full_text)
+        self._refresh()
+
+    def full_text(self) -> str:
+        return self._full_text
+
+    def _refresh(self) -> None:
+        width = self.width()
+        if width <= 0:
+            super().setText(self._full_text)
+            return
+        super().setText(self.fontMetrics().elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, width))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh()
+
+
 class QALineEdit(QLineEdit):
     """卡片提问输入框：Ctrl+Enter 发送（与右侧问答区一致），单按 Enter 不发送。"""
 
@@ -317,10 +352,12 @@ class ParagraphCard(QFrame):
             self._setup_body_card()
         self._sync_card_height(640)
 
-    def _make_card_base(self, bg: str = "#ffffff", border: str = "#e5e5ea"):
+    def _make_card_base(self, bg: str = "#ffffff", border: str = "#e8eaee"):
+        # 左右外边距从 8px 收到 6px：单栏阅读时左右合计多出 4px 正文宽度，
+        # 多栏/窄窗下不至于把正文挤成窄条。
         self.setStyleSheet(
             f"ParagraphCard {{ background-color: {bg}; border: 1px solid {border}; "
-            f"border-radius: 10px; margin: 4px 8px; }}"
+            f"border-radius: 9px; margin: 3px 6px; }}"
         )
 
     def _setup_title_card(self):
@@ -968,31 +1005,51 @@ class PDFViewerPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        toolbar = QHBoxLayout()
-        toolbar.setContentsMargins(12, 8, 12, 8)
-        title = QLabel("结构化阅读")
-        title.setObjectName("titleLabel")
-        toolbar.addWidget(title)
-        toolbar.addStretch()
+        # 单条动作行：状态与解析进度在左，阅读控制与面板开关在右。
+        # 原先「标题行 + 信息行」两行合计近百像素却只有四个字和一行提示，
+        # 现在合并成一行，把高度还给正文。
+        action_bar = QFrame()
+        action_bar.setObjectName("actionBar")
+        bar = QHBoxLayout(action_bar)
+        bar.setContentsMargins(4, 4, 8, 4)
+        bar.setSpacing(6)
 
-        self.auto_trans_btn = QPushButton("自动翻译：关")
-        self.auto_trans_btn.setObjectName("secondaryBtn")
+        # 状态文字可被省略号截断（完整内容在 tooltip）：窄窗口下按钮行优先，
+        # 不能让长状态把右侧阅读控制挤出可视区。
+        self.info_label = _ElidedStatusLabel(
+            "尚未加载 PDF — 从左侧文献库选择 PDF 文件")
+        self.info_label.setObjectName("actionStatus")
+        self.info_label.setToolTip(
+            "提示：解析效果不佳时，右键点击任意段落卡片可 ✂ 拆分 / ⤴⤵ 合并段落")
+        bar.addWidget(self.info_label, 1)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setMaximumWidth(160)
+        self.progress_bar.setMaximumHeight(14)
+        bar.addWidget(self.progress_bar)
+
+        self.auto_trans_btn = QPushButton("🌐")
+        self.auto_trans_btn.setObjectName("paneToggle")
+        self.auto_trans_btn.setCheckable(True)
         self.auto_trans_btn.setToolTip("开启后，滚动到可见区域的英文段落将自动翻译")
         self.auto_trans_btn.clicked.connect(self._on_toggle_auto_translate)
         self.auto_trans_btn.setEnabled(False)
-        toolbar.addWidget(self.auto_trans_btn)
+        bar.addWidget(self.auto_trans_btn)
 
         self.font_smaller_btn = QPushButton("A−")
         self.font_smaller_btn.setObjectName("fontBtn")
         self.font_smaller_btn.setToolTip("减小阅读字号")
         self.font_smaller_btn.clicked.connect(lambda: self._change_font_delta(-1))
-        toolbar.addWidget(self.font_smaller_btn)
+        bar.addWidget(self.font_smaller_btn)
 
         self.font_bigger_btn = QPushButton("A＋")
         self.font_bigger_btn.setObjectName("fontBtn")
         self.font_bigger_btn.setToolTip("增大阅读字号")
         self.font_bigger_btn.clicked.connect(lambda: self._change_font_delta(1))
-        toolbar.addWidget(self.font_bigger_btn)
+        bar.addWidget(self.font_bigger_btn)
         self._update_font_btn_tips()
 
         from PySide6.QtGui import QShortcut, QKeySequence
@@ -1003,43 +1060,27 @@ class PDFViewerPanel(QWidget):
         QShortcut(QKeySequence("Ctrl+="), self,
                   activated=lambda: self._change_font_delta(1))
 
-        self.read_mark_btn = QPushButton("✓ 标记已读")
-        self.read_mark_btn.setObjectName("secondaryBtn")
+        self.read_mark_btn = QPushButton("✓")
+        self.read_mark_btn.setObjectName("paneToggle")
         self.read_mark_btn.setToolTip("标记这篇论文为已读，左侧文献列表会显示 ✓")
         self.read_mark_btn.setEnabled(False)
         self.read_mark_btn.clicked.connect(self._on_toggle_read_mark)
-        toolbar.addWidget(self.read_mark_btn)
+        bar.addWidget(self.read_mark_btn)
 
-        self.fullscreen_btn = QPushButton("⛶ 全屏阅读")
-        self.fullscreen_btn.setObjectName("secondaryBtn")
+        # 左右面板开关由主窗口注入（阅读工作台不再有独立标题栏）
+        self._toolbar_slot = QHBoxLayout()
+        self._toolbar_slot.setContentsMargins(0, 0, 0, 0)
+        self._toolbar_slot.setSpacing(6)
+        bar.addLayout(self._toolbar_slot)
+
+        self.fullscreen_btn = QPushButton("⛶")
+        self.fullscreen_btn.setObjectName("paneToggle")
         self.fullscreen_btn.setToolTip(
-            "沉浸阅读：隐藏菜单栏/导航/侧栏，整个窗口只留正文（F11，Esc 或再点一次退出）")
+            "沉浸阅读：隐藏导航与侧栏，整个窗口只留正文（F11，Esc 或再点一次退出）")
         self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
-        toolbar.addWidget(self.fullscreen_btn)
+        bar.addWidget(self.fullscreen_btn)
 
-        layout.addLayout(toolbar)
-
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #e4e0d8; max-height: 1px;")
-        layout.addWidget(sep)
-
-        info = QHBoxLayout()
-        info.setContentsMargins(12, 4, 12, 4)
-        self.info_label = QLabel("尚未加载 PDF — 从左侧文献库选择 PDF 文件")
-        self.info_label.setObjectName("subtitleLabel")
-        self.info_label.setToolTip(
-            "提示：解析效果不佳时，右键点击任意段落卡片可 ✂ 拆分 / ⤴⤵ 合并段落")
-        info.addWidget(self.info_label)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setMaximumWidth(200)
-        self.progress_bar.setMaximumHeight(16)
-        info.addWidget(self.progress_bar)
-        info.addStretch()
-        layout.addLayout(info)
+        layout.addWidget(action_bar)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -1054,9 +1095,11 @@ class PDFViewerPanel(QWidget):
         self.card_layout.setContentsMargins(0, 10, 0, 20)
         self.placeholder = QLabel(PLACEHOLDER_TEXT)
         self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # 折行：占位文案行较长，窄窗口下不折行会把正文区顶出横向滚动条
+        self.placeholder.setWordWrap(True)
         self.placeholder.setStyleSheet(
-            "color: #718180; background-color: #f7faf8; border: 1px dashed #c9ddd7; "
-            "border-radius: 14px; padding: 70px 40px; font-size: 14px;"
+            "color: #7c818a; background-color: #f8fafc; border: 1px dashed #d3dae3; "
+            "border-radius: 12px; padding: 60px 32px; font-size: 13px;"
         )
         self.card_layout.addWidget(self.placeholder)
         self.scroll_area.setWidget(self.container)
@@ -1112,23 +1155,30 @@ class PDFViewerPanel(QWidget):
                 self._pre_fullscreen_state = None
             else:
                 win.showNormal()
-        self.fullscreen_btn.setText("⛶ 退出全屏" if entering else "⛶ 全屏阅读")
+        self.fullscreen_btn.setText("⤡" if entering else "⛶")
+        self.fullscreen_btn.setToolTip(
+            "退出沉浸阅读（Esc / F11）" if entering else
+            "沉浸阅读：隐藏导航与侧栏，整个窗口只留正文（F11，Esc 或再点一次退出）")
         self.fullscreen_toggled.emit(entering)
 
     # ---- 读完标记 ----
 
     def _update_read_mark_btn(self) -> None:
-        """按当前文献的已读状态刷新工具栏按钮文案。"""
+        """按当前文献的已读状态刷新工具栏按钮。
+
+        紧凑工具栏下按钮只显示图标，状态由图标区分（✓ 未读 / ✅ 已读），
+        文字说明放 tooltip。
+        """
         if not self._current_path:
             self.read_mark_btn.setEnabled(False)
             return
         from ..core.read_marks import is_read
         self.read_mark_btn.setEnabled(True)
         if is_read(self._current_path):
-            self.read_mark_btn.setText("✅ 已读")
+            self.read_mark_btn.setText("✅")
             self.read_mark_btn.setToolTip("这篇论文已标记为已读，点击取消标记")
         else:
-            self.read_mark_btn.setText("✓ 标记已读")
+            self.read_mark_btn.setText("✓")
             self.read_mark_btn.setToolTip("标记这篇论文为已读，左侧文献列表会显示 ✓")
 
     def _on_toggle_read_mark(self) -> None:
@@ -1447,7 +1497,7 @@ class PDFViewerPanel(QWidget):
         self.progress_bar.setValue(0)
         self.auto_trans_btn.setEnabled(False)
         self._auto_translate = False
-        self.auto_trans_btn.setText("自动翻译：关")
+        self._sync_auto_trans_btn()
 
     def _render_document(self, doc: "StructuredDocument") -> int:
         """渲染结构化文档为卡片流。返回渲染失败（跳过）的元素个数。"""
@@ -1681,7 +1731,7 @@ class PDFViewerPanel(QWidget):
             state = load_doc_state(self._current_path)
         auto_translate = bool(state.get("auto_translate", False)) if isinstance(state, dict) else False
         self._auto_translate = auto_translate
-        self.auto_trans_btn.setText(f"自动翻译：{'开' if auto_translate else '关'}")
+        self._sync_auto_trans_btn()
 
     def _resolve_image_path(self, elem, image_base_dir: str) -> str:
         """解析图表截图路径：优先元素自带路径，否则按 element_id 重建（兼容旧缓存）。
@@ -1772,9 +1822,19 @@ class PDFViewerPanel(QWidget):
                 card.show_translation_error(err)
                 break
 
-    def _on_toggle_auto_translate(self):
-        self._auto_translate = not self._auto_translate
-        self.auto_trans_btn.setText(f"自动翻译：{'开' if self._auto_translate else '关'}")
+    def _sync_auto_trans_btn(self) -> None:
+        """按钮是 checkable 开关：图标固定，勾选态即开启态（tooltip 说明当前状态）。"""
+        self.auto_trans_btn.setChecked(self._auto_translate)
+        self.auto_trans_btn.setToolTip(
+            ("自动翻译已开启：滚动到可见区域的英文段落将自动翻译（点击关闭）"
+             if self._auto_translate else
+             "自动翻译：开启后，滚动到可见区域的英文段落将自动翻译"))
+
+    def _on_toggle_auto_translate(self, checked: bool | None = None):
+        # 按钮为 checkable：以勾选态为准（checked=None 时兼容程序化调用）
+        self._auto_translate = (bool(checked) if checked is not None
+                                else not self._auto_translate)
+        self._sync_auto_trans_btn()
         from ..utils.config import load_doc_state, save_doc_state
         state = load_doc_state(self._current_path)
         state["auto_translate"] = self._auto_translate

@@ -93,7 +93,9 @@ def send_notification_email(cfg: EmailConfig, subject: str, body: str) -> tuple[
                     server.starttls(context=ssl.create_default_context())
                     server.ehlo()
                 except smtplib.SMTPNotSupportedError:
-                    pass  # 服务器不支持 STARTTLS，按明文继续（内网/本地网关场景）
+                    # 绝不降级明文：授权码和提醒正文会裸奔。让用户改用 465/SSL。
+                    return False, ("服务器不支持 STARTTLS。为避免明文传输邮箱授权码，"
+                                   "已取消发送；请把端口改为 465 并勾选 SSL。")
             server.login(cfg.username, cfg.password)
             server.sendmail(sender_addr, cfg.recipients, msg.as_string())
         finally:

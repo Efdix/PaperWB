@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .reference_match import normalize_doi, normalize_title
+from ..utils.atomic import atomic_write_json
 from ..utils.config import get_search_dir
 
 MAX_HISTORY_ITEMS = 200
@@ -118,12 +119,8 @@ class BlacklistStore:
 
     def _save(self) -> None:
         try:
-            d = _dir(self._dir)
-            d.mkdir(parents=True, exist_ok=True)
-            self._file().write_text(
-                json.dumps([e.to_dict() for e in self._entries],
-                           ensure_ascii=False, indent=1),
-                encoding="utf-8")
+            atomic_write_json(
+                self._file(), [e.to_dict() for e in self._entries], indent=1)
         except OSError:
             pass
 
@@ -245,9 +242,7 @@ def append_history(kind: str, request: str, n_results: int = 0,
             "n_results": int(n_results or 0),
             "detail": (detail or "").strip()[:500],
         })
-        f.write_text(json.dumps(items[-MAX_HISTORY_ITEMS:],
-                                ensure_ascii=False, indent=1),
-                     encoding="utf-8")
+        atomic_write_json(f, items[-MAX_HISTORY_ITEMS:], indent=1)
     except OSError:
         pass
 

@@ -250,8 +250,10 @@ try {
     }
 
     # ---------- 5. compile installers (full + lite) ----------
-    $Ver = (Select-String -Path main.py -Pattern 'setApplicationVersion\("([^"]+)"\)')[0].
+    # 版本号唯一来源：src/utils/version.py 的 APP_VERSION（main.py 也读它设 QApplication 版本）
+    $Ver = (Select-String -Path "src\utils\version.py" -Pattern 'APP_VERSION\s*=\s*"([^"]+)"')[0].
            Matches[0].Groups[1].Value
+    if (-not $Ver) { Die "cannot read APP_VERSION from src\utils\version.py" }
     Step "Compile full installer (version $Ver, LZMA2 compression may take a while)"
     & $Iscc "/DMyAppVersion=$Ver" (Join-Path $PSScriptRoot "PaperWB.iss")
     if ($LASTEXITCODE -ne 0) { Die "ISCC failed (exit $LASTEXITCODE)" }
@@ -267,11 +269,38 @@ try {
     if (-not (Test-Path $OutLite)) { Die "lite installer output missing: $OutLite" }
     $MbLite = [math]::Round((Get-Item $OutLite).Length / 1MB)
 
+    # ---------- 6. release manifest (hashes + sizes) ----------
+    # 发布用清单：GitHub Release 会自动带 sha256（asset digest），但自建静态源
+    # 需要这份文件里的哈希；出包时一并算好，省得发布时手工算错。
+    Step "Write release manifest (sha256)"
+    $Assets = [ordered]@{}
+    foreach ($item in @(@{Kind = "full"; Path = $Out}, @{Kind = "lite"; Path = $OutLite})) {
+        $hash = (Get-FileHash -Path $item.Path -Algorithm SHA256).Hash.ToLower()
+        $name = Split-Path $item.Path -Leaf
+        $Assets[$item.Kind] = [ordered]@{
+            name   = $name
+            size   = (Get-Item $item.Path).Length
+            sha256 = $hash
+            url    = ""   # 发布时填下载地址（GitHub 由 API 提供；自建源填 CDN 地址）
+        }
+    }
+    $Manifest = [ordered]@{
+        version      = $Ver
+        notes      = "（发布时填写更新说明，或直接把 GitHub Release 的说明作为 notes）"
+        page_url   = "https://github.com/Efdix/PaperWB/releases"
+        published_at = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+        assets     = $Assets
+    }
+    $ManifestPath = Join-Path $PSScriptRoot "Output\release-$Ver.json"
+    $Manifest | ConvertTo-Json -Depth 6 | Set-Content -Path $ManifestPath -Encoding UTF8
+    Write-Host "  manifest: $ManifestPath" -ForegroundColor Green
+
     $Sw.Stop()
     Write-Host ""
     Write-Host ("DONE in {0:mm} min:" -f $Sw.Elapsed) -ForegroundColor Green
     Write-Host ("  full: {0} ({1} MB)" -f $Out, $Mb) -ForegroundColor Green
     Write-Host ("  lite: {0} ({1} MB)" -f $OutLite, $MbLite) -ForegroundColor Green
+    Write-Host "  next: installer\publish_release.ps1 -NotesFile <更新说明.md>   （打 tag 并上传 GitHub Release）" -ForegroundColor Green
     exit 0
 } finally {
     Pop-Location

@@ -11,7 +11,8 @@ from PySide6.QtCore import Qt, QThread, Signal as QtSignal
 from ..core.llm_client import PROVIDERS, VISION_MODELS
 from ..utils.config import (
     load_config, save_config, get_vision_api, get_text_api, get_openalex_api_key,
-    get_easyscholar_api_key, get_email_config, save_email_config,
+    get_easyscholar_api_key, get_email_config, merge_email_config,
+    get_update_config, merge_update_config,
 )
 from ..utils.threads import track
 
@@ -189,6 +190,112 @@ class EmailNotifyTab(QWidget):
             "password": self._password.text(),
             "sender": "",
             "recipients": self._recipients.text().strip(),
+        }
+
+
+class UpdateTab(QWidget):
+    """更新推送配置页签：自动检查开关、间隔、更新源。"""
+
+    check_requested = QtSignal()  # 「立即检查更新」：交由对话框先保存再触发检查
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        desc = QLabel(
+            "PaperWB 会在启动后静默检查新版本（每台机器一个请求，失败不打扰）。"
+            "发现新版本时应用栏会出现提示胶囊，点开可查看更新说明并下载安装包；"
+            "安装为覆盖升级，不会改动数据目录（文献库、API Key、写作知识库均保留）。"
+        )
+        desc.setObjectName("subtitleLabel")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        group = QGroupBox("自动检查")
+        form = QFormLayout(group)
+        self._enabled_cb = QCheckBox("启动后自动检查新版本")
+        form.addRow("", self._enabled_cb)
+        self._interval = QSpinBox()
+        self._interval.setRange(1, 720)
+        self._interval.setSuffix(" 小时")
+        self._interval.setToolTip("两次自动检查之间的最小间隔（同一天内不重复请求）")
+        form.addRow("检查间隔：", self._interval)
+        layout.addWidget(group)
+
+        src_group = QGroupBox("更新源")
+        src_form = QFormLayout(src_group)
+        self._source = QComboBox()
+        self._source.addItem("GitHub Releases（默认，Efdix/PaperWB）", "github")
+        self._source.addItem("自定义清单 URL", "custom")
+        self._source.currentIndexChanged.connect(self._on_source_changed)
+        src_form.addRow("来源：", self._source)
+        self._url = QLineEdit()
+        self._url.setPlaceholderText("https://example.com/paperwb/version.json")
+        self._url.setToolTip(
+            "自建静态 JSON 清单地址，格式："
+            '{"version":"0.3.0","notes":"...","assets":{"full":{"url":"...","sha256":"..."},'
+            '"lite":{...}}}')
+        src_form.addRow("清单地址：", self._url)
+        layout.addWidget(src_group)
+
+        from ..utils.version import current_version
+
+        self._version_label = QLabel(f"当前版本：v{current_version()}")
+        self._version_label.setObjectName("subtitleLabel")
+        layout.addWidget(self._version_label)
+
+        self._check_btn = QPushButton("立即检查更新")
+        self._check_btn.setObjectName("secondaryBtn")
+        self._check_btn.setToolTip("在设置里直接检查（不受「跳过此版本」限制）")
+        self._check_btn.clicked.connect(self._request_check)
+        row = QHBoxLayout()
+        row.addWidget(self._check_btn)
+        row.addStretch()
+        layout.addLayout(row)
+
+        hint = QLabel(
+            "更新源只用于查询版本号与下载安装包（自标识 User-Agent，不发送任何本机信息）。"
+            "GitHub 在国内可能较慢或不可达，此时可在「检查更新」窗口改用「打开发布页」手动下载。")
+        hint.setObjectName("subtitleLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        layout.addStretch()
+
+        self._check_requested = False
+
+    def _on_source_changed(self) -> None:
+        custom = self._source.currentData() == "custom"
+        self._url.setEnabled(custom)
+
+    def _request_check(self) -> None:
+        """立即检查：先落盘本页配置，再交主窗口检查（保证用的是刚改的设置）。"""
+        self._check_requested = True
+        self.check_requested.emit()
+
+    def take_check_request(self) -> bool:
+        """是否由本页「立即检查更新」触发的关闭（消费一次即清除）。"""
+        flag = self._check_requested
+        self._check_requested = False
+        return flag
+
+    def load(self, cfg: dict) -> None:
+        self._enabled_cb.setChecked(bool(cfg.get("enabled", True)))
+        try:
+            self._interval.setValue(int(cfg.get("interval_hours") or 24))
+        except (TypeError, ValueError):
+            self._interval.setValue(24)
+        idx = self._source.findData(str(cfg.get("source") or "github"))
+        self._source.setCurrentIndex(idx if idx >= 0 else 0)
+        self._url.setText(str(cfg.get("url", "") or ""))
+        self._on_source_changed()
+
+    def get(self) -> dict:
+        return {
+            "enabled": self._enabled_cb.isChecked(),
+            "interval_hours": int(self._interval.value()),
+            "source": str(self._source.currentData() or "github"),
+            "url": self._url.text().strip(),
         }
 
 
@@ -463,13 +570,18 @@ class DirectorySettingDialog(QDialog):
             except OSError as e:
                 QMessageBox.critical(self, "路径不可用", f"无法创建该目录：{e}")
                 return
-        self._config[self._config_key] = path
-        save_config(self._config)
+        # 重读磁盘再改本键：对话框停留期间别处写入的配置不能被旧快照覆盖
+        config = load_config()
+        config[self._config_key] = path
+        save_config(config)
+        self._config = config
         self.accept()
 
 
 class SettingsDialog(QDialog):
     """API 接口设置对话框（多模态、纯文本）。"""
+
+    check_update_requested = QtSignal()  # 「更新」页签点了「立即检查更新」
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -510,6 +622,9 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._easyscholar_tab, "影响因子")
         self._email_tab = EmailNotifyTab()
         self.tabs.addTab(self._email_tab, "邮件通知")
+        self._update_tab = UpdateTab()
+        self._update_tab.check_requested.connect(self._save)
+        self.tabs.addTab(self._update_tab, "更新")
         layout.addWidget(self.tabs)
         self._test_worker: _TestConnectionWorker | None = None
         self._openalex_test_worker: _TestOpenAlexWorker | None = None
@@ -537,14 +652,28 @@ class SettingsDialog(QDialog):
         self._openalex_tab.load(get_openalex_api_key(self._config))
         self._easyscholar_tab.load(get_easyscholar_api_key(self._config))
         self._email_tab.load(get_email_config(self._config))
+        self._update_tab.load(get_update_config(self._config))
 
     def _save(self):
-        self._config["vision_api"] = self._vision_tab.get()
-        self._config["text_api"] = self._text_tab.get()
-        self._config["openalex_api_key"] = self._openalex_tab.get()
-        self._config["easyscholar_api_key"] = self._easyscholar_tab.get()
-        save_email_config(self._email_tab.get())
-        save_config(self._config)
+        # 以磁盘现状为基准合并，而不是回写对话框打开时抓的 self._config 快照：
+        # 对话框可长时间停留，期间别处写入的键（后台建库解析开关、Word 绑定、
+        # 巡视方向等）都会被旧快照整份覆盖掉。
+        config = load_config()
+        config["vision_api"] = self._vision_tab.get()
+        config["text_api"] = self._text_tab.get()
+        config["openalex_api_key"] = self._openalex_tab.get()
+        config["easyscholar_api_key"] = self._easyscholar_tab.get()
+        config["email_notify"] = merge_email_config(self._email_tab.get())
+        # 更新页只覆盖本页负责的键：skipped_version / last_check 由主窗口维护
+        config["update_check"] = merge_update_config({
+            **get_update_config(config), **self._update_tab.get()})
+        save_config(config)
+        self._config = config
+        if self._update_tab.take_check_request():
+            # 用户点了「立即检查更新」：先保存再直接进入检查流程
+            self.accept()
+            self.check_update_requested.emit()
+            return
         QMessageBox.information(
             self, "已保存",
             "API 接口设置已保存。"
@@ -669,7 +798,8 @@ class SettingsDialog(QDialog):
             QMessageBox.critical(self, "测试失败", f"连接失败：{msg}")
 
     def _stop_test_worker(self) -> bool:
-        for attr in ("_test_worker", "_openalex_test_worker", "_email_test_worker"):
+        for attr in ("_test_worker", "_openalex_test_worker",
+                     "_easyscholar_test_worker", "_email_test_worker"):
             worker = getattr(self, attr, None)
             if worker is not None and worker.isRunning():
                 worker.requestInterruption()

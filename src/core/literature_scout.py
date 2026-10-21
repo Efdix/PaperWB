@@ -27,6 +27,7 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal
 from .literature_search import MultiSourceSearcher
 from .pubmed_searcher import PubMedPaper
 from .reference_match import find_library_match, llm_match_titles
+from ..utils.atomic import atomic_write_json
 from ..utils.config import get_scout_dir
 from ..utils.threads import track
 
@@ -125,12 +126,8 @@ def load_topics(scout_dir: str | Path | None = None) -> list[ScoutTopic]:
 
 def save_topics(topics: list[ScoutTopic], scout_dir: str | Path | None = None) -> None:
     try:
-        d = _dir(scout_dir)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "topics.json").write_text(
-            json.dumps({"topics": [t.to_dict() for t in topics]},
-                       ensure_ascii=False, indent=2),
-            encoding="utf-8")
+        atomic_write_json(_dir(scout_dir) / "topics.json",
+                          {"topics": [t.to_dict() for t in topics]})
     except OSError:
         pass
 
@@ -159,10 +156,7 @@ def mark_seen(pmids: list[str], scout_dir: str | Path | None = None) -> None:
         newest = sorted(seen.items(), key=lambda kv: kv[1], reverse=True)
         seen = dict(newest[:MAX_SEEN_ENTRIES])
     try:
-        d = _dir(scout_dir)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "seen.json").write_text(
-            json.dumps(seen, ensure_ascii=False, indent=1), encoding="utf-8")
+        atomic_write_json(_dir(scout_dir) / "seen.json", seen, indent=1)
     except OSError:
         pass
 
@@ -180,11 +174,8 @@ def load_feed(scout_dir: str | Path | None = None) -> list[dict]:
 
 def save_feed(feed: list[dict], scout_dir: str | Path | None = None) -> None:
     try:
-        d = _dir(scout_dir)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "feed.json").write_text(
-            json.dumps(feed[:MAX_FEED_ITEMS], ensure_ascii=False, indent=1),
-            encoding="utf-8")
+        atomic_write_json(_dir(scout_dir) / "feed.json",
+                          feed[:MAX_FEED_ITEMS], indent=1)
     except OSError:
         pass
 
@@ -504,6 +495,7 @@ class ScoutManager(QObject):
                              self._client, searcher=self._searcher,
                              blacklist=self._blacklist)
         track(worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
+        track(worker)  # 运行期间保活，防 GC/析构销毁运行中的 QThread
         self._workers[topic_id] = worker
         worker.found.connect(
             lambda papers, tid=topic_id: self._on_found(tid, papers))

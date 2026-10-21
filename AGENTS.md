@@ -18,21 +18,22 @@ python main.py
 ## 项目结构
 
 ```
-main.py                    # 入口: QApplication + MainWindow（自动 UTF-8 重启；打包版: DLL 路径/解压等待/重库预加载 + --selftest 无头自检）
+main.py                    # 入口: QApplication + MainWindow（自动 UTF-8 重启；打包版: DLL 路径/解压等待/重库预加载 + --selftest 无头自检；版本号取自 src/utils/version.py 的 APP_VERSION）
 requirements.txt
 PaperWB.spec               # PyInstaller onedir 打包配置（图标 assets/PaperWB.ico）
 LICENSE                    # MIT
 PaperWB.jpg               # 应用图标源图（make_icon.py 自动裁切图形主体）
 assets/                    # 应用图标（installer/make_icon.py 生成，exe/安装向导/窗口共用）
 installer/                 # 安装向导构建
-├── PaperWB.iss            # Inno Setup 7 脚本: 许可/目录/数据目录选择页(默认 {app}\data，写入 {app}\config.json 的 data_root，{app} 不可写退 %APPDATA%)/完成页自检/卸载按需清理便携运行时；/DLite 条件编译出精简版；完整版固定预置模型（无组件选择页，不想要模型用精简版）
-├── build_installer.ps1    # 一条龙: 补装 PyInstaller → pyinstaller → 模型 staging → dist selftest 验收门（Start-Process -Wait 等待 windowed exe，`&` 对 GUI 程序不等待、$LASTEXITCODE 不可靠）+ bundled 离线布局模拟门 → 清理 dist 便携运行时残留 → ISCC 双连出包（full + lite）
+├── PaperWB.iss            # Inno Setup 7 脚本: 许可/目录/数据目录选择页(默认 {app}\data，写入 {app}\config.json 的 data_root，{app} 不可写退 %APPDATA%)/完成页自检/卸载按需清理便携运行时；/DLite 条件编译出精简版；完整版固定预置模型（无组件选择页，不想要模型用精简版）；CloseApplications=yes + RestartApplications=no（覆盖安装能过文件占用，重启交给应用更新启动器）；**有意不设 AppMutex**（静默升级时应用尚未退完，互斥锁会让安装器直接拒启）；**ssPostInstall 静默路径必须先读 GetConfiguredDataRoot() 沿用既有 data_root**，只在为空时落默认值（否则用户自定义数据目录被改回 {app}\data，看起来像数据丢了）
+├── build_installer.ps1    # 一条龙: 补装 PyInstaller → pyinstaller → 模型 staging → dist selftest 验收门（Start-Process -Wait 等待 windowed exe，`&` 对 GUI 程序不等待、$LASTEXITCODE 不可靠）+ bundled 离线布局模拟门 → 清理 dist 便携运行时残留 → ISCC 双连出包（full + lite，版本号从 src/utils/version.py 的 APP_VERSION 正则抓取）→ 写 Output\release-<版本>.json（两个包的 sha256/体积，供自建源与发布校验）
+├── publish_release.ps1    # 发布: 校验版本号(tag = v + APP_VERSION) → 校验两个安装包与说明文件就位 → gh auth 检查 → git tag + push → gh release create 上传双包（Release body 即应用里显示的更新说明；先传 lite 后传 full）→ 回读 API 校验 asset 与 digest
 ├── stage_models.py        # Docling 模型 staging: HF 缓存 → installer/models_cache/hub（约 505 MB；HF_HUB_CACHE > 项目内 models/hf_cache/hub > HF_HOME > 默认缓存）；按 docling 源码钉扎 revision 过滤 refs（从已安装 docling 正则提取，兜底硬编码表）、剔除运行时不可达 ref 与快照、终检 ref→快照+关键文件（离线解析靠 refs/<revision> 定位快照，缺 ref 则安装版 HF_HUB_OFFLINE=1 首次解析在 TableFormer 报 LocalEntryNotFoundError）
 ├── make_icon.py           # 从项目根目录 PaperWB.jpg 生成 assets/PaperWB.ico/png
 ├── lang/ChineseSimplified.isl  # 向导简体中文语言文件（官方非官方翻译库）
-└── Output/                # 产物 PaperWB-Setup-<版本>.exe + PaperWB-Setup-<版本>-lite.exe（gitignore）
+└── Output/                # 产物 PaperWB-Setup-<版本>.exe + -lite.exe + release-<版本>.json（gitignore）
 src/
-├── app.py                 # MainWindow — 首次启动弹窗(FirstLaunchDialog) + 信号枢纽 + 多模态/纯文本 LLMClient + Zotero watcher + 三工作台切换(阅读/检索/写作)；阅读侧「论文问答」双页签(本篇论文/全文献库)；LibraryPreparser 后台建库接线(启动/入队/索引刷新/处理器共享，PAPERWB_DISABLE_PREPARSE 可禁用)
+├── app.py                 # MainWindow — 首次启动弹窗(FirstLaunchDialog) + 信号枢纽 + 多模态/纯文本 LLMClient + Zotero watcher + 四工作台切换(阅读/检索/写作/统计) + 更新推送(UpdateManager: 启动 15 秒后静默检查+周期检查+手动检查，发现新版时应用栏出现 updateChip 胶囊，点开 UpdateDialog)；**顶部 44px 应用栏是全窗口唯一 chrome**（☰ 菜单承接原菜单栏全部入口 / 整段式工作台切换 navSegmented / 接口状态 modelChip / 更新提示 updateChip / 设置按钮）；阅读侧「论文问答」双页签(本篇论文/全文献库)；LibraryPreparser 后台建库接线(启动/入队/索引刷新/处理器共享，PAPERWB_DISABLE_PREPARSE 可禁用)；**阅读区自适应布局**：resizeEvent 与 `_switch_workspace(0)` → `_apply_narrow_reader_layout`（窗口 <1250px 自动收起左侧文献列表）+ `_apply_reader_pane_ratios`（侧栏按窗口比例分配而非固定像素）；用户手动开关面板或拖动分隔条后由 `_reader_auto_library`/`_reader_inner_custom` 交还控制权，不再自动干预
 ├── core/
 │   ├── pdf_parser.py      # PDF 底层工具（PyMuPDF）: 文本提取/渲染
 │   ├── pdf_processor.py   # 核心！两阶段管线:
@@ -56,6 +57,7 @@ src/
 │   ├── reference_match.py # 文献匹配公共口径: DOI/标题归一化（标题保留 CJK 字符，中文文献同样可比对） + 库内查重 + 可选 LLM 批量模糊比对（写作文献补充与巡视共用）
 │   ├── kb_sync.py         # 写作知识库导出/导入（跨机同步，纯本地零 LLM）: collect_sources 扫描+体积估算 / write_archive 打包 zip（镜像源目录 + manifest.json 记录格式版本与各库概要）/ read_manifest 格式与版本校验 / list_packages 导入预览（含本地同名冲突标记）/ import_archive 还原（三种同名策略「跳过/覆盖/存为副本」、覆盖前自动备份到 writing_kb/.backup/<时间戳>/、original_path 置空清洗、zip-slip 防护、逐文件 .tmp+os.replace 原子落盘）/ KbExportWorker・KbImportWorker 后台线程 + human_size；库名校验复用 writing_coach.validate_profile_name
 │   ├── read_marks.py      # 读完标记: 按规范化 PDF 路径存 states/read_marks.json，ReadMarkStore 单例带 changed 信号；阅读工具栏「✓ 标记已读」与左右文献列表 ✓ 前缀共用
+│   ├── updater.py         # 更新推送核心: check_for_update（默认源 GitHub Releases「tag_name 当版本/body 当说明/assets 当下载地址」，可换自建静态 JSON；自定义源未填 URL 自动回退 GitHub）/ parse_github_release・parse_custom_manifest / pick_asset（**形态绝不自动替换**：完整版用户不会被塞精简版——那会静默丢掉 505MB 预置离线模型）/ install_kind（按 bundled_models_hub_dir 判 full/lite/dev，开发模式不支持应用内安装）/ NoReleaseError（仓库未发 Release 时自动检查静默、手动检查明确告知）/ should_auto_check 节流（enabled + interval_hours + last_check）/ UpdateCheckWorker・UpdateDownloadWorker（流式分块 → sha256+体积校验 → os.replace 才落正式文件名，失败/取消清 .part，asset_name 走 basename 防目录穿越）/ launcher_script・launch_installer_after_exit（写全 ASCII 临时 .cmd：start /wait 跑 /SILENT /SUPPRESSMSGBOXES /NORESTARTAPPLICATIONS，安装完拉回应用，自删）；网络口径沿用 urllib + retry_urlopen + 自标识 UA，失败一律收敛为 UpdateError/人话，绝不抛 UI
 │   ├── unified_writer.py  # 统一润色+引文核查: 证据检索化(按声明检索相关段落) + json_mode + 多层容错 JSON
 │   ├── doc_diff.py        # 内联 diff 控制器(QTextEdit，DiffDialog 与写作面板修订共用): 渲染删除线/绿底 + 锚点导航/接受拒绝 + 从字符格式重建锚点（**charFormat() 返回光标前一个字符，探测须先选中该字符，否则锚点整体偏移一位 → 接受修订漏删首个删除线字符**）
 │   ├── docx_io.py         # Word(.docx) 读写核心 v2: run 级最小侵入写回（未变段落零改动；变了段落按字符 diff 重组 run，匹配片段按原 rPr 重建）+ 段落 SequenceMatcher 对齐（中间插段不错位，新段继承相邻样式）+ 批注锚点/书签/脚注引用/行内图片/超链接/域指令（fldSimple 与 fldChar 复杂域，Zotero 引用域安全）原位保留 + 可选修订(track changes)写回 w:ins/w:del（author=PaperWB，Word 可逐处接受/拒绝；域结果区/容器内改动退化整段修订）+ 引文标记保护（上标/引用域编号被 AI 改写成 [1] 等纯格式变化时写回零改动还原，citation_key 数字序列口径；protect_citations_in_text 供编辑器侧同口径还原；重建 run 一律用承载 span 自身 rPr，不再继承 last_rpr，防止紧跟上标的普通文字被误染上标）+ 批注解析（段落索引+字符偏移）
@@ -63,11 +65,11 @@ src/
 │   ├── writing_prompts.py # 四种写作类型的系统提示词（综述=综合而非罗列/展现研究间对话/批判性；论文=IMRaD 时态与统计规范；专利=权利要求与充分公开；软著）+ STRUCTURE_GUIDES 分节结构指南（get_structure_guide）
 │   └── pubmed_searcher.py # PubMed E-utilities 检索客户端（esearch + efetch）；PubMedPaper 统一文献模型(含 source/arxiv_id)
 ├── ui/
-│   ├── pdf_viewer.py      # 结构化阅读面板: ParagraphCard 按 element_type 渲染+中英文翻译(标题/摘要/正文/关键词/图表注可译, 多并发+滚动自动翻译)+文字区 I 形光标；Stage1 完成后自动跨页整合；初步整合文献打开时后台 LLM 接缝精修(_refine_prelim_seams)；阅读工具栏：字号 −/＋（内联 px 落地，全局 QSS QWidget{font-size} 会盖掉 setFont）+「✓ 标记已读」+「⛶ 全屏阅读」沉浸模式(fullscreen_toggled 信号驱动主窗口隐藏菜单/顶栏/状态栏/工作台头部/左右面板，Esc/F11/再点退出)；段落卡右键菜单手动拆分/合并
+│   ├── pdf_viewer.py      # 结构化阅读面板: ParagraphCard 按 element_type 渲染+中英文翻译(标题/摘要/正文/关键词/图表注可译, 多并发+滚动自动翻译)+文字区 I 形光标；Stage1 完成后自动跨页整合；初步整合文献打开时后台 LLM 接缝精修(_refine_prelim_seams)；**单条 33px 动作行**（原「标题行 + 信息行」两行合并）：左为状态/进度（`_ElidedStatusLabel` 按宽度省略，长文件名不挤走按钮），右为图标式阅读控制（🌐 自动翻译开关 / A− A＋ 字号 / ✓ 已读 / ☰ 💬 左右面板开关[主窗口注入到 `_toolbar_slot`] / ⛶ 全屏）；字号内联 px 落地（全局 QSS QWidget{font-size} 会盖掉 setFont）；沉浸模式 fullscreen_toggled 信号驱动主窗口隐藏应用栏/状态栏/左右面板，Esc/F11/再点退出；段落卡右键菜单手动拆分/合并
 │   ├── pdf_list_panel.py  # 左侧面板: Tab1 Zotero 只读文献库 + Tab2 其它文献
 │   ├── zotero_panel.py    # Zotero 树形视图: 集合树+文献+PDF附件标记，周期同步/手动刷新驱动刷新
-│   ├── chat_panel.py      # 聊天面板: Markdown 气泡/流式渲染（标题/欢迎语可定制；阅读侧栏「本篇论文」页签与写作台「讨论」页签共用）
-│   ├── library_qa_panel.py # 库内问答面板(阅读侧栏「全文献库」页签): 索引构建/流式回答+[n]角标/只问库/重建索引/参考文献跳转打开 PDF/「后台建库解析」开关与状态行 + item_key_for_pdf/refresh_engine_item/flush_engine 预解析协作
+│   ├── chat_panel.py      # 聊天面板: Markdown 气泡/流式渲染（标题/欢迎语可定制；阅读侧栏「本篇论文」页签与写作台「讨论」页签共用）；输入区除 Placeholder 外另有**常驻**「Ctrl+Enter 发送」提示标签（Placeholder 一开始输入就消失，用户按 Enter 只换行会以为发送失败），发送按钮 tooltip 同标注
+│   ├── library_qa_panel.py # 库内问答面板(阅读侧栏「全文献库」页签): 索引构建/流式回答+[n]角标/只问库/重建索引/参考文献跳转打开 PDF/「建库解析」开关(默认关)与状态行 + 常驻 Ctrl+Enter 提示(SizePolicy=Ignored，不参与最小宽度计算) + item_key_for_pdf/refresh_engine_item/flush_engine 预解析协作
 │   ├── workbench_panel.py # 检索工作台(两栏): 左·AI 检索主区(自然语言→多源检索+结果卡片+「🕘 检索记录」) / 右·巡视面板(单张卡片三分节·细分隔线：定时巡视 / 网页追踪 WebWatchPanel / 巡视结果，分节头=小标题+说明+右侧内联按钮；卡片+忽略/🚫拉黑/RIS/CSV/黑名单管理)
 │   ├── web_watch_panel.py # 网页追踪面板: WatchEditDialog(名称/URL/关键词/周期/邮件提醒/合规说明) + WatchCard(立即检查/网页↗/编辑/删除/启停) + WebWatchPanel 包装 WebWatchManager；page_updated → 邮件推送（workbench 接线）
 │   ├── search_records_dialogs.py # 检索记录库对话框: BlacklistDialog(黑名单查看/移除/清空，changed 标记供刷新) + SearchHistoryDialog(检索历史)
@@ -76,12 +78,15 @@ src/
 │   ├── kb_sync_dialog.py  # 知识库导出/导入对话框（写作面板「📦 导出 / 导入知识库」）: 导出页（知识库勾选+体积估算+可选带草稿/润色历史/评价+存 zip）/ 导入页（选包→预览包内库与同名冲突→逐库勾选+同名策略→结果汇总含备份目录）；同名库默认不勾选（需用户主动决定覆盖或另存）；导入完成发 kb_imported 刷新知识库下拉；非模态，记上次所在目录
 │   ├── diff_dialog.py     # 润色对比对话框: 内联 diff(单编辑框)+导航栏(上一处/下一处/接受/拒绝)+AI 对话+引用高亮
 │   ├── lit_search_dialog.py # 文献补充对话框: LLM 双轨推荐(已知文献+搜索词)→多源检索(带来源标注)→导出 CSV/加入推荐流（非模态）
-│   ├── settings_dialog.py # 设置对话框: API接口设置(多模态/纯文本/文献检索源-OpenAlex密钥可选,密钥用于三源检索与按库推荐/影响因子-EasyScholar/邮件通知-EmailNotifyTab: SMTP 主机/端口/SSL/授权码/收件人+发送测试邮件 _TestEmailWorker)+连接测试（Zotero/缓存路径在独立 DirectorySettingDialog，与 API 设置平级菜单）
-│   └── styles.py          # 轻量浅灰/白色研究工作台主题 QSS
+│   ├── update_dialog.py   # 更新推送对话框（非模态）: 版本对比 + Markdown 更新说明 + 形态/体积/来源 + 「下载并更新/打开发布页/跳过此版本/以后再说」；下载阶段进度条+百分比+取消；校验失败给「重试下载」+手动兜底；显式写明"覆盖升级不动数据目录"并显示实际 data_root。三态降级：无下载资产 → 按钮禁用只留发布页；源码运行（dev）→ 按钮降级为「打开发布页下载」；无 sha256 → 完成提示改为"仅校验体积"
+│   ├── settings_dialog.py # 设置对话框: API接口设置(多模态/纯文本/文献检索源-OpenAlex密钥可选,密钥用于三源检索与按库推荐/影响因子-EasyScholar/邮件通知-EmailNotifyTab: SMTP 主机/端口/SSL/授权码/收件人+发送测试邮件 _TestEmailWorker/更新-UpdateTab: 自动检查开关+间隔小时+更新源(GitHub/自定义清单 URL)+当前版本+「立即检查更新」)+连接测试（Zotero/缓存路径在独立 DirectorySettingDialog，与 API 设置平级菜单）。**保存口径铁律**：`_save()` 必须 `load_config()` 重读磁盘后只覆盖本页负责的键（`merge_email_config` 合并邮件字段、`merge_update_config` 合并更新字段并保留 skipped_version/last_check），**不得回写对话框打开时抓的 `self._config` 快照**——对话框可长时间停留，旧快照会把期间别处写入的键（邮件配置、建库解析开关、Word 绑定等）整份抹掉（历史 bug：重装后邮箱信息全丢）
+│   └── styles.py          # 全局 QSS 主题（v3「内容优先」）：中性浅灰 + 单一蓝色主行动；关键约束——按钮内边距/字号压到很紧（#paneToggle 3px 8px、#fontBtn min-width 26px），因为 1024px 最小窗口下阅读正文区仅约 400px 宽，每多 2px 都会把工具栏挤变形（改样式时先跑 test/check_ui_fit.py）；`#updateChip` 为"发现新版本"胶囊（默认隐藏，蓝底）
 └── utils/
-    ├── config.py          # 持久化层（便携化）: 配置目录便携优先（exe/仓库根同级，不可写回退 AppData）+默认 data_root/get_tmp_dir/get_log_dir/get_hf_home_dir+图书馆+聊天+缓存+草稿+润色历史+lib_index/scout 目录
+    ├── config.py          # 持久化层（便携化）: 配置目录便携优先（exe/仓库根同级，不可写回退 AppData）+默认 data_root/get_tmp_dir/get_log_dir/get_hf_home_dir+图书馆+聊天+缓存+草稿+润色历史+lib_index/scout 目录 + update_check 键（get/merge/save_update_config、set_update_skipped_version/set_update_last_check、get_updates_dir）；所有 JSON/文本落盘走 atomic 原语
+    ├── atomic.py          # 原子写与路径安全: atomic_write_bytes/text/json（同目录临时文件 + os.replace，可再生缓存可关 fsync）/ backup_corrupt_file（损坏文件改名保留）/ read_json_safe / is_path_inside（拒绝 .. 与根目录外路径）
+    ├── version.py         # **版本号单一来源**（全项目唯一版本字面量）+ 语义化比较: APP_VERSION / current_version()（优先 QApplication，**但要求 applicationName()==APP_NAME 且版本形如 x.y.z 才采信**——QApplication 已建却没设版本时 Qt 返回自身版本 3.11.16150.1013，采信它会误判更新；不满足或取值失败一律回退常量，构建脚本与无头自检共用）/ parse_version・compare_versions・is_newer（容忍 v 前缀、位数不等按补零比较、预发布后缀低于同号正式版；畸形版本返回 None 由调用方保守处理）/ format_size / user_agent / APP_NAME
     ├── layout.py          # 递归布局高度计算（heightForWidth）
-    └── threads.py         # 运行中 QThread 全局保活注册表（track/sweep），杜绝运行中销毁崩溃
+    └── threads.py         # QThread 全局保活：track/sweep + 自动接管 QThread.start（漏调 track 也不会在退出时销毁运行中线程）+ atexit 有界收尾
 ```
 
 ## 架构说明
@@ -90,7 +95,7 @@ src/
 
 - **便携模式**：配置与日志贴着程序走——打包版 `config.json` 与 `logs/`（error/faulthandler/selftest 日志）在安装目录（exe 同级），开发模式在仓库根（均 gitignore）；exe/仓库根不可写（如装进 Program Files）才回退 `%APPDATA%/PaperWB/`。首次便携运行自动迁移 %APPDATA% 旧配置（含 PDFasker 时代），保住 API Key 与 data_root；安装向导在 ssPostInstall 把 data_root 写入 `{app}\config.json`（升级时先整体拷入 %APPDATA% 旧配置）
 - 数据根目录 data_root: 默认 `<安装目录>/data`（开发模式 `<仓库根>/data`；exe 位置不可写退 `%LOCALAPPDATA%\PaperWB\data`），安装向导「数据与缓存目录」页或首次启动弹窗可改，存储在 config 的 `data_root` 字段
-- 所有用户数据在 `{data_root}/.paperwb/` 下，包括 library.json、chats、states、page_cache、writing_kb、drafts、polish_history、reviews、docx_backup（Word 写回前自动备份）、read_marks（读完标记）、lib_index（全文献库问答索引）、scout（巡视方向/去重记忆/推荐流）、search（检索历史+黑名单）、watch（网页监控页配置+快照）、tmp（短命临时文件：Zotero sqlite 副本等，`get_tmp_dir()`，data_root 不可用退系统 %TEMP%）、hf_home（无预置模型时运行时联网下载的 HF 模型缓存，docling_parser 以 HF_HOME 重定向；hub 与 xet 都在其下）
+- 所有用户数据在 `{data_root}/.paperwb/` 下，包括 library.json、chats、states、page_cache、writing_kb、drafts、polish_history、reviews、docx_backup（Word 写回前自动备份）、read_marks（读完标记）、lib_index（全文献库问答索引）、scout（巡视方向/去重记忆/推荐流）、search（检索历史+黑名单）、watch（网页监控页配置+快照）、updates（更新安装包下载/暂存，`get_updates_dir()`）、tmp（短命临时文件：Zotero sqlite 副本等，`get_tmp_dir()`，data_root 不可用退系统 %TEMP%）、hf_home（无预置模型时运行时联网下载的 HF 模型缓存，docling_parser 以 HF_HOME 重定向；hub 与 xet 都在其下）
 - PDF 文件存储在 `{data_root}/library/` 下
 - 菜单「设置 → 缓存文件存储路径设置...」可随时更改 data_root；Zotero 路径也在同一菜单中与 API 设置平级
 - 模型预置（完整版安装包）在 `<安装目录>\models\hub`，只读使用
@@ -125,7 +130,7 @@ src/
 - **统一缓存**：阅读与建库共用同一套 `PDFProcessor` / `page_cache` / `states` 缓存（按 PDF 路径哈希键 + mtime 失效）——任一方先解析过，另一方直接复用（`doc_state_is_parsed` 判定）
 - **纯本地零 LLM**：`LibraryPreparser` 串行逐篇驱动 Stage 1 + Stage 2（`start_stage2(preliminary=True)`：规则接缝合并写入 `merged_seams_prelim`，states 标记 `seams_final=false`），跨启动按缓存完整性自动续跑；失败篇记忆到 `lib_index/preparse.json`（文件未变不重试）
 - **阅读时一次精修**：点开初步整合的文献 → 缓存秒开，同时后台把接缝候选送 LLM 复核（接受者入 `merged_seams` 定稿、否决者移出初步缓存），完成后刷新视图、置 `seams_final=true` 并触发该篇索引 `refresh_item`；未配 API 时规则版即为最终（与旧行为一致）；旧缓存缺 `seams_final` 字段视为已定稿
-- **调度**：默认开启（config `preparse_enabled`，库问答面板「后台建库解析」开关即时启停）；索引就绪或启动 60 秒后自动开跑；篇间小憩 1.5s；用户侧解析在途时 `should_yield` 让路；用户点开正在预解析的文献直接接管在途处理器（不重复解析）；重跑/删除缓存路径会同步取消对应预解析
+- **调度**：**默认关闭**（config `preparse_enabled`，库问答面板「建库解析」开关即时启停）——开启后会从头把全库 PDF 逐篇解析一遍，CPU 与磁盘长时间满载（首次建库尤其明显），用户会感觉「一打开软件就卡」，因此改为由用户主动开启；仅在开启时，索引就绪或启动 60 秒后自动开跑；篇间小憩 1.5s；用户侧解析在途时 `should_yield` 让路；用户点开正在预解析的文献直接接管在途处理器（不重复解析）；重跑/删除缓存路径会同步取消对应预解析。**旧配置迁移**：旧版本默认开启，且任何一次设置保存都会把当时的默认值烙进 config.json，故光改默认值对老用户无效；用 `preparse_choice_made` 标记区分「用户真的开过」与「沿用旧默认」——无标记时一律按新默认（关）走一次，用户一经在面板勾选即永久尊重文件里的值
 - **索引升级节流**：每篇完成 `engine.refresh_item`（内存态置脏），每 10 篇落盘一次（`flush(reindex=False)`），暂停/完成/关窗时 `flush(reindex=True)` 重建检索器原子换入
 
 ### 检索工作台（第二工作台：AI 检索 + 按库推荐 + 定向巡视）
@@ -146,7 +151,7 @@ src/
 
 **网页追踪（web_watch.py + web_watch_panel.py）**：右栏「网页追踪」分节（方向与结果之间）。`WatchedPage` 存 `{data_root}/.paperwb/watch/pages.json`（名称/URL/关键词/周期/notify_email），文本+链接快照存 `watch/snapshots/`。每启用页独立 QTimer（默认 6 小时，下限 1 小时）+「立即检查」（60 秒冷却）。变更判定：文本哈希变化 + 新链接检出（可按关键词过滤）；首次检查只建基线不算变更；整站改版（无关键词时 >50 新链接）只报变更不逐条推送。有更新 → 卡片状态行 + 可选邮件（`format_page_update`）。**合规红线**：robots.txt disallow 的页面直接拒检并明确提示；robots.txt 网络级不可达时保守视为不允许；自标识 UA（PaperWB/2.0），不伪装浏览器、不登录、不绕过访问限制；每次检查仅 1 个 GET 请求。
 
-**邮件通知框架（email_notifier.py）**：配置在 设置 → API 接口设置 → 「邮件通知」页签（config `email_notify` 键：enabled/smtp_host/smtp_port/use_ssl/username/password=授权码/recipients），「测试当前接口」发测试邮件。发信走 `send_notification_email`（同步，QThread 内调用）或 `send_async`（读当前配置后台发）。典型服务器：QQ smtp.qq.com:465(SSL)、163 smtp.163.com:465、Gmail smtp.gmail.com:465；授权码在邮箱服务商后台生成，不是登录密码。
+**邮件通知框架（email_notifier.py）**：配置在 设置 → API 接口设置 → 「邮件通知」页签（config `email_notify` 键：enabled/smtp_host/smtp_port/use_ssl/username/password=授权码/recipients），「测试当前接口」发测试邮件。写盘走 `config.merge_email_config`（补默认字段、忽略未知键）+ `save_email_config`（只改本键，以磁盘现状为基准）。发信走 `send_notification_email`（同步，QThread 内调用）或 `send_async`（读当前配置后台发）。典型服务器：QQ smtp.qq.com:465(SSL)、163 smtp.163.com:465、Gmail smtp.gmail.com:465；授权码在邮箱服务商后台生成，不是登录密码。
 - 已推送标识（pmid/arxiv_id/doi 统一口径）存 `seen.json` 不重复推送；巡视结果存 `feed.json`（最近 200 条，跨启动保留），展示于右栏下半「巡视结果」
 - 结果落地三条路（Zotero 只读不能直写）：导出 RIS（Zotero 可导入）/ 导出 CSV / 复制引文 / 「🔍」生成检索式打开 PubMed 网页
 
@@ -208,6 +213,19 @@ src/
 - 年份后缀自动去字母（`2025a` → `2025`）匹配 Zotero
 - 优先选择有 PDF 附件的匹配条目（按标题去重）
 
+### 界面布局规范（v3「内容优先」重构，改 UI 前必读）
+
+重构动因：原界面每个工作台各带一条「眉标+大标题+副标题」横幅，加上传统菜单栏与阅读区自己的「标题行+信息行」，阅读正文上方叠了 5 层 chrome（约 200px），正经工作区被压到下方。现规则：
+
+- **全窗口只有一条 chrome**：`QFrame#appBar`（约 41px）= ☰ 应用菜单 + 品牌 + 整段式工作台切换（`QFrame#navSegmented` 包住 4 个 `QPushButton#workspaceNav`）+ 两个 `modelChip` 接口状态 + 设置。**传统菜单栏已撤掉**（`menuBar().setVisible(False)`），入口全在 `_build_app_menu()` 里，快捷键（Ctrl+, / Ctrl+Q）不变
+- **工作台横幅一律删除**：阅读/检索/写作/统计都不再画「XX 工作台」标题带；检索与统计连动作行都没有（标题并入内部卡片头部），阅读与写作各留**一条** 33–43px 动作行（`QFrame#actionBar`）。改完用 `test/check_ui_fit.py` 断言：每条工作台 chrome 合计 ≤92px
+- **侧栏宽度按比例、不按固定像素**：`阅读 _LIBRARY_W_MIN/MAX`(250–300, 19%)、`_CHAT_W_MIN/MAX`(300–430, 30%)、检索 `_SCOUT_*`(340–430, 30%)、统计 `_PLANS_*`(340–430, 30%)。固定像素会在 1024px 窗口下把主区挤到 55% 以下——这是重构要解决的原始症状
+- **侧栏内容不得决定侧栏最小宽度**：库内问答的控制行若挤成一行会把面板最小宽度顶到 ~460px 并反噬正文列；因此改成分两行（开关一行、动作一行）+ 非高频动作改图标按钮，面板最小宽度降到 ~284px。同类问题排查手法：遍历 `findChildren(QWidget)` 打印 `minimumSizeHint().width()` 找元凶
+- **热力图/日历这类定宽图表不要独占宽卡片**：HeatmapWidget 宽度由周数决定（3 个月仅 13 周 ≈340px），不会随卡片变宽；已改为与「阅读 Top 榜」并排同行（`charts_row` 等分），筛选器与图例聚在图表下方，避免卡片内出现大片空白
+- **KPI 概览格子按宽度自动折行**：`_relayout_today_grid` 按 `_TODAY_CELL_MIN_W=104` 反算每行格数并用「向上取整再均分」使各行长度均衡（7 格 → 宽窗 1 行 / 窄窗 4+3，而不是 5+2 拉长末行）；resizeEvent 触发重排
+- **紧凑工具栏用图标 + tooltip**：1024px 下阅读正文区仅约 400px 宽，7 个带文字的按钮放不下（会溢出/变形）。🌐/A−/A＋/✓/☰/💬/⛶ 均为图标式开关，含义与状态放 tooltip。`check_ui_fit.py` 用 `minimumSizeHint().width()` 对比实际宽度来抓这类溢出
+- 离屏渲染中文显示为豆腐块，**肉眼看截图无法发现文字截断**，视觉验收必须配合 `check_ui_fit.py` 的度量断言
+
 ### 技术要点
 
 - 所有 LLM 调用在 QThread 中执行，不阻塞 UI
@@ -222,12 +240,24 @@ src/
 
 ### 安装包分发与预置离线模型
 
-- 正式分发物 = Inno Setup 安装向导（`installer/PaperWB.iss`，**双版本**）：许可(MIT)/安装位置（默认 `%LOCALAPPDATA%\Programs\PaperWB`，免管理员，PrivilegesRequiredOverridesAllowed 可改全局）/数据与缓存目录选择页（默认 `{app}\data` 随安装目录走，可改；离开安装位置页时若未自定义则跟随真实 `{app}` 刷新，`{app}` 不可写退 `%LOCALAPPDATA%\PaperWB\data`；[Code] 把 `data_root` 写入 `{app}\config.json`，重装预填旧值，首次启动不再弹窗）/完成页可选「安装自检」（[Code] Exec `--selftest` 按退出码弹窗）。**无组件选择页**：完整版固定安装预置模型，不想要模型的用户下载精简版
+- 正式分发物 = Inno Setup 安装向导（`installer/PaperWB.iss`，**双版本**）：许可(MIT)/安装位置（默认 `%LOCALAPPDATA%\Programs\PaperWB`，免管理员，PrivilegesRequiredOverridesAllowed 可改全局）/数据与缓存目录选择页（默认 `{app}\data` 随安装目录走，可改；离开安装位置页时若未自定义则跟随真实 `{app}` 刷新，`{app}` 不可写退 `%LOCALAPPDATA%\PaperWB\data`；[Code] 把 `data_root` 写入 `{app}\config.json`，重装预填旧值，首次启动不再弹窗）/完成页可选「安装自检」（[Code] Exec `--selftest` 按退出码弹窗）。**无组件选择页**：完整版固定安装预置模型，不想要模型的用户下载精简版。**data_root 转义必须对称**：写入侧 `SetConfiguredDataRoot` 做 JSON 转义（`\`→`\\`、`"`→`\"`），读取侧 `ReadDataRootFrom` 必须反向还原，否则重装预填拿到转义串、再写一次变成双倍反斜杠，Python 读出坏路径（历史 bug：重装后 data_root 失效）
 - **双版本产物**：`PaperWB-Setup-<版本>.exe`（预置模型完整版）+ `PaperWB-Setup-<版本>-lite.exe`（`ISCC /DLite` 编译，不预置模型，安装后首次解析由应用经 hf-mirror 联网下载，模型缓存落 `{data_root}/.paperwb/hf_home`）；精简版自检文案不含「离线模型」
 - **预置模型原理**：安装包把两个 HF 模型缓存目录（`models--docling-project--docling-layout-heron` 版式 + `models--docling-project--docling-models` TableFormer，共约 505 MB）装入 `<安装目录>\models\hub\`；`docling_parser.py` 导入时检测两目录齐全 → `HF_HUB_CACHE`/`HF_HUB_OFFLINE=1` 重定向（setdefault，用户显式设置优先）→ 首次解析完全离线；不齐全则回退在线下载（hf-mirror，HF_HOME 指 `{data_root}/.paperwb/hf_home`）。**不用** docling `artifacts_path`（会强制要求 RapidOcr 目录，否则扫描版 PDF 解析抛错）；RapidOCR 小模型已随 rapidocr wheel 收进主程序
 - 模型预热（打包机一次性备料，**无需跑应用**）：`_gen_prewarm_models.py`（gitignore）用 `huggingface_hub.snapshot_download` 直接下载两仓到项目内 `models/hf_cache/hub`（HF_ENDPOINT=hf-mirror，HF_HUB_DISABLE_XET=1；强制复制模式避免 Windows 无符号链接权限时 WinError 1314）；模型 staging（`stage_models.py`）再从该缓存 copytree 解引用、剔除 blobs/.lock、保留 refs+snapshots 标准布局
-- 构建入口 `installer/build_installer.ps1`：PyInstaller(onedir) → staging → **dist selftest 验收门**（Start-Process -Wait 取真实退出码，任一 FAIL 中止出包；自检时 HF_HUB_CACHE 指向 `models/hf_cache/hub` 免重复下载）→ **bundled 离线布局模拟门**（staged 模型拷入 `dist\PaperWB\models\hub` 触发 bundled 检测 + HF_HUB_OFFLINE=1，验证安装版离线解析，跑完剔除）→ 清理 dist 便携运行时残留（config.json/logs/data/models，防打进安装包）→ ISCC 双连（版本号从 main.py `setApplicationVersion` 抓取）→ `installer/Output/PaperWB-Setup-<版本>.exe` + `-lite.exe`
+- 构建入口 `installer/build_installer.ps1`：PyInstaller(onedir) → staging → **dist selftest 验收门**（Start-Process -Wait 取真实退出码，任一 FAIL 中止出包；自检时 HF_HUB_CACHE 指向 `models/hf_cache/hub` 免重复下载）→ **bundled 离线布局模拟门**（staged 模型拷入 `dist\PaperWB\models\hub` 触发 bundled 检测 + HF_HUB_OFFLINE=1，验证安装版离线解析，跑完剔除）→ 清理 dist 便携运行时残留（config.json/logs/data/models，防打进安装包）→ ISCC 双连（版本号从 `src/utils/version.py` 的 `APP_VERSION` 正则抓取）→ `installer/Output/PaperWB-Setup-<版本>.exe` + `-lite.exe` + `release-<版本>.json`（含两包 sha256/体积）
 - 远程排查日志（便携化后都在 `{安装目录}\logs\`，用户直接在安装目录取）：`paperwb_selftest.log`（自检，含 bundled-models 项）+ `error.log`（excepthook）+ `faulthandler.log`；Inno `%TEMP%\Setup Log*.txt` 保留；SmartScreen 拦截见 README「下载与安装」
+
+### 更新推送（检查 → 下载 → 确认安装）
+
+- **版本号单一来源**：`src/utils/version.py` 的 `APP_VERSION`（全项目唯一版本字面量）。`main.py` 用它设 QApplication 版本，构建脚本正则从这里抓版本给 ISCC，更新检查用它比对；`current_version()` 优先读 `QApplication.applicationVersion()`，**但只在 `applicationName()==APP_NAME` 且版本形如 `x.y.z`（≤3 段）时才采信**——QApplication 已创建却未设置版本时（测试代码/宿主环境）Qt 返回自身版本（`3.11.16150.1013`），采信它会让更新比对得出错误结论；不满足条件或取值失败一律回退常量（构建脚本与 `--selftest` 不创建 QApplication 也能取到）。**改版本只改这一行**（历史问题：`src/app.py` 关于对话框曾硬编码 v1.0.0 与 main.py 的 0.2.0 不一致）
+- **更新源**：默认 GitHub Releases（`api.github.com/repos/Efdix/PaperWB/releases/latest`）——`tag_name` 当版本号、`body` 当更新说明、`assets` 当下载地址、`asset.digest` 当 sha256，零额外维护；设置 → 更新 页签可切「自定义清单 URL」（自建静态 JSON，结构见 `parse_custom_manifest` docstring）。自定义源未填合法 URL 时**自动回退 GitHub**（不会静默失败）
+- **形态匹配**：`install_kind()` 按 `docling_parser.bundled_models_hub_dir()` 判 full/lite（预置模型目录是两版唯一差别），开发模式为 dev（不支持应用内安装，对话框按钮降级为「打开发布页下载」）。`pick_asset` **绝不跨形态替换**——完整版用户被塞精简版会静默丢掉 505MB 离线模型，因此只在本形态有对应包时给下载，否则降级为发布页
+- **检查时机**：`MainWindow._init_updater()` 里 `QTimer.singleShot(15_000, ...)` 启动后静默检查一次 + 按 `interval_hours` 周期检查（`should_auto_check` 用 `last_check` 节流）；设置里可关（`update_check.enabled`，默认开）；☰ 菜单「检查更新...」与应用栏 updateChip 胶囊为手动入口（手动检查不受开关/节流/「跳过此版本」限制）。**自动检查失败静默**（状态栏一句话，不弹窗），手动检查失败才弹原因。仓库尚未发布 Release 时返回 404 → `NoReleaseError` → 自动检查静默、手动检查说明原因（避免未发版期间天天刷失败提示）
+- **下载与校验**：`UpdateDownloadWorker` 流式分块（256KB）到 `{data_root}/.paperwb/updates/<名>.exe.part`，边下边算 sha256；完成后校验体积 + sha256，**通过才 `os.replace` 成正式文件名**，失败/取消一律删 `.part`；`asset_name` 走 `basename` 防目录穿越。发布方未提供哈希时降级为"仅校验体积"并在 UI 明说。UI 显示进度百分比；下载失败可「重试下载」或「打开发布页」兜底
+- **安装流程**（用户点「立即安装并重启」后）：`launch_installer_after_exit` 写一个**全 ASCII 的临时 .cmd** 到 tmp 目录（中文写在 cmd 里会因 OEM 代码页乱码）→ `subprocess.Popen(..., DETACHED_PROCESS)` 脱离启动 → 应用 `QApplication.quit()`。脚本内容：等待应用释放文件锁 → `start /wait "<setup>" /SILENT /SUPPRESSMSGBOXES /NORESTARTAPPLICATIONS` → 重新拉起应用 → 自删。**为什么用启动器脚本**：Inno `[Run]` 段带 `skipifsilent`，静默安装不会自动启动应用，重启必须由脚本负责；`/NORESTARTAPPLICATIONS` 则避免安装器与应用脚本各起一个实例
+- **数据安全**：升级 = 覆盖安装，安装器的 `ssPostInstall` 在静默路径下先读 `GetConfiguredDataRoot()` 沿用既有 data_root（见上「安装包分发」），数据目录里的 library/.paperwb 全部不动；对话框里显式写出这句话并显示实际 data_root 路径
+- **发布流程**：`installer/build_installer.ps1` 出包（末尾自动算 sha256 写 `release-<版本>.json`）→ 写更新说明 Markdown → `installer/publish_release.ps1 -NotesFile notes.md`（校验 tag 与 `APP_VERSION` 一致 → git tag `v<版本>` + push → `gh release create` 上传双包 → 回读 API 校验 asset/digest）。GitHub Release 的 body 就是应用里显示的更新说明
+- **无头自检安全性**：`--selftest` 在 `from PySide6... import QApplication` 之前就 `sys.exit` 返回（`main.py`），`MainWindow` 根本不会构造，故更新检查绝不会在自检/安装向导自检/构建验收门里触发联网
 
 ## 测试
 
@@ -235,4 +265,5 @@ src/
 - 所有 Python 文件使用 `from __future__ import annotations` 和类型注解
 - 测试数据在 `test/` 目录下（含示例 PDF、写作草稿、缓存快照）
 - 验收脚本: `test/validate_zotero.py`（Zotero 文献两阶段整合验收，`--count` 可调，默认 20，输出 JSON 报告）与 `test/capture_zotero_screenshots.py`（UI 截图验收，`--count` 可调，默认 20，输出 PNG）
-- 自测脚本: `test/selftest_bugfixes.py`（纯逻辑回归，含 JSON 容错：尾随逗号/字符串内裸换行与制表符/截断修复与 `_truncated` 标记/垃圾输入不臆造/评价提示词无 `{{` 模板残留）、`test/selftest_kb_sync.py`（知识库导出/导入：扫描与体积/清单校验/空目录与三种同名冲突策略/覆盖前备份/派生文件迁移/original_path 置空/zip-slip 拒绝/非法库名拒绝/空选择无操作，纯逻辑无 LLM 无网络）、`test/selftest_docx_citations.py`（docx 引文标记保护：citation_key 口径/写回普通+修订模式零改动还原/真实改号仍生效/last_rpr 泄漏回归/编辑器侧文本还原，无 LLM 无网络）、`test/selftest_docdiff.py`（内联 diff：渲染/锚点重建/导航/接受拒绝/跨编辑器拷贝，含 charFormat 探测偏移回归）与 `test/selftest_workbench.py`（检索工作台与库内问答核心逻辑：匹配口径/索引/RAG 组装/巡视全链路假 PubMed/OpenAlex 解析与三源路由/检索式 v2 与两轮闭环/按库推荐/UI 离屏构建/两级接缝缓存与后台建库预解析（结构化抽取·prelim/final 状态迁移·队列过滤失败记忆·flush 复用·参考文献修剪）/检索黑名单与记录库/邮件通知框架（配置解析与模板，无网络）/网页追踪（HTML 解析·变更检测·序列化·面板离屏构建）/写作专业化（结构指南·续写与大纲提示词·设置与写作面板离屏构建·草稿评价保存不关窗/状态恢复/落盘路径提示·内联润色进度反馈·修订渲染后接受等于润色文本），无 LLM 无网络）；`test/selftest_ui_features.py`（阅读 UI 新特性回归：热力图自适应几何与月份标签避让、计划任务 edit_plan、「回到今天」按钮仅偏离今天时可见、任务文字自动折行（WrapCheckBox）、卡片提问 Ctrl+Enter（QALineEdit）、阅读字号增减（内联 px 口径 + 钳制）、卡片手动拆分/合并（连字符/中英拼接规则 + structured_document 落盘读回）、读完标记（ReadMarkStore 持久化/信号/路径归一/工具栏联动），QPA offscreen 无 LLM 无网络）；`test/smoke_workbench_app.py`（offscreen 全窗口集成冒烟，读真实配置与 Zotero 库但不调 LLM；设 PAPERWB_DISABLE_PREPARSE=1 跳过后台预解析）
+- 界面体检（改布局/QSS 后必跑）: `test/check_ui_fit.py`（离屏几何断言：各工作台 chrome ≤2 行 90px、控件文字不溢出、1024×680 窄窗口无挤压、阅读正文区 ≥80% 窗口高且 ≥55% 宽、菜单快捷键保留；**离屏渲染中文是豆腐块，肉眼看不出截断，必须靠字体度量判定**）与 `test/capture_ui_review.py`（逐工作台截图到 `--out` 目录，`--width/--height/--tag` 可出宽/窄两套，用于视觉验收）
+- 自测脚本: `test/selftest_safety.py`（数据安全回归：原子写与损坏备份、知识库名 `.`/`..` 拒绝、导入副本改名与派生文件迁移、zip-slip 盘符/ADS、Word 只读目标写回失败后原稿完整，纯逻辑无 LLM 无网络）、`test/selftest_bugfixes.py`（纯逻辑回归，含 JSON 容错：尾随逗号/字符串内裸换行与制表符/截断修复与 `_truncated` 标记/垃圾输入不臆造/评价提示词无 `{{` 模板残留）、`test/selftest_kb_sync.py`（知识库导出/导入：扫描与体积/清单校验/空目录与三种同名冲突策略/覆盖前备份/派生文件迁移/original_path 置空/zip-slip 拒绝/非法库名拒绝/空选择无操作，纯逻辑无 LLM 无网络）、`test/selftest_update.py`（更新推送：版本号单一来源一致性（version.py ↔ main.py ↔ 构建脚本 ↔ ISS 兜底）、语义化比较边界（0.10>0.9/位数补零/预发布/畸形不误报）、GitHub 与自定义清单解析、**形态不跨替换**、无 Release 静默与 403/网络失败人话、跳过版本（自动尊重/手动无视）、下载分块+sha256+体积校验+.part 清理+目录穿越防护、启动器脚本命令行与全 ASCII、配置只改本键不丢并发写入、更新对话框与设置页签离屏构建、主窗口接线静态断言，无网络无 LLM）、`test/selftest_docx_citations.py`（docx 引文标记保护：citation_key 口径/写回普通+修订模式零改动还原/真实改号仍生效/last_rpr 泄漏回归/编辑器侧文本还原，无 LLM 无网络）、`test/selftest_docdiff.py`（内联 diff：渲染/锚点重建/导航/接受拒绝/跨编辑器拷贝，含 charFormat 探测偏移回归）与 `test/selftest_workbench.py`（检索工作台与库内问答核心逻辑：匹配口径/索引/RAG 组装/巡视全链路假 PubMed/OpenAlex 解析与三源路由/检索式 v2 与两轮闭环/按库推荐/UI 离屏构建/两级接缝缓存与后台建库预解析（结构化抽取·prelim/final 状态迁移·队列过滤失败记忆·flush 复用·参考文献修剪）/检索黑名单与记录库/邮件通知框架（配置解析与模板，无网络）/网页追踪（HTML 解析·变更检测·序列化·面板离屏构建）/写作专业化（结构指南·续写与大纲提示词·设置与写作面板离屏构建·草稿评价保存不关窗/状态恢复/落盘路径提示·内联润色进度反馈·修订渲染后接受等于润色文本）/配置持久化回归（建库解析默认关+`preparse_choice_made` 旧默认迁移、邮件配置落盘与不被旧快照覆盖、对话框保存不丢并发写入键、data_root 中文路径往返）/发送快捷键提示常驻与 Ctrl+Enter 行为一致），无 LLM 无网络）；`test/selftest_ui_features.py`（阅读 UI 新特性回归：热力图自适应几何与月份标签避让、计划任务 edit_plan、「回到今天」按钮仅偏离今天时可见、任务文字自动折行（WrapCheckBox）、卡片提问 Ctrl+Enter（QALineEdit）、阅读字号增减（内联 px 口径 + 钳制）、卡片手动拆分/合并（连字符/中英拼接规则 + structured_document 落盘读回）、读完标记（ReadMarkStore 持久化/信号/路径归一/工具栏联动），QPA offscreen 无 LLM 无网络）；`test/smoke_workbench_app.py`（offscreen 全窗口集成冒烟，读真实配置与 Zotero 库但不调 LLM；设 PAPERWB_DISABLE_PREPARSE=1 跳过后台预解析）

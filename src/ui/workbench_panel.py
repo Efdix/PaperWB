@@ -25,7 +25,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QScrollArea, QSpinBox, QSplitter, QTextEdit,
+    QPushButton, QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
@@ -545,31 +545,14 @@ class WorkbenchPanel(QWidget):
     # ================= UI 构建 =================
 
     def _setup_ui(self) -> None:
-        header = QFrame()
-        header.setObjectName("workspaceHeader")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(16, 10, 16, 10)
-        header_layout.setSpacing(8)
-        title_box = QVBoxLayout()
-        title_box.setSpacing(1)
-        eyebrow = QLabel("文献检索与巡视")
-        eyebrow.setObjectName("eyebrowLabel")
-        title_box.addWidget(eyebrow)
-        title = QLabel("检索工作台")
-        title.setObjectName("titleLabel")
-        title_box.addWidget(title)
-        header_layout.addLayout(title_box)
-        subtitle = QLabel("自然语言多源检索与按库推荐，定向巡视新文献并自动滤除库内已有")
-        subtitle.setObjectName("subtitleLabel")
-        header_layout.addWidget(subtitle)
-        header_layout.addStretch()
-
-        self._scout_toggle = QPushButton("巡视面板")
+        # 不再单占一条标题行：巡视面板开关就近放在 AI 检索面板头部，
+        # 工作台归属已由顶部应用栏标明。
+        self._scout_toggle = QPushButton("🗂 巡视面板")
         self._scout_toggle.setObjectName("paneToggle")
         self._scout_toggle.setCheckable(True)
         self._scout_toggle.setChecked(True)
+        self._scout_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self._scout_toggle.setToolTip("显示或隐藏右侧巡视面板（方向与结果）")
-        header_layout.addWidget(self._scout_toggle)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(3)
@@ -587,9 +570,8 @@ class WorkbenchPanel(QWidget):
         self._scout_toggle.toggled.connect(self._set_scout_visible)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-        layout.addWidget(header)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
         layout.addWidget(splitter, 1)
 
     def _build_ai_search_panel(self) -> QFrame:
@@ -598,21 +580,23 @@ class WorkbenchPanel(QWidget):
         panel.setObjectName("aiSearchPanel")
         panel.setMinimumWidth(420)
         v = QVBoxLayout(panel)
-        v.setContentsMargins(16, 14, 14, 12)
-        v.setSpacing(8)
+        v.setContentsMargins(12, 10, 12, 10)
+        v.setSpacing(7)
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        title_box = QVBoxLayout()
-        title_box.setSpacing(1)
+        header.setSpacing(8)
         title = QLabel("AI 检索")
-        title.setObjectName("titleLabel")
-        title_box.addWidget(title)
-        subtitle = QLabel("自然语言三源检索（OpenAlex / PubMed / arXiv）· 两轮闭环 · 自动滤除库内已有")
+        title.setObjectName("sectionLabel")
+        header.addWidget(title)
+        subtitle = QLabel("三源 · 两轮闭环")
         subtitle.setObjectName("subtitleLabel")
-        subtitle.setWordWrap(True)
-        title_box.addWidget(subtitle)
-        header.addLayout(title_box)
+        # 说明文字不许抬高本行最小宽度（窄窗口下会把「按库推荐」挤出可视区）
+        subtitle.setSizePolicy(QSizePolicy.Policy.Ignored,
+                               QSizePolicy.Policy.Preferred)
+        subtitle.setToolTip("自然语言三源检索（OpenAlex / PubMed / arXiv）·"
+                            " 两轮闭环 · 自动滤除库内已有")
+        header.addWidget(subtitle, 1)
         header.addStretch()
         self._rec_mode_cb = QCheckBox("📚 按库推荐")
         self._rec_mode_cb.setToolTip(
@@ -620,6 +604,7 @@ class WorkbenchPanel(QWidget):
             "作为推荐源；取消勾选回到自然语言检索。两种模式互斥显示。")
         self._rec_mode_cb.toggled.connect(self._set_recommend_mode)
         header.addWidget(self._rec_mode_cb)
+        header.addWidget(self._scout_toggle)
         v.addLayout(header)
 
         self._ai_input = QTextEdit()
@@ -629,8 +614,8 @@ class WorkbenchPanel(QWidget):
             "· 2024 年以来关于羽毛图案形成的机制综述\n\n"
             "两轮检索：先初检，AI 分析缺口后自动补充第二轮\n"
             "按 Ctrl+Enter 检索")
-        self._ai_input.setMaximumHeight(120)
-        self._ai_input.setMinimumHeight(64)
+        self._ai_input.setMaximumHeight(110)
+        self._ai_input.setMinimumHeight(58)
         self._ai_input.installEventFilter(self)
         v.addWidget(self._ai_input)
 
@@ -691,6 +676,15 @@ class WorkbenchPanel(QWidget):
         self._ai_results_layout = QVBoxLayout(host)
         self._ai_results_layout.setContentsMargins(0, 4, 2, 0)
         self._ai_results_layout.setSpacing(8)
+        # 启动空态：此前这里只露出一个未上色的 viewport，整块空白像加载失败。
+        empty = QLabel("输入研究问题开始检索，或勾选「按库推荐」\n"
+                       "以所选 Zotero 集合为种子推荐新文献。")
+        empty.setObjectName("subtitleLabel")
+        empty.setWordWrap(True)
+        empty.setStyleSheet(
+            "color: #718180; background-color: #f5f8f6; "
+            "border: 1px solid #e1ebe7; border-radius: 12px; padding: 14px;")
+        self._ai_results_layout.insertWidget(0, empty)
         self._ai_results_layout.addStretch()
         self._ai_scroll.setWidget(host)
         v.addWidget(self._ai_scroll, 1)
@@ -820,12 +814,19 @@ class WorkbenchPanel(QWidget):
         v.addLayout(footer)
         return panel
 
+    # 侧栏宽度按窗口比例分配，与阅读/统计工作台同一口径：
+    # 1024px 窗口下固定 430px 会把主区压到 56%，比例分配后主区始终领先。
+    _SCOUT_W_MIN, _SCOUT_W_MAX = 340, 430
+
     def _set_scout_visible(self, visible: bool) -> None:
         self._scout_panel.setVisible(bool(visible))
         if visible:
-            self._workbench_splitter.setSizes([max(600, self.width() - 470), 430])
+            scout_w = max(self._SCOUT_W_MIN,
+                          min(self._SCOUT_W_MAX, int(self.width() * 0.30)))
+            self._workbench_splitter.setSizes(
+                [max(560, self.width() - scout_w - 20), scout_w])
         else:
-            self._workbench_splitter.setSizes([max(600, self.width() - 30), 0])
+            self._workbench_splitter.setSizes([max(560, self.width() - 30), 0])
 
     # ================= 依赖注入 =================
 

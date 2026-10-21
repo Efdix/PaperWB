@@ -340,12 +340,26 @@ class ZoteroLibrary:
     def get_item(self, item_id: int) -> ZoteroItem | None:
         return self._items_by_id.get(item_id)
 
+    @staticmethod
+    def _pdf_stamp(path: str) -> tuple[int, int]:
+        """PDF 内容指纹：文件被替换/修复后即使标题不变也要触发同步。"""
+        if not path:
+            return (0, 0)
+        try:
+            st = os.stat(path)
+            return (st.st_size, st.st_mtime_ns)
+        except OSError:
+            return (0, 0)
+
     def snapshot(self) -> dict:
         """返回可比较的库结构快照，供同步引擎做差异对比。"""
         return {
             "collections": {c.key: c.name for c in self._collections},
             "collections_by_id": {c.collection_id: c.key for c in self._collections},
-            "items": {i.key: (i.title, bool(i.pdf_path)) for i in self._items},
+            "items": {
+                i.key: (i.title, bool(i.pdf_path), self._pdf_stamp(i.pdf_path))
+                for i in self._items
+            },
         }
 
     # ========== 加载 ==========

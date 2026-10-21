@@ -12,7 +12,7 @@
 
 ### 安装
 
-1. 下载安装向导：完整版 `PaperWB-Setup-x.y.z.exe`（预置模型）或精简版 `PaperWB-Setup-x.y.z-lite.exe`（不预置模型）（发布页）
+1. 下载安装向导：完整版 `PaperWB-Setup-x.y.z.exe`（预置模型）或精简版 `PaperWB-Setup-x.y.z-lite.exe`（不预置模型）——见 [Releases 发布页](https://github.com/Efdix/PaperWB/releases)。**已装旧版本的话不必手动下载**：应用会自动提示更新（见下文「检查更新」）
 2. 双击运行。由于个人分发未购买代码签名证书，Windows SmartScreen 可能弹出「Windows 已保护你的电脑」：
    点击 **「更多信息」→「仍要运行」** 即可（本软件不含任何网络服务端，仅调用你配置的 AI 接口）
 3. 跟随向导完成安装：
@@ -35,6 +35,21 @@
 ### 卸载
 
 控制面板/设置中卸载，或用开始菜单「PaperWB → 卸载」。卸载时可选是否保留配置（API Key、数据库路径等，位于 `%APPDATA%\PaperWB`）——保留则下次安装无需重新配置。
+
+### 检查更新
+
+应用启动约 15 秒后会静默检查新版本（**设置 → 更新** 页签可关闭或改检查间隔）。发现新版本时，窗口顶部应用栏会出现一个蓝色提示胶囊，点开即可：
+
+- 查看**更新说明**
+- **下载并更新**：应用内下载安装包（显示进度），下载完成后校验文件完整性，点「立即安装并重启」即自动退出 → 覆盖升级 → 重新打开
+- 若 GitHub 下载太慢或不可达，可点「**打开发布页**」在浏览器里手动下载安装包
+- 不想被这个版本打扰，点「**跳过此版本**」（下个版本仍会提示）
+
+也可以随时用 **☰ 菜单 → 检查更新...** 手动检查。
+
+> **升级不会丢数据**：安装为覆盖升级，你的数据目录（文献库、阅读缓存、写作知识库、草稿、API Key 配置）原样保留。安装包会按你当前装的版本自动匹配——完整版用户下完整版，精简版用户下精简版。
+
+**隐私说明**：更新检查只向更新源请求版本号与下载地址，请求仅带自标识 User-Agent（`PaperWB/版本号`），不发送任何本机信息。若在「设置 → 更新」里改用自定义更新源，则请求只发往你填写的地址。不想让它联网就在同一页签关闭自动检查（此时只有你手动点「检查更新」才会联网）。
 
 ### 便携版（备选）
 
@@ -196,16 +211,36 @@ conda activate PaperWB
 powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1
 ```
 
-脚本自动完成六步（均可 `-SkipBuild / -SkipModels / -SkipSelftest` 跳过复用中间产物）：
+脚本自动完成七步（前 3 步均可 `-SkipBuild / -SkipModels / -SkipSelftest` 跳过复用中间产物）：
 
 1. 检查/安装 PyInstaller（conda 环境 pip）
 2. 从项目根目录 `PaperWB.jpg` 生成 `assets\PaperWB.ico` 和预览 PNG
 3. `pyinstaller --noconfirm --clean PaperWB.spec` → `dist\PaperWB\`（onedir）
 4. `installer/stage_models.py`：从本机 HF 缓存提取 Docling 模型（约 505 MB）到 `installer\models_cache\hub\`（缺模型时先运行一次应用解析任意 PDF 预热缓存）
-5. **验收门**：`dist\PaperWB\PaperWB.exe --selftest <test\ 下首个 PDF>`，任一项 FAIL 即中止出包
-6. ISCC 编译 `installer/PaperWB.iss`（版本号自动从 `main.py` 抓取）
+5. **验收门**：`dist\PaperWB\PaperWB.exe --selftest <test\ 下首个 PDF>`，任一项 FAIL 即中止出包（另有一道「bundled 离线布局」门，验证安装版离线解析）
+6. ISCC 编译 `installer/PaperWB.iss` 双连出包（版本号自动从 `src/utils/version.py` 的 `APP_VERSION` 抓取，两个包都编译）
+7. 计算两个安装包的 SHA256，写 `installer\Output\release-<版本>.json`（自建更新源与发布校验用）
 
-产物：`installer\Output\PaperWB-Setup-<版本>.exe`
+产物：`installer\Output\PaperWB-Setup-<版本>.exe` + `PaperWB-Setup-<版本>-lite.exe`
+
+### 发布 Release（让应用内更新检查能发现）
+
+应用内「检查更新」读的是 `api.github.com/repos/Efdix/PaperWB/releases/latest`，因此新版本必须发成 GitHub Release：
+
+```powershell
+# 1. 先把版本号改好并提交：src/utils/version.py 里的 APP_VERSION（唯一版本来源）
+# 2. 出包
+powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1
+# 3. 写更新说明（会成为应用里显示的「更新说明」）
+notepad notes.md
+# 4. 打 tag + 上传（需 gh CLI 已登录：gh auth login）
+powershell -ExecutionPolicy Bypass -File installer\publish_release.ps1 -NotesFile notes.md
+#    想先传草稿人工确认：加 -Draft
+```
+
+脚本会校验 tag 与 `APP_VERSION` 一致，上传两个安装包，并回读 API 确认 asset 与 digest（应用下载后就按这个 digest 做 sha256 校验）。已装旧版本的应用下次启动即可检查到。
+
+**换用自建更新源**（GitHub 在国内可能慢）：把 `installer\Output\release-<版本>.json` 的 `assets[].url` 填成你的 CDN 地址后上传到任意 HTTPS 地址，用户在「设置 → 更新」里把来源改为「自定义清单 URL」并填入该地址即可。
 
 ### 体积与耗时预期
 
@@ -329,7 +364,8 @@ PaperWB/
 ├── assets/                      # 应用图标（make_icon.py 生成）
 ├── installer/                   # 安装向导构建
 │   ├── PaperWB.iss              # Inno Setup 向导脚本（许可/目录/快捷方式/完成页自检；/DLite 出精简版）
-│   ├── build_installer.ps1      # 一条龙构建：PyInstaller → 模型 staging → 自检 → ISCC 出包
+│   ├── build_installer.ps1      # 一条龙构建：PyInstaller → 模型 staging → 自检 → ISCC 出包 → release json（sha256）
+│   ├── publish_release.ps1      # 打 tag + 上传 GitHub Release（应用内更新检查的数据来源）
 │   ├── stage_models.py          # Docling 模型 staging（HF 缓存 → 安装包预置目录）
 │   ├── make_icon.py             # 图标生成
 │   └── lang/ChineseSimplified.isl  # 向导简体中文语言文件
@@ -357,6 +393,7 @@ PaperWB/
 │   │   ├── docx_io.py           # Word (.docx) 读写: 段落级读写 + 审阅批注解析 + 修订检测
 │   │   ├── doc_diff.py          # QTextEdit 内联 diff 控制器: 渲染/锚点/导航/接受拒绝（润色对话框与写作编辑器共用）
 │   │   ├── pubmed_searcher.py   # PubMed E-utilities 检索客户端 + 网络重试
+│   │   ├── updater.py           # 更新推送核心: 检查(GitHub Releases/自定义清单) + 下载校验(sha256) + 启动安装器脚本
 │   │   └── ai_words.py / json_utils.py  # AI 词汇库 / JSON 容错工具
 │   ├── ui/
 │   │   ├── pdf_viewer.py        # 结构化阅读面板: ParagraphCard 按 element_type 渲染 + 中英翻译（标题/摘要/图表注可译）+ I 形光标
@@ -370,10 +407,12 @@ PaperWB/
 │   │   ├── review_dialog.py     # 评审对话框
 │   │   ├── polish_history_dialog.py  # 润色历史对话框
 │   │   ├── lit_search_dialog.py # 文献补充对话框: LLM 推荐 + PubMed/arXiv 检索（非模态）
-│   │   ├── settings_dialog.py   # API 接口设置: 多模态/纯文本/文献检索源(OpenAlex 密钥可选) + 连接测试（Zotero/缓存路径为独立菜单项）
+│   │   ├── update_dialog.py     # 更新推送对话框: 更新说明 + 下载进度 + 确认安装/打开发布页/跳过此版本（非模态）
+│   │   ├── settings_dialog.py   # API 接口设置: 多模态/纯文本/文献检索源(OpenAlex 密钥可选)/邮件通知/更新 + 连接测试（Zotero/缓存路径为独立菜单项）
 │   │   └── styles.py            # 轻量浅灰/白色研究工作台主题 QSS
 │   └── utils/
 │       ├── config.py            # 持久化层: 配置/图书馆/聊天/缓存/草稿/润色历史 读写
+│       ├── version.py           # 版本号单一来源（APP_VERSION）+ 语义化版本比较
 │       ├── layout.py            # 递归布局高度计算
 │       └── threads.py           # 运行中 QThread 全局保活注册表
 ├── test/                        # 测试数据 + 自测/验收脚本
@@ -381,9 +420,11 @@ PaperWB/
 │   ├── capture_zotero_screenshots.py  #   UI 截图验收（--count 可调，输出 PNG）
 │   ├── selftest_bugfixes.py     #   纯逻辑回归自测
 │   ├── selftest_workbench.py    #   检索工作台与库内问答核心逻辑自测（假 PubMed，无 LLM 无网络）
+│   ├── selftest_update.py       #   更新推送自测（版本比较/清单解析/下载校验/启动器脚本，无网络）
 │   ├── selftest_docx.py         #   Word 读写自测
 │   ├── selftest_docdiff.py      #   内联 diff 自测
-│   ├── selftest_workbench_app.py / smoke_workbench_app.py  #   offscreen 工作台集成自测/全窗口冒烟
+│   ├── selftest_safety.py       #   数据安全回归（原子写/损坏备份/知识库路径/zip-slip/Word 原子写回）
+│   ├── smoke_workbench_app.py   #   offscreen 全窗口集成冒烟
 │   └── debug_parse.py           #   解析调试工具
 └── .opencode/                   # opencode 开发辅助配置
 ```

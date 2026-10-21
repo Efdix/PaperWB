@@ -42,6 +42,14 @@ from src.app import MainWindow  # noqa: E402
 
 win = MainWindow()
 win.show()
+# Zotero 加载已移到后台线程：等它完成再断言面板注入
+_deadline = time.time() + 20.0
+while time.time() < _deadline:
+    app.processEvents()
+    w = getattr(win, "_zotero_load_worker", None)
+    if w is None or not w.isRunning():
+        break
+    time.sleep(0.05)
 check("主窗口构建", True)
 
 # 工作台切换（顺序：阅读0 → 检索1 → 写作2）

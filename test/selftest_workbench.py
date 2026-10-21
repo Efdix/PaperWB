@@ -91,9 +91,17 @@ try:
     doc.close()
 
     chunks = extract_pdf_chunks(pdf_path)
-    check("PDF 抽段非空", len(chunks) >= 1 and "melanocyte" in chunks[0]["t"].lower(), repr(chunks[:1]))
+    check("PDF 抽段非空", chunks is not None and len(chunks) >= 1
+          and "melanocyte" in chunks[0]["t"].lower(), repr(chunks[:1]))
     check("抽段含页码", chunks[0].get("p") == 1)
-    check("抽段失败返回空", extract_pdf_chunks(os.path.join(tmp, "no_such.pdf")) == [])
+    # 失败必须是 None，才能与“成功但没有文本”的 [] 区分（索引错误计数依赖它）
+    check("抽段失败返回 None",
+          extract_pdf_chunks(os.path.join(tmp, "no_such.pdf")) is None)
+    from src.core.library_qa import _chunk_text
+    long_text = "甲" * 2500 + "。" + "乙" * 2500
+    pieces = _chunk_text(long_text, 1200)
+    check("长段落切块不丢内容", "".join(pieces) == long_text and len(pieces) >= 4,
+          f"pieces={len(pieces)}")
 
     item1 = ZoteroItem(item_id=1, key="KEYPDF", title="Melanocyte pathways in plumage",
                        authors=["Smith, John", "Lee, Mary"], year="2023",
@@ -1960,6 +1968,148 @@ check("文献在库匹配·标题包含（大小写/符号无关）",
 check("文献在库匹配·未命中", match_reference_to_library(
     "Wang L, et al. Something completely unrelated here. Science. 2020.", _pool) is None)
 check("文献在库匹配·空池安全", match_reference_to_library("any entry", []) is None)
+
+
+# ---------- 9aa. 配置持久化回归 ----------
+# 背景：这三个都曾是「设置存了但重装/重启就没了」类问题的根源。
+import json as _json
+import pathlib as _pathlib
+
+_cfg_tmp = _pathlib.Path(tempfile.mkdtemp(prefix="paperwb_cfg_test_"))
+_orig_appdir, _orig_cfgfile = _config_mod._app_config_dir, _config_mod._config_file
+_config_mod._app_config_dir = lambda: _cfg_tmp
+_config_mod._config_file = lambda: _cfg_tmp / "config.json"
+_cfg_mod = _config_mod
+try:
+    # (a) 后台建库解析默认关闭
+    check("建库解析默认关闭", _cfg_mod.DEFAULT_CONFIG["preparse_enabled"] is False)
+    _cfg_mod.save_config(_cfg_mod.load_config())
+    check("建库解析·新用户读到关闭",
+          _cfg_mod.load_config().get("preparse_enabled") is False)
+    # 老用户文件里是旧默认 true 且无显式选择标记 → 应被新默认（关）接管
+    disk = _json.loads((_cfg_tmp / "config.json").read_text(encoding="utf-8"))
+    disk["preparse_enabled"] = True
+    disk.pop("preparse_choice_made", None)
+    (_cfg_tmp / "config.json").write_text(
+        _json.dumps(disk, ensure_ascii=False, indent=2), encoding="utf-8")
+    check("建库解析·旧默认 true 被新默认接管（治老用户卡顿）",
+          _cfg_mod.load_config().get("preparse_enabled") is False)
+    # 用户显式开启过 → 永远尊重
+    disk = _cfg_mod.load_config()
+    disk["preparse_enabled"] = True
+    disk["preparse_choice_made"] = True
+    _cfg_mod.save_config(disk)
+    check("建库解析·用户显式开启后保持开启",
+          _cfg_mod.load_config().get("preparse_enabled") is True)
+    # 用户显式关闭 → 保持关闭
+    disk = _cfg_mod.load_config()
+    disk["preparse_enabled"] = False
+    _cfg_mod.save_config(disk)
+    check("建库解析·用户显式关闭后保持关闭",
+          _cfg_mod.load_config().get("preparse_enabled") is False)
+
+    # (b) 邮件配置必须真的落盘，且不被同一轮保存的旧快照覆盖
+    _cfg_mod.save_email_config({
+        "enabled": True, "smtp_host": "smtp.qq.com", "smtp_port": 465,
+        "use_ssl": True, "username": "me@qq.com", "password": "AUTHCODE",
+        "recipients": "me@qq.com", "sender": "",
+    })
+    _e = _json.loads((_cfg_tmp / "config.json").read_text(encoding="utf-8"))["email_notify"]
+    check("邮件配置落盘（SMTP/账号/授权码/收件人）",
+          (_e["enabled"], _e["smtp_host"], _e["username"], _e["password"],
+           _e["recipients"]) == (True, "smtp.qq.com", "me@qq.com", "AUTHCODE", "me@qq.com"),
+          repr(_e))
+    check("邮件配置读回一致",
+          _cfg_mod.get_email_config()["password"] == "AUTHCODE")
+    check("邮件配置字段齐全（含默认值补全）",
+          set(_cfg_mod.get_email_config()) == set(_cfg_mod.DEFAULT_CONFIG["email_notify"]))
+    check("merge_email_config 忽略未知键并补默认",
+          _cfg_mod.merge_email_config({"smtp_host": "h", "bogus": 1}).get("bogus") is None
+          and _cfg_mod.merge_email_config({"smtp_host": "h"})["smtp_port"] == 465)
+
+    # 关键回归：设置对话框 _save 的顺序是「先写邮件、再用自己的快照整份覆盖」，
+    # 旧代码里快照是打开对话框时抓的，会把刚写的邮件配置抹掉。
+    _cfg_mod.save_email_config({"enabled": True, "smtp_host": "smtp.qq.com",
+                                "username": "me@qq.com", "password": "AUTHCODE"})
+    _stale = _cfg_mod.load_config()          # 模拟对话框打开时抓的快照
+    _stale.pop("email_notify", None)         # 快照里还没有邮件键
+    _live = _cfg_mod.load_config()           # 对话框停留期间别处写入的键
+    _live["word_bindings"] = {"kb": {"path": "x.docx", "mtime": 1.0}}
+    _cfg_mod.save_config(_live)
+    # 修复后的保存路径：重读磁盘 + 合并本页键，而不是回写旧快照
+    _merged = _cfg_mod.load_config()
+    _merged["vision_api"] = {"provider": "GLM（智谱）", "api_key": "k",
+                             "base_url": "u", "model": "m"}
+    _merged["email_notify"] = _cfg_mod.merge_email_config(
+        {"enabled": True, "smtp_host": "smtp.qq.com", "username": "me@qq.com",
+         "password": "AUTHCODE", "recipients": "me@qq.com"})
+    _cfg_mod.save_config(_merged)
+    _final = _json.loads((_cfg_tmp / "config.json").read_text(encoding="utf-8"))
+    check("邮件配置不被同轮旧快照覆盖（回归）",
+          _final["email_notify"]["password"] == "AUTHCODE"
+          and _final["email_notify"]["smtp_host"] == "smtp.qq.com",
+          repr(_final["email_notify"]))
+    check("对话框保存不丢并发写入的其它键（回归）",
+          _final.get("word_bindings") == {"kb": {"path": "x.docx", "mtime": 1.0}},
+          repr(_final.get("word_bindings")))
+    check("对话框保存同时写入 API 键", _final["vision_api"]["api_key"] == "k")
+
+    # 非 ASCII data_root 与未知键都要能安全往返（安装向导解析口径的对齐面）
+    _round = _cfg_mod.load_config()
+    _round["data_root"] = "D:" + os.sep + "科研" + os.sep + "PaperWB" + os.sep + "data"
+    _cfg_mod.save_config(_round)
+    check("data_root 中文路径往返",
+          _cfg_mod.load_config()["data_root"].endswith(os.path.join("科研", "PaperWB", "data")),
+          _cfg_mod.load_config()["data_root"])
+finally:
+    _config_mod._app_config_dir = _orig_appdir
+    _config_mod._config_file = _orig_cfgfile
+    shutil.rmtree(_cfg_tmp, ignore_errors=True)
+
+
+# ---------- 9ab. 发送快捷键提示常驻（不被 Placeholder 吞掉） ----------
+from src.ui.chat_panel import ChatPanel as _ChatPanel
+from src.ui.library_qa_panel import LibraryQAPanel as _LQAPanel
+
+_chat = _ChatPanel()
+_chat.resize(320, 560)
+_chat.show()
+for _ in range(6):
+    app.processEvents()
+check("聊天输入区有常驻发送提示控件",
+      hasattr(_chat, "_send_hint") and "Ctrl+Enter" in _chat._send_hint.text())
+check("聊天提示不随输入内容消失（Placeholder 之外另有常驻标签）",
+      _chat._send_hint.isVisible() and _chat.input_box.placeholderText() != "")
+_chat.input_box.setPlainText("写了一段很长的问题，此时 Placeholder 已经不可见")
+for _ in range(4):
+    app.processEvents()
+check("输入后提示仍在", _chat._send_hint.isVisible()
+      and "Ctrl+Enter" in _chat._send_hint.text())
+check("发送按钮 tooltip 也标注快捷键",
+      "Ctrl+Enter" in _chat.send_btn.toolTip())
+# Ctrl+Enter 仍须真的发送（提示与行为一致）
+_sent = []
+_chat.send_message.connect(lambda t: _sent.append(t))
+_chat.set_input_enabled(True)
+_chat.input_box.setPlainText("测试问题")
+for _ in range(3):
+    app.processEvents()
+_chat._on_send()
+check("Ctrl+Enter/发送路径产出消息", _sent == ["测试问题"], repr(_sent))
+_chat.hide()
+
+_qa = _LQAPanel()
+_qa.resize(300, 560)
+_qa.show()
+for _ in range(6):
+    app.processEvents()
+check("库内问答有常驻 Ctrl+Enter 提示",
+      hasattr(_qa, "_send_hint") and "Ctrl+Enter" in _qa._send_hint.text())
+check("库内问答提示不参与最小宽度（Ignored 策略，不挤窄正文列）",
+      _qa._send_hint.sizePolicy().horizontalPolicy().name == "Ignored")
+check("库内问答提问按钮 tooltip 标注快捷键",
+      "Ctrl+Enter" in _qa._ask_btn.toolTip())
+_qa.hide()
 
 
 # ---------- 汇总 ----------

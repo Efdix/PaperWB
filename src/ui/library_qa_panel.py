@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QEvent, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-    QScrollArea, QTextEdit, QVBoxLayout, QWidget,
+    QCheckBox, QFrame, QHBoxLayout, QLabel, QLayout, QMessageBox, QPushButton,
+    QScrollArea, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from ..core.library_qa import LibraryQAEngine
@@ -171,6 +171,7 @@ class LibraryQAPanel(QWidget):
 
         self._qa_worker: LibraryQAWorker | None = None
         self._index_worker: IndexBuildWorker | None = None
+        self._shutting_down = False
         self._qa_busy = False
         self._qa_history: list[dict] = []
         self._current_ai_bubble: ChatBubble | None = None
@@ -183,26 +184,28 @@ class LibraryQAPanel(QWidget):
 
     def _setup_ui(self) -> None:
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 14, 14, 12)
+        v.setContentsMargins(12, 10, 12, 10)
         v.setSpacing(0)
 
+        # 标题与说明同一行且说明可压缩：本面板是可窄可宽的侧栏，
+        # 说明文字不该决定它的最小宽度（否则阅读区被侧面挤成窄条）。
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 8)
-        title_box = QVBoxLayout()
-        title_box.setSpacing(1)
+        header.setSpacing(8)
         title = QLabel("库内问答")
         title.setObjectName("titleLabel")
-        title_box.addWidget(title)
-        subtitle = QLabel("面向整个 Zotero 库的跨文献问答 · 回答带 [n] 角标")
+        header.addWidget(title)
+        subtitle = QLabel("跨文献问答 · 回答带 [n] 角标")
         subtitle.setObjectName("subtitleLabel")
-        title_box.addWidget(subtitle)
-        header.addLayout(title_box)
-        header.addStretch()
+        subtitle.setSizePolicy(QSizePolicy.Policy.Ignored,
+                               QSizePolicy.Policy.Preferred)
+        subtitle.setToolTip("面向整个 Zotero 库的跨文献问答 · 回答带 [n] 角标")
+        header.addWidget(subtitle, 1)
         v.addLayout(header)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background-color: #e4e0d8; max-height: 1px;")
+        sep.setStyleSheet("background-color: #e9ebef; max-height: 1px;")
         v.addWidget(sep)
 
         self._qa_scroll = QScrollArea()
@@ -232,16 +235,24 @@ class LibraryQAPanel(QWidget):
         self._ask_input.installEventFilter(self)
         input_layout.addWidget(self._ask_input)
 
+        # 控件分两行：开关一行、动作一行。挤在一行时本面板最小宽度会顶到
+        # 400px 以上，反过来把阅读正文列压窄（这正是重构要解决的问题）。
         ctrl = QHBoxLayout()
         ctrl.setSpacing(8)
-        self._preparse_cb = QCheckBox("后台建库解析")
+        ctrl_actions = QHBoxLayout()
+        ctrl_actions.setSpacing(8)
+        # 本面板是可窄可宽的侧栏：控件行越窄，正文列越宽。
+        # 非高频动作用图标按钮（说明进 tooltip），文字项只留两个复选框。
+        self._preparse_cb = QCheckBox("建库解析")
         self._preparse_cb.setToolTip(
-            "空闲时在后台本地解析全库 PDF（零 token，用户操作优先）：\n"
+            "默认关闭：开启后会从头把全库 PDF 逐篇解析一遍，CPU 与磁盘会长时间\n"
+            "满载（首次建库尤其明显），所以改为由你主动开启。\n"
+            "开启后空闲时在后台本地解析全库 PDF（零 token，用户操作优先）：\n"
             "· 库问答证据升级为去噪、带章节的结构化正文\n"
             "· 已预解析的文献点开秒开\n"
             "· 跨页段落在你打开阅读时才做一次 LLM 精修")
         self._preparse_cb.setChecked(
-            load_config().get("preparse_enabled", True))
+            load_config().get("preparse_enabled", False))
         self._preparse_cb.toggled.connect(self.preparse_toggled.emit)
         ctrl.addWidget(self._preparse_cb)
         self._lib_only_cb = QCheckBox("只问库")
@@ -250,31 +261,50 @@ class LibraryQAPanel(QWidget):
             "适合「我有哪些关于 X 的文献」这类清点式问题。")
         ctrl.addWidget(self._lib_only_cb)
         ctrl.addStretch()
-        rebuild_btn = QPushButton("重建索引")
-        rebuild_btn.setObjectName("secondaryBtn")
-        rebuild_btn.setToolTip("强制重建全库全文索引（PDF 更换附件后使用）")
+        input_layout.addLayout(ctrl)
+
+        rebuild_btn = QPushButton("↻")
+        rebuild_btn.setObjectName("paneToggle")
+        rebuild_btn.setToolTip("重建索引：强制重建全库全文索引（PDF 更换附件后使用）")
         rebuild_btn.clicked.connect(lambda: self._start_index_build(force=True))
-        ctrl.addWidget(rebuild_btn)
-        clear_btn = QPushButton("清空")
-        clear_btn.setObjectName("softBtn")
+        ctrl_actions.addWidget(rebuild_btn)
+        clear_btn = QPushButton("🗑")
+        clear_btn.setObjectName("paneToggle")
         clear_btn.setToolTip("清空当前问答会话")
         clear_btn.clicked.connect(self._on_clear_chat)
-        ctrl.addWidget(clear_btn)
+        ctrl_actions.addWidget(clear_btn)
+        # 常驻发送快捷键提示（Placeholder 一开始输入就消失）。SizePolicy=Ignored
+        # 让它不参与面板最小宽度计算：本面板是可窄可宽的侧栏，提示文字不该把
+        # 正文列挤窄；空间不足时省略显示，完整说明在 tooltip 里。
+        self._send_hint = QLabel("Ctrl+Enter 发送")
+        self._send_hint.setObjectName("subtitleLabel")
+        self._send_hint.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                      QSizePolicy.Policy.Preferred)
+        self._send_hint.setToolTip(
+            "Ctrl+Enter：发送提问\n"
+            "Enter：插入换行（用于分段书写长问题）")
+        ctrl_actions.addWidget(self._send_hint)
+        ctrl_actions.addStretch()
         self._ask_btn = QPushButton("提问 ✈")
         self._ask_btn.setObjectName("primaryBtn")
+        self._ask_btn.setToolTip("发送提问（快捷键 Ctrl+Enter）")
         self._ask_btn.setEnabled(False)
         self._ask_btn.clicked.connect(self._on_ask)
-        ctrl.addWidget(self._ask_btn)
-        input_layout.addLayout(ctrl)
+        ctrl_actions.addWidget(self._ask_btn)
+        input_layout.addLayout(ctrl_actions)
 
         self._qa_status = QLabel("索引：未构建")
         self._qa_status.setObjectName("subtitleLabel")
         self._qa_status.setWordWrap(True)
+        self._qa_status.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                      QSizePolicy.Policy.Preferred)
         input_layout.addWidget(self._qa_status)
 
         self._preparse_status = QLabel("")
         self._preparse_status.setObjectName("subtitleLabel")
         self._preparse_status.setWordWrap(True)
+        self._preparse_status.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                            QSizePolicy.Policy.Preferred)
         self._preparse_status.hide()
         input_layout.addWidget(self._preparse_status)
 
@@ -287,6 +317,8 @@ class LibraryQAPanel(QWidget):
         self._apply_ask_state()
 
     def set_zotero_library(self, library: "ZoteroLibrary | None") -> None:
+        if self._shutting_down:
+            return
         self._library = library
         items: list = []
         if library is not None and library.is_available:
@@ -326,7 +358,8 @@ class LibraryQAPanel(QWidget):
         return True
 
     def shutdown(self) -> None:
-        """请求中断后台线程（关窗时调用）。"""
+        """请求中断后台线程（关窗时调用），并禁止迟到的信号再启动新任务。"""
+        self._shutting_down = True
         for w in (self._index_worker, self._qa_worker):
             if w is not None and w.isRunning():
                 w.requestInterruption()
@@ -339,6 +372,8 @@ class LibraryQAPanel(QWidget):
     # ================= 索引构建 =================
 
     def _start_index_build(self, force: bool = False) -> None:
+        if self._shutting_down:
+            return
         if self._index_worker is not None and self._index_worker.isRunning():
             self._qa_status.setText("索引：正在构建中，请稍候…")
             return
@@ -436,9 +471,11 @@ class LibraryQAPanel(QWidget):
             "首次使用会自动为库内 PDF 构建全文索引（只读，不改动 Zotero 数据）。"
         )
         welcome.setWordWrap(True)
+        # 欢迎语行较长，不让它决定面板最小宽度（窄侧栏下折行显示即可）
+        welcome.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         welcome.setStyleSheet(
-            "color: #718180; background-color: #f5f8f6; border: 1px solid #e1ebe7; "
-            "border-radius: 12px; padding: 18px; font-size: 13px; line-height: 1.8;"
+            "color: #7c818a; background-color: #f7f9fb; border: 1px solid #e3e9ef; "
+            "border-radius: 10px; padding: 14px; font-size: 12px; line-height: 1.8;"
         )
         self._msg_layout.insertWidget(self._msg_layout.count() - 1, welcome)
         self._welcome = welcome

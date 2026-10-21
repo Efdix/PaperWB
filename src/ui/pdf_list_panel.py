@@ -139,7 +139,8 @@ class PDFListPanel(QWidget):
             font.setBold(True)
             font.setPointSize(11)
             item.setFont(0, font)
-            item.setForeground(0, Qt.GlobalColor.white)  # 会被 stylesheet 覆盖，但作为兜底
+            # 不要用 ForegroundRole 写白色：它会覆盖 QSS 的 color，在白底
+            # 列表上变成真正的白字白底（文件夹和未读条目会“消失”）。
             self.tree.addTopLevelItem(item)
             folder_items[folder] = item
 
@@ -163,8 +164,7 @@ class PDFListPanel(QWidget):
                 file_item.setForeground(0, Qt.GlobalColor.darkGray)
             elif is_read:
                 file_item.setForeground(0, QBrush(QColor("#278273")))
-            else:
-                file_item.setForeground(0, Qt.GlobalColor.white)
+            # 未读条目沿用 QSS 的 #1c1e21，不设 ForegroundRole
             # 已整合文献用浅绿底标记（一眼看出谁可阅读）
             self._apply_integrated_badge(file_item, pdf.get("path", ""))
 

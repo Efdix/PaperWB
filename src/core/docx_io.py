@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import difflib
+import os
 import re
+import uuid
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -89,7 +91,9 @@ def _para_text(p) -> str:
         elif tag == qn("w:tab"):
             parts.append("\t")
         elif tag in (qn("w:br"), qn("w:cr")):
-            parts.append("\n")
+            # 段内软换行用 U+2028，与段落分隔符 \n 区分；否则读入编辑器时
+            # 会被当成新段落，保存后把原文档结构改掉。
+            parts.append("\u2028")
         elif tag == qn("w:delText"):
             pass  # 已删除文本不显示
     return "".join(parts)
@@ -384,7 +388,7 @@ class _ParaIndex:
 
 
 def _run_text(r) -> str:
-    """run 的可见文本（w:t + w:tab→\t + w:br/cr→\n），与 _para_text 同口径。"""
+    """run 的可见文本（w:br/cr→U+2028 软换行），与 _para_text 同口径。"""
     parts: list[str] = []
     for node in r.iter():
         tag = node.tag
@@ -393,7 +397,7 @@ def _run_text(r) -> str:
         elif tag == qn("w:tab"):
             parts.append("\t")
         elif tag in (qn("w:br"), qn("w:cr")):
-            parts.append("\n")
+            parts.append("\u2028")
     return "".join(parts)
 
 
@@ -496,7 +500,7 @@ def _split_text_pieces(text: str) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     buf = ""
     for ch in text:
-        if ch == "\n":
+        if ch in ("\n", "\u2028"):
             if buf:
                 out.append((buf, "text"))
                 buf = ""
@@ -1090,7 +1094,32 @@ def write_docx(path: str | Path, paragraphs: list[str],
             _insert_paragraphs(doc, body_paras, i1,
                                new_texts[j1:j2], src, reviser)
 
-    doc.save(path)
+    _save_docx_atomic(doc, path)
+
+
+def _save_docx_atomic(doc, path: str | Path) -> None:
+    """先写同目录临时文件，成功后原子替换。
+
+    ``python-docx`` 的 ``doc.save(path)`` 会先截断目标文件再写入；磁盘满、
+    进程被杀或 Word 锁定文件时会留下半截 docx。临时文件 + ``os.replace``
+    保证失败时原文件一个字节不动。
+    """
+    target = Path(path)
+    tmp = target.with_name(
+        f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        doc.save(str(tmp))
+        # Windows 上只读 fd 调 fsync 会报 EBADF，用追加模式拿可写句柄。
+        with open(tmp, "ab") as f:
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _insert_paragraphs(doc, body_paras, old_index: int, texts: list[str],

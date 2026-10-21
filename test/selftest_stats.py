@@ -184,8 +184,18 @@ try:
     app.processEvents()
     check("StatsPanel 离屏构建", panel.isVisible())
     check("热力图数据已注入", len(panel._heatmap._series) == 90, str(len(panel._heatmap._series)))
-    check("今日概览格子 7 个", panel._today_grid.count() == 7, str(panel._today_grid.count()))
-    check("Top 榜 2 篇", panel._top_list.count() == 2, str(panel._top_list.count()))
+    # 概览格子按宽度自动折行（窄窗口分行），故跨行统计全部格子
+    check("今日概览格子 7 个", len(panel._today_cells) == 7,
+          str(len(panel._today_cells)))
+    check("今日概览格子已挂进行布局",
+          sum(panel._today_host.layout().itemAt(i).layout().count()
+              for i in range(panel._today_host.layout().count())) == 7,
+          str(panel._today_host.layout().count()) + " 行")
+    # Top 榜布局末尾有一个撑顶 spacer，故按实际行部件计数
+    _top_rows = [panel._top_list.itemAt(i).widget()
+                 for i in range(panel._top_list.count())
+                 if panel._top_list.itemAt(i).widget() is not None]
+    check("Top 榜 2 篇", len(_top_rows) == 2, str(len(_top_rows)))
     # 计划页签三页
     check("计划三页签", len(panel._plan_pages) == 3, repr(list(panel._plan_pages)))
     # 热力图点击联动：直接调 jump_to

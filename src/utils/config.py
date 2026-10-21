@@ -26,13 +26,17 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
 import shutil
 import sys
 import tempfile
+import uuid
 from pathlib import Path
+
+from .atomic import atomic_write_json, atomic_write_text, backup_corrupt_file
 
 # ---- 应用配置目录（便携优先，存放 config.json） ----
 
@@ -45,7 +49,8 @@ def _portable_base_dir() -> Path | None:
         base = Path(__file__).resolve().parents[2]
     try:
         base.mkdir(parents=True, exist_ok=True)
-        probe = base / ".paperwb_write_probe"
+        # 唯一探针：两个实例并发探测时不会互相 unlink 造成假“不可写”。
+        probe = base / f".paperwb_write_probe_{os.getpid()}_{uuid.uuid4().hex[:8]}"
         probe.touch()
         probe.unlink()
         return base
@@ -118,14 +123,24 @@ DEFAULT_CONFIG: dict = {
         "model": "deepseek-v4-flash",
         "description": "纯文本接口 — 论文问答、翻译、写作、文献检索、跨页整合共用",
     },
-    "max_tokens": 1_000_000,
+    "max_tokens": 128_000,  # 上下文窗口预算（不再是“无限”）；ContextManager 会钳制上限
     "llm_max_output_tokens": 8192,  # 单次生成输出上限（0 或负数 = 不限制）
     "data_root": "",          # 空字符串 = 未设置，需首次启动弹窗
     "zotero_data_dir": "",
     "openalex_api_key": "",   # OpenAlex 检索源密钥（可选；空 = 无 key 免费额度）
     "easyscholar_api_key": "",  # EasyScholar 期刊影响因子密钥（可选；空 = 不显示 IF）
-    "preparse_enabled": True,  # 后台全库预解析（空闲时本地解析 Zotero PDF，零 LLM）
+    "preparse_enabled": False,  # 后台全库预解析（空闲时本地解析 Zotero PDF，零 LLM）
+    # 默认关闭：启动后即自动串行解析全库 PDF，CPU/磁盘长时间满载，用户会感觉
+    # 「一打开软件就卡」。需要更高质量的库问答证据 / 秒开已读文献时由用户主动开启。
     "custom_writing_types": {},  # 自定义写作类型: {key: {"label": str, "system_prompt": str}}
+    "update_check": {          # 更新推送（检查新版本 → 下载安装包 → 用户确认后覆盖安装）
+        "enabled": True,       # 启动后静默检查新版本（默认开；设置 → 更新 页签可关）
+        "interval_hours": 24,  # 自动检查间隔小时数（同一天内不重复查）
+        "source": "github",    # github = Efdix/PaperWB Releases；custom = 自建静态 JSON
+        "url": "",             # 自定义更新源清单 URL（source=custom 时生效）
+        "skipped_version": "", # 用户选择「跳过此版本」的版本号
+        "last_check": "",      # 上次检查时间（ISO 字符串，节流用）
+    },
     "email_notify": {          # 邮件通知（文献巡视/网页更新提醒）
         "enabled": False,      # 总开关
         "smtp_host": "",       # 如 smtp.qq.com / smtp.163.com / smtp.gmail.com
@@ -315,14 +330,19 @@ def load_config() -> dict:
     """加载配置，兼容旧版本格式自动迁移。"""
     cf = _config_file()
     if not cf.exists():
-        return DEFAULT_CONFIG.copy()
+        return copy.deepcopy(DEFAULT_CONFIG)
 
     try:
         saved = json.loads(cf.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        if not isinstance(saved, dict):
+            raise ValueError("config root is not an object")
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, OSError):
+        # 不静默覆盖：先把损坏文件改名保留，用户/开发者还能从 .corrupt 恢复。
+        backup_corrupt_file(cf)
         saved = {}
 
-    config = DEFAULT_CONFIG.copy()
+    # 深拷贝：嵌套 dict 不能与默认常量共享，否则一次就地修改会污染默认值。
+    config = copy.deepcopy(DEFAULT_CONFIG)
 
     # ---- 迁移旧 library_path → data_root ----
     if "library_path" in saved and not saved.get("data_root"):
@@ -375,6 +395,13 @@ def load_config() -> dict:
     # 旧版本的 Stage 1 引擎/并发选项已移除，统一固定为本地版式解析。
     for legacy_key in ("stage1_mode", "stage1_concurrency", "stage1_parser"):
         config.pop(legacy_key, None)
+    # 后台建库解析改为默认关闭。旧版本默认开启，且任何一次「设置保存」都会把
+    # 当时的默认值烙进 config.json，所以老用户文件里多半是 true——光改默认值
+    # 对他们无效。用显式选择标记区分「用户真的开过」与「沿用旧默认」：
+    # 没标记过的一律按新默认（关）走一次；用户一旦在面板上勾选过，标记即为
+    # 真，此后永远尊重文件里的值。
+    if not config.get("preparse_choice_made"):
+        config["preparse_enabled"] = DEFAULT_CONFIG["preparse_enabled"]
     return config
 
 
@@ -385,7 +412,7 @@ def save_config(config: dict) -> None:
     if config.get("zotero_data_dir"):
         config["zotero_data_dir"] = os.path.normpath(str(config["zotero_data_dir"]))
     cf = _config_file()
-    cf.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(cf, config)
 
 
 # ---- 自定义写作类型 ----
@@ -446,21 +473,84 @@ def get_email_config(config: dict | None = None) -> dict:
     """邮件通知配置（合并默认值，保证字段齐全）。"""
     if config is None:
         config = load_config()
+    return merge_email_config(config.get("email_notify"))
+
+
+def merge_email_config(cfg: dict | None) -> dict:
+    """把局部邮件配置合并到完整默认结构（字段齐全、忽略未知键）。"""
     merged = dict(DEFAULT_CONFIG["email_notify"])
-    saved = config.get("email_notify")
-    if isinstance(saved, dict):
-        merged.update({k: v for k, v in saved.items() if k in merged})
+    if isinstance(cfg, dict):
+        merged.update({k: v for k, v in cfg.items() if k in merged})
     return merged
 
 
 def save_email_config(cfg: dict) -> None:
-    """保存邮件通知配置。"""
+    """保存邮件通知配置（只改 email_notify，其余字段以磁盘现状为基准）。"""
     config = load_config()
-    merged = dict(DEFAULT_CONFIG["email_notify"])
+    config["email_notify"] = merge_email_config(cfg)
+    save_config(config)
+
+
+# ========== 更新推送 ==========
+
+def get_update_config(config: dict | None = None) -> dict:
+    """更新检查配置（合并默认值，保证字段齐全）。"""
+    if config is None:
+        config = load_config()
+    return merge_update_config(config.get("update_check"))
+
+
+def merge_update_config(cfg: dict | None) -> dict:
+    """把局部更新配置合并到完整默认结构（字段齐全、忽略未知键）。"""
+    merged = dict(DEFAULT_CONFIG["update_check"])
     if isinstance(cfg, dict):
         merged.update({k: v for k, v in cfg.items() if k in merged})
-    config["email_notify"] = merged
+    try:
+        hours = merged.get("interval_hours")
+        hours = 24 if hours is None or hours == "" else int(hours)
+    except (TypeError, ValueError):
+        hours = 24
+    merged["interval_hours"] = max(1, hours)
+    merged["enabled"] = bool(merged.get("enabled"))
+    merged["source"] = str(merged.get("source") or "github").strip().lower()
+    if merged["source"] not in ("github", "custom"):
+        merged["source"] = "github"
+    merged["url"] = str(merged.get("url") or "").strip()
+    merged["skipped_version"] = str(merged.get("skipped_version") or "").strip()
+    merged["last_check"] = str(merged.get("last_check") or "").strip()
+    return merged
+
+
+def save_update_config(cfg: dict) -> None:
+    """保存更新检查配置（只改 update_check，其余字段以磁盘现状为基准）。"""
+    config = load_config()
+    config["update_check"] = merge_update_config(cfg)
     save_config(config)
+
+
+def set_update_skipped_version(version: str) -> None:
+    """记录「跳过此版本」（重读磁盘再改本键，不覆盖别处写入的配置）。"""
+    config = load_config()
+    update = merge_update_config(config.get("update_check"))
+    update["skipped_version"] = str(version or "").strip()
+    config["update_check"] = update
+    save_config(config)
+
+
+def set_update_last_check(iso_time: str) -> None:
+    """记录上次检查时间（节流用）。"""
+    config = load_config()
+    update = merge_update_config(config.get("update_check"))
+    update["last_check"] = str(iso_time or "").strip()
+    config["update_check"] = update
+    save_config(config)
+
+
+def get_updates_dir() -> Path:
+    """更新安装包下载目录：{data_root}/.paperwb/updates/。"""
+    d = _resolve_data_dir() / "updates"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def _is_vision_model(model: str) -> bool:
@@ -479,15 +569,15 @@ def load_library() -> list[dict]:
     lf = _library_file()
     if lf.exists():
         try:
-            return json.loads(lf.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
+            data = json.loads(lf.read_text(encoding="utf-8"))
+            return data if isinstance(data, list) else []
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            backup_corrupt_file(lf)
     return []
 
 
 def save_library(library: list[dict]) -> None:
-    lf = _library_file()
-    lf.write_text(json.dumps(library, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(_library_file(), library)
 
 
 def add_pdf_to_library(pdf_info: dict) -> None:
@@ -518,14 +608,13 @@ def load_chat_history(file_path: str) -> list[dict]:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
             return data if isinstance(data, list) else []
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            backup_corrupt_file(f)
     return []
 
 
 def save_chat_history(file_path: str, messages: list[dict]) -> None:
-    f = get_chats_dir() / f"{_doc_id(file_path)}.json"
-    f.write_text(json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(get_chats_dir() / f"{_doc_id(file_path)}.json", messages)
 
 
 def delete_chat_history(file_path: str) -> None:
@@ -542,14 +631,13 @@ def load_doc_state(file_path: str) -> dict:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            backup_corrupt_file(f)
     return {}
 
 
 def save_doc_state(file_path: str, state: dict) -> None:
-    f = get_states_dir() / f"{_doc_id(file_path)}.json"
-    f.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(get_states_dir() / f"{_doc_id(file_path)}.json", state)
 
 
 def delete_doc_state(file_path: str) -> None:
@@ -565,15 +653,16 @@ def load_page_cache(pdf_path: str, page_num: int) -> dict | None:
     if not f.exists():
         return None
     try:
-        return json.loads(f.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        backup_corrupt_file(f)
         return None
 
 
 def save_page_cache(pdf_path: str, page_num: int, data: dict) -> None:
     d = get_page_cache_dir(pdf_path)
-    f = d / f"page_{page_num:03d}.json"
-    f.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(d / f"page_{page_num:03d}.json", data)
 
 
 def load_page_manifest(pdf_path: str) -> dict | None:
@@ -581,15 +670,16 @@ def load_page_manifest(pdf_path: str) -> dict | None:
     if not f.exists():
         return None
     try:
-        return json.loads(f.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        backup_corrupt_file(f)
         return None
 
 
 def save_page_manifest(pdf_path: str, manifest: dict) -> None:
     d = get_page_cache_dir(pdf_path)
-    f = d / "_manifest.json"
-    f.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(d / "_manifest.json", manifest)
 
 
 def delete_page_cache(pdf_path: str) -> None:
@@ -614,8 +704,7 @@ def load_draft(profile_name: str) -> str:
 
 def save_draft(profile_name: str, text: str) -> None:
     """保存编辑器草稿。空文本会覆盖旧草稿（用户有意清空）。"""
-    f = get_drafts_dir() / f"{profile_name}.txt"
-    f.write_text(text, encoding="utf-8")
+    atomic_write_text(get_drafts_dir() / f"{profile_name}.txt", text)
 
 
 # ========== 润色历史 ==========
@@ -640,8 +729,7 @@ def save_polish_entry(profile_name: str, entry: dict) -> None:
     history.append(entry)
     if len(history) > MAX_POLISH_HISTORY:
         history = history[-MAX_POLISH_HISTORY:]
-    f = get_polish_history_dir() / f"{profile_name}.json"
-    f.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(get_polish_history_dir() / f"{profile_name}.json", history)
 
 
 # ========== LLM 输出上限 ==========
@@ -746,7 +834,7 @@ def get_reviews_dir() -> Path:
 def save_review(profile_name: str, review: dict) -> Path:
     """保存整体评价结果（覆盖式），返回落盘文件路径。"""
     f = get_reviews_dir() / f"{profile_name}.json"
-    f.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(f, review)
     return f
 
 

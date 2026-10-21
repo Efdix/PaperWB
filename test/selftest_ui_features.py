@@ -370,10 +370,10 @@ read_marks_mod.get_states_dir = lambda: marks_dir
 panel._current_path = pdf_a
 read_marks_mod.store()._loaded = False  # 让单例重新加载（测试目录刚被改）
 read_marks_mod.set_read(pdf_a, True)
-check("已读：工具栏按钮显示已读", panel.read_mark_btn.text() == "✅ 已读")
+check("已读：工具栏按钮显示已读", panel.read_mark_btn.text() == "✅")
 read_marks_mod.set_read(pdf_a, False)
 check("已读：工具栏按钮恢复标记文案",
-      panel.read_mark_btn.text() == "✓ 标记已读" and panel.read_mark_btn.isEnabled())
+      panel.read_mark_btn.text() == "✓" and panel.read_mark_btn.isEnabled())
 
 # ============================================================
 # 汇总

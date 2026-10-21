@@ -18,6 +18,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from ..utils.atomic import atomic_write_json
 from ..utils.config import get_stats_dir
 
 # 热力图展示的字段（与 stats.json 的 days 键一一对应）
@@ -110,13 +111,10 @@ class StatsTracker(QObject):
             return
         self._dirty = False
         try:
-            self._dir.mkdir(parents=True, exist_ok=True)
-            (self._dir / "stats.json").write_text(
-                json.dumps({"days": self._days, "papers": self._papers},
-                           ensure_ascii=False, indent=1), encoding="utf-8")
-            (self._dir / "plans.json").write_text(
-                json.dumps(self._plans, ensure_ascii=False, indent=1),
-                encoding="utf-8")
+            atomic_write_json(
+                self._dir / "stats.json",
+                {"days": self._days, "papers": self._papers}, indent=1)
+            atomic_write_json(self._dir / "plans.json", self._plans, indent=1)
         except OSError:
             pass
 

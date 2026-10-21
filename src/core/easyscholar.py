@@ -23,6 +23,7 @@ import urllib.request
 
 from PySide6.QtCore import QThread, Signal
 
+from ..utils.atomic import atomic_write_json
 from ..utils.config import get_scout_dir
 from .pubmed_searcher import retry_urlopen
 
@@ -57,10 +58,7 @@ def load_if_cache() -> dict:
 def save_if_cache(cache: dict) -> None:
     """落盘影响因子缓存（失败仅记录，不影响主流程）。"""
     try:
-        p = _cache_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(cache, ensure_ascii=False, indent=2),
-                     encoding="utf-8")
+        atomic_write_json(_cache_path(), cache)
     except OSError as e:
         logger.debug("影响因子缓存写入失败: %s", e)
 

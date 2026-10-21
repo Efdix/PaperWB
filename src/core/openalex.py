@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import re
 import urllib.parse
 import urllib.request
 from typing import Callable
@@ -24,6 +25,12 @@ from .pubmed_searcher import PubMedPaper, retry_urlopen
 from .reference_match import normalize_doi
 
 logger = logging.getLogger(__name__)
+
+
+def _redact(text: object) -> str:
+    """错误消息可能带完整请求 URL（含 api_key），写日志前脱敏。"""
+    return re.sub(r"(api_key=)[^&\s]+", r"\1***", str(text))
+
 
 API_URL = "https://api.openalex.org/works"
 USER_AGENT = "PaperWB/2.0"

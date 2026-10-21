@@ -21,8 +21,10 @@
 
 #define MyAppName "PaperWB"
 #define MyAppNameZh "PaperWB — AI 论文解读助手"
+; 版本号由构建脚本从 src/utils/version.py 的 APP_VERSION 抓取后经 /DMyAppVersion 注入；
+; 下面的兜底值仅用于直接跑 ISCC（不经 build_installer.ps1），需与 version.py 保持一致
 #ifndef MyAppVersion
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "0.2.0"
 #endif
 #define MyAppPublisher "Efdix"
 #define MyAppExeName "PaperWB.exe"
@@ -61,6 +63,14 @@ Compression=lzma2/max
 SolidCompression=yes
 ; 排查用户安装问题时可让用户发回 %TEMP%\Setup Log*.txt
 SetupLogging=yes
+; 自动更新（应用内 → 静默安装）时应用会先自行退出释放文件锁；这里再兜一层
+; CloseApplications：万一还有残留进程（多开/后台线程未退）也能让安装继续，
+; 而不是弹出"文件被占用"中断。RestartApplications=no —— 重启统一交给应用的
+; 更新启动器脚本（[Run] 带 skipifsilent，静默安装本来就不会自动启动应用）。
+CloseApplications=yes
+RestartApplications=no
+; 有意不设 AppMutex：静默升级时应用进程尚未完全退出，互斥锁会让安装器直接
+; 拒绝启动，自动更新反而失败。
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "lang\ChineseSimplified.isl"
@@ -149,7 +159,10 @@ begin
   Result := ExpandConstant('{userappdata}\PaperWB\config.json');
 end;
 
-// 从指定 config.json 解析 data_root（未设置返回空串）
+// 从指定 config.json 解析 data_root（未设置返回空串）。
+// 写入侧 SetConfiguredDataRoot 做了 JSON 转义（\ → \\、\" → \"），这里必须
+// 反向还原：否则重装预填拿到的是转义后的字符串，再写一次就变成双倍反斜杠，
+// Python 读出的是坏路径（D:\\science\\...）。
 function ReadDataRootFrom(const ConfigPath: String): String;
 var
   AnsiContent: AnsiString;
@@ -173,6 +186,9 @@ begin
   if ValueEnd = 0 then
     exit;
   Result := Copy(Content, ValueStart + 1, ValueEnd - 1);
+  // 还原 JSON 转义（\" 与 \\），与写入侧 SetConfiguredDataRoot 对称
+  StringChangeEx(Result, '\"', '"', True);
+  StringChangeEx(Result, '\\', '\', True);
 end;
 
 // 读 %APPDATA% 旧版配置的 data_root。不展开 {app}，InitializeWizard 阶段可安全调用
@@ -295,12 +311,25 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Existing: String;
 begin
   if CurStep = ssPostInstall then
   begin
-    // 静默安装（/VERYSILENT）不显示向导页，值仍为空 → 按默认语义落 {app}\data
+    // 静默安装（/SILENT|/VERYSILENT，含应用内自动更新）不会显示向导页，
+    // DataDirPage.Values[0] 恒为空。此时必须先读既有配置：已有 data_root 一律
+    // 原样沿用——无条件落 {app}\data 会把用户自定义的数据目录改回默认值，
+    // 用户会以为文献库和知识库"丢了"（升级安装最常见的踩坑点）。
     if DataDirPage.Values[0] = '' then
-      DataDirPage.Values[0] := ExpandConstant('{app}\data');
+    begin
+      Existing := GetConfiguredDataRoot();
+      if Existing <> '' then
+        DataDirPage.Values[0] := Existing
+      else if DirWritable(ExpandConstant('{app}')) then
+        DataDirPage.Values[0] := ExpandConstant('{app}\data')
+      else
+        DataDirPage.Values[0] := ExpandConstant('{localappdata}\PaperWB\data');
+    end;
     SetConfiguredDataRoot(DataDirPage.Values[0]);
   end;
 end;

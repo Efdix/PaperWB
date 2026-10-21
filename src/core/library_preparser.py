@@ -20,6 +20,8 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from ..utils.atomic import atomic_write_json, backup_corrupt_file
+
 from .pdf_processor import FAST_DOCUMENT_VERSION, PDFProcessor
 from ..utils.config import get_lib_index_dir, load_doc_state
 
@@ -46,10 +48,13 @@ def doc_state_is_parsed(pdf_path: str) -> bool:
     try:
         if int(state.get("fast_version", 0) or 0) != FAST_DOCUMENT_VERSION:
             return False
-        mtime = os.path.getmtime(pdf_path)
+        st = os.stat(pdf_path)
+        if state.get("pdf_size") or state.get("pdf_mtime_ns"):
+            return (int(state.get("pdf_size", 0) or 0) == st.st_size
+                    and int(state.get("pdf_mtime_ns", 0) or 0) == st.st_mtime_ns)
     except (OSError, TypeError, ValueError):
         return False
-    return abs(float(state.get("pdf_mtime", 0.0) or 0.0) - mtime) <= 1.0
+    return abs(float(state.get("pdf_mtime", 0.0) or 0.0) - st.st_mtime) <= 1.0
 
 
 class LibraryPreparser(QObject):
@@ -89,14 +94,14 @@ class LibraryPreparser(QObject):
             if isinstance(errs, dict):
                 self._errors = {str(k): float(v) for k, v in errs.items()}
         except (OSError, ValueError, TypeError):
-            pass
+            backup_corrupt_file(self._errors_path)
 
     def _save_errors(self) -> None:
         try:
-            self._errors_path.write_text(
-                json.dumps({"version": PREPARSE_STATE_VERSION,
-                            "errors": self._errors}, ensure_ascii=False),
-                encoding="utf-8")
+            atomic_write_json(
+                self._errors_path,
+                {"version": PREPARSE_STATE_VERSION, "errors": self._errors},
+                indent=None)
         except OSError:
             pass
 

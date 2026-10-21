@@ -23,8 +23,8 @@ if TYPE_CHECKING:
     from .llm_client import LLMClient
 
 
-FAST_DOCUMENT_VERSION = 9
-DOCLING_PARSER_VERSION = "docling_v3"
+FAST_DOCUMENT_VERSION = 10
+DOCLING_PARSER_VERSION = "docling_v4"
 
 
 def _warm_up_converter(get_converter) -> None:
@@ -241,6 +241,8 @@ class PageManifest:
     pdf_md5: str = ""
     total_pages: int = 0
     pdf_mtime: float = 0.0
+    pdf_size: int = 0            # 内容指纹的一部分：替换 PDF 但保留 mtime 也能失效
+    pdf_mtime_ns: int = 0        # 纳秒级 mtime，避免 FAT/同步工具 1 秒精度误判
     pages: dict[int, str] = field(default_factory=dict)  # {page_num: status}
     created_at: float = 0.0
     updated_at: float = 0.0
@@ -271,6 +273,8 @@ class PageManifest:
             "pdf_md5": self.pdf_md5,
             "total_pages": self.total_pages,
             "pdf_mtime": self.pdf_mtime,
+            "pdf_size": self.pdf_size,
+            "pdf_mtime_ns": self.pdf_mtime_ns,
             "pages": self.pages,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -287,6 +291,8 @@ class PageManifest:
             pdf_md5=d.get("pdf_md5", ""),
             total_pages=d.get("total_pages", 0),
             pdf_mtime=d.get("pdf_mtime", 0.0),
+            pdf_size=int(d.get("pdf_size", 0) or 0),
+            pdf_mtime_ns=int(d.get("pdf_mtime_ns", 0) or 0),
             pages={int(k): v for k, v in pages.items()},
             created_at=d.get("created_at", 0.0),
             updated_at=d.get("updated_at", 0.0),
@@ -1131,8 +1137,13 @@ def _looks_like_continuation(text_a: str, text_b: str) -> bool:
         return False
     if re.match(r"^\([A-Za-z](?:-[A-Za-z])?\)", b_head):
         return False
-    # 连字符结尾是断词强信号（prolif- + erating），豁免短段长度门槛
-    if a.endswith("-"):
+    # 参考文献开头先拒接：即使上一段以连字符结尾（文献条目里也常见断词），
+    # 也不能把一条新文献并进正文。
+    if _looks_like_reference_entry(b):
+        return False
+    # 连字符结尾是断词强信号（prolif- + erating），豁免短段长度门槛。
+    # 要求连字符前是字母，避免把 “10 -” 或破折号误判为断词。
+    if re.search(r"[A-Za-z]-$", a):
         return True
     cjk_a = any("\u4e00" <= ch <= "\u9fff" for ch in a[:20])
     cjk_b = any("\u4e00" <= ch <= "\u9fff" for ch in b[:20])
@@ -2344,16 +2355,15 @@ class DoclingParseWorker(QThread):
         self.completed.emit()
 
     def _save_page_cache(self, page_num: int, data: dict) -> None:
+        from ..utils.atomic import atomic_write_json
         os.makedirs(self._cache_dir, exist_ok=True)
-        filepath = os.path.join(self._cache_dir, f"page_{page_num:03d}.json")
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(os.path.join(self._cache_dir, f"page_{page_num:03d}.json"), data)
 
     def _save_manifest(self) -> None:
+        from ..utils.atomic import atomic_write_json
         os.makedirs(self._cache_dir, exist_ok=True)
-        filepath = os.path.join(self._cache_dir, "_manifest.json")
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(self._manifest.to_dict(), f, ensure_ascii=False, indent=2)
+        atomic_write_json(os.path.join(self._cache_dir, "_manifest.json"),
+                          self._manifest.to_dict())
 
 
 # ============================================================
@@ -2422,14 +2432,26 @@ class PDFProcessor(QObject):
                     saved = json.load(f)
                 self._manifest = PageManifest.from_dict(saved)
 
-                # 检查 PDF 是否被修改（mtime 变化 → 缓存失效）
-                current_mtime = os.path.getmtime(self._pdf_path)
+                # 内容指纹：mtime 秒级比较在“1 秒内替换”和“copy2 保留 mtime”
+                # 两种情况下都会误命中旧缓存。新 manifest 同时记录文件大小
+                # 与纳秒 mtime；旧 manifest（字段为 0）只用 mtime 兼容一次。
+                st = os.stat(self._pdf_path)
                 parser_now = self._current_parser()
-                if abs(self._manifest.pdf_mtime - current_mtime) > 1.0 \
-                        or self._manifest.parser != parser_now:
-                    # PDF 已修改或解析引擎切换 → 重置 manifest
+                changed = abs(self._manifest.pdf_mtime - st.st_mtime) > 1.0
+                if self._manifest.pdf_size or self._manifest.pdf_mtime_ns:
+                    changed = changed or (
+                        self._manifest.pdf_size != st.st_size
+                        or self._manifest.pdf_mtime_ns != st.st_mtime_ns)
+                if changed or self._manifest.parser != parser_now:
                     self._manifest = self._create_fresh_manifest()
-            except (json.JSONDecodeError, OSError):
+                elif not (self._manifest.pdf_size and self._manifest.pdf_mtime_ns):
+                    # 旧缓存升级：补上指纹并落盘，下一次替换即可精确失效。
+                    self._manifest.pdf_size = st.st_size
+                    self._manifest.pdf_mtime_ns = st.st_mtime_ns
+                    from ..utils.atomic import atomic_write_json
+                    atomic_write_json(manifest_path, self._manifest.to_dict())
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError,
+                    TypeError, AttributeError, OSError):
                 self._manifest = self._create_fresh_manifest()
         else:
             self._manifest = self._create_fresh_manifest()
@@ -2450,11 +2472,20 @@ class PDFProcessor(QObject):
         except Exception:
             total = 0
 
+        try:
+            st = os.stat(self._pdf_path)
+            size, mtime_ns = st.st_size, st.st_mtime_ns
+            mtime = st.st_mtime
+        except OSError:
+            size, mtime_ns, mtime = 0, 0, 0.0
+
         return PageManifest(
             pdf_path=self._pdf_path,
             pdf_md5=_doc_id(self._pdf_path),
             total_pages=total,
-            pdf_mtime=os.path.getmtime(self._pdf_path),
+            pdf_mtime=mtime,
+            pdf_size=size,
+            pdf_mtime_ns=mtime_ns,
             pages={p: "pending" for p in range(1, total + 1)},
             created_at=time.time(),
             updated_at=time.time(),
@@ -2544,6 +2575,7 @@ class PDFProcessor(QObject):
         )
         self._docling_worker.completed.connect(lambda: self._on_stage1_all_done(self._manifest))
         self._docling_worker.error.connect(self._on_stage1_docling_error)
+        track(self._docling_worker)  # 运行期间保活
         self._docling_worker.start()
 
     def _on_stage1_docling_error(self, error_msg: str) -> None:
@@ -2717,11 +2749,12 @@ class PDFProcessor(QObject):
             pass  # 合并刷新失败不影响已渲染的文档
 
     def _on_seam_merge_error(self, error_msg: str) -> None:
-        print(f"[Docling] 跨页接缝合并失败（忽略，不影响阅读）：{error_msg}")
+        print(f"[Docling] 跨页接缝合并失败（保留初步结果，下次阅读重试）：{error_msg}")
         if not self._seam_candidates:
             return
-        # 接口限流、网络失败等情况下，启发式已确认的正文接缝仍可安全拼接，
-        # 避免整合结果退回为两个被分页截断的卡片。
+        # 接口限流、网络失败时先用启发式结果保证当前阅读体验，但**不能定稿**：
+        # 写进 merged_seams_prelim 并保持 seams_final=False，下次打开会重新送
+        # LLM 复核。此前这里直接走定稿路径，一次失败就把错误合并永久固化。
         fallback = {
             seam["key"]: {
                 "with_id": seam["element_id_b"],
@@ -2731,7 +2764,7 @@ class PDFProcessor(QObject):
             }
             for seam in self._seam_candidates
         }
-        self._on_seam_merge_done(fallback)
+        self._on_seam_merge_done(fallback, preliminary=True)
 
     def _save_merged_seams(self, merged: dict) -> None:
         try:
@@ -2862,7 +2895,10 @@ class PDFProcessor(QObject):
             state["doc_format"] = "fast"  # 标记规则组装格式，旧版整合结果据此重建
             state["fast_version"] = FAST_DOCUMENT_VERSION
             try:
-                state["pdf_mtime"] = os.path.getmtime(self._pdf_path)
+                st = os.stat(self._pdf_path)
+                state["pdf_mtime"] = st.st_mtime
+                state["pdf_size"] = st.st_size
+                state["pdf_mtime_ns"] = st.st_mtime_ns
             except OSError:
                 pass
             save_doc_state(self._pdf_path, state)

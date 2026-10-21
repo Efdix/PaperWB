@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..utils.atomic import atomic_write_text, is_path_inside
+
 if TYPE_CHECKING:
     from .llm_client import LLMClient
 
@@ -133,11 +135,20 @@ def validate_profile_name(name: str) -> None:
     含 Windows 非法字符或首尾空白会导致持久化静默失败。导入外部压缩包时
     同样需要此校验（库名可能来自其它机器）。
     """
-    if not name or re.search(r'[\\/:*?"<>|\r\n\t]', name) or name.strip() != name:
+    if not isinstance(name, str):
+        raise ValueError("知识库名称必须是文本")
+    if not name or re.search(r'[\\/:*?"<>|\r\n\t\x00-\x1f]', name) or name.strip() != name:
         raise ValueError(
             "知识库名称不能包含以下字符：\\ / : * ? \" < > |，"
             "且不能以空格开头或结尾"
         )
+    # 纯点号会把目录解析到 writing_kb 的父级；delete_profile 的 rmtree
+    # 会因此删掉整个 .paperwb。必须在入口处拒绝，而不是靠调用方自觉。
+    if name in (".", "..") or name.endswith("."):
+        raise ValueError("知识库名称不能是「.」「..」，也不能以点结尾")
+    # Windows 设备名：即使带扩展名也无法作为目录名。
+    if re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?", name):
+        raise ValueError("知识库名称不能使用 Windows 保留设备名")
     if len(name) > MAX_PROFILE_NAME_LEN:
         raise ValueError(f"知识库名称过长（最多 {MAX_PROFILE_NAME_LEN} 个字符）")
 
@@ -194,7 +205,7 @@ class WritingCoach:
         """保存当前知识库名，供下次启动恢复。"""
         lp = self._last_profile_path()
         name = self._current_profile.name if self._current_profile else ""
-        lp.write_text(name, encoding="utf-8")
+        atomic_write_text(lp, name)
 
     # ---- 加载 ----
 
@@ -208,18 +219,29 @@ class WritingCoach:
                 cfg_path = entry / "config.json"
                 if cfg_path.exists():
                     try:
+                        validate_profile_name(entry.name)
                         data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                        if not isinstance(data, dict):
+                            continue
                         profile = WritingProfile.from_dict(data)
-                        self._profiles[profile.name] = profile
-                    except (json.JSONDecodeError, OSError):
+                        # 目录名才是物理身份。导入“存为副本”时 config.name 仍是
+                        # 原名；若按 config.name 建索引，副本会顶替原库，后续保存
+                        # 又把内容写回原目录。这里让目录名获胜，并在下次保存时
+                        # 自动把 config.name 修正为目录名。
+                        profile.name = entry.name
+                        self._profiles[entry.name] = profile
+                    except (json.JSONDecodeError, UnicodeDecodeError, OSError, ValueError):
                         pass
 
     def _save_profile(self, profile: WritingProfile) -> None:
         """保存 profile 配置到磁盘。"""
+        validate_profile_name(profile.name)
         d = self._profile_dir(profile.name)
+        if not is_path_inside(d, self._kb_dir):
+            raise ValueError(f"非法的知识库目录：{profile.name}")
         d.mkdir(parents=True, exist_ok=True)
-        cfg_path = d / "config.json"
-        cfg_path.write_text(
+        atomic_write_text(
+            d / "config.json",
             json.dumps(profile.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -238,9 +260,9 @@ class WritingCoach:
         """创建新的写作知识库。"""
         from datetime import datetime
 
+        validate_profile_name(name)
         if name in self._profiles:
             raise ValueError(f"知识库 '{name}' 已存在")
-        validate_profile_name(name)
 
         now = datetime.now().isoformat()
         profile = WritingProfile(
@@ -265,9 +287,13 @@ class WritingCoach:
 
     def delete_profile(self, name: str) -> None:
         """删除知识库及其所有数据（含草稿、润色历史、评价记录）。"""
+        validate_profile_name(name)
         if name not in self._profiles:
             return
         d = self._profile_dir(name)
+        # 双保险：即使校验被绕过，也绝不允许删除 writing_kb 以外的目录。
+        if not is_path_inside(d, self._kb_dir):
+            raise ValueError(f"拒绝删除知识库目录之外的路径：{d}")
         if d.exists():
             shutil.rmtree(str(d))
         # 同名残留会让「删除后重建」复活旧草稿/旧评价
@@ -351,7 +377,7 @@ class WritingCoach:
         # 存文本到 papers 目录（供检索）
         papers_dir = self._papers_dir(self._current_profile.name, paper_type)
         txt_path = papers_dir / (filename + ".txt")
-        txt_path.write_text(full_text, encoding="utf-8")
+        atomic_write_text(txt_path, full_text)
 
         paper_entry = {
             "filename": filename,

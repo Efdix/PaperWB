@@ -224,10 +224,19 @@ class ChatPanel(QWidget):
         input_layout.addWidget(self.input_box)
 
         btn_layout = QHBoxLayout()
+        # 常驻发送快捷键提示：Placeholder 一旦开始输入就消失，用户按 Enter
+        # 只换行时会以为发送失败。这里固定显示一行，不随输入内容变化。
+        self._send_hint = QLabel("Ctrl+Enter 发送")
+        self._send_hint.setObjectName("subtitleLabel")
+        self._send_hint.setToolTip(
+            "Ctrl+Enter：发送消息\n"
+            "Enter：插入换行（用于分段书写长问题）")
+        btn_layout.addWidget(self._send_hint)
         btn_layout.addStretch()
 
         self.send_btn = QPushButton("发送 ✈")
         self.send_btn.setObjectName("primaryBtn")
+        self.send_btn.setToolTip("发送消息（快捷键 Ctrl+Enter）")
         self.send_btn.clicked.connect(self._on_send)
         self.send_btn.setEnabled(False)
         btn_layout.addWidget(self.send_btn)
