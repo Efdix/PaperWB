@@ -26,10 +26,37 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
 from .literature_search import MultiSourceSearcher
 from .pubmed_searcher import PubMedPaper
-from .reference_match import find_library_match, llm_match_titles
+from .reference_match import (
+    find_library_match, llm_match_titles, normalize_doi, normalize_title,
+)
 from ..utils.atomic import atomic_write_json
 from ..utils.config import get_scout_dir
 from ..utils.threads import track
+
+def paper_key(p: dict) -> str:
+    """统一文献身份：DOI 优先，其次 PMID/arXiv，最后规范化标题。
+
+    同一篇论文从 OpenAlex 返回时通常只有 DOI，从 PubMed 返回时同时有
+    PMID 和 DOI；按 ``pmid or arxiv_id or doi`` 取键会得到两个不同值，
+    导致 seen/推荐流重复推送。
+    """
+    doi = normalize_doi(str(p.get("doi") or ""))
+    if doi:
+        return f"doi:{doi}"
+    pmid = str(p.get("pmid") or "").strip()
+    if pmid:
+        return f"pmid:{pmid}"
+    arxiv = str(p.get("arxiv_id") or "").strip()
+    if arxiv:
+        return f"arxiv:{arxiv}"
+    title = normalize_title(str(p.get("title") or ""))
+    return f"title:{title}" if title else ""
+
+
+def legacy_paper_key(p: dict) -> str:
+    """旧版去重键，仅用于兼容既有 seen.json/feed.json。"""
+    return str(p.get("pmid") or p.get("arxiv_id") or p.get("doi") or "")
+
 
 MAX_INTERVAL_HOURS = 168       # QTimer 毫秒区间上限内的安全值（7 天）
 MAX_FEED_ITEMS = 200
@@ -290,8 +317,11 @@ class ScoutWorker(QThread):
 
             new_papers: list[PubMedPaper] = []
             for p in papers:
-                pid = p.pmid or p.arxiv_id or p.doi  # 统一去重记忆标识
-                if pid and pid in self._seen:
+                raw = {"doi": p.doi, "pmid": p.pmid,
+                       "arxiv_id": p.arxiv_id, "title": p.title}
+                key = paper_key(raw)
+                legacy = legacy_paper_key(raw)
+                if (key and key in self._seen) or (legacy and legacy in self._seen):
                     continue
                 if self._blacklist is not None and self._blacklist.matches(p.doi, p.title):
                     continue
@@ -521,13 +551,16 @@ class ScoutManager(QObject):
         append_history("定向巡视", topic.name, len(papers),
                        detail=f"新文献 {len(papers)} 篇", search_dir=self._dir)
 
-        pmids = [p.get("pmid") or p.get("arxiv_id") or p.get("doi")
-                 for p in papers if (p.get("pmid") or p.get("arxiv_id") or p.get("doi"))]
-        if pmids:
-            mark_seen(pmids, self._dir)
+        seen_ids: list[str] = []
+        for p in papers:
+            for k in (paper_key(p), legacy_paper_key(p)):
+                if k and k not in seen_ids:
+                    seen_ids.append(k)
+        if seen_ids:
+            mark_seen(seen_ids, self._dir)
 
         entries = [{
-            "id": f"{p.get('pmid') or p.get('arxiv_id') or p.get('doi') or ''}@{topic.name}",
+            "id": f"{paper_key(p) or legacy_paper_key(p)}@{topic.name}",
             "topic": topic.name,
             "added_at": now_iso,
             "paper": p,
@@ -596,18 +629,20 @@ class ScoutManager(QObject):
         seen: set[str] = set()
         for e in self._feed:
             ep = e.get("paper", {}) or {}
-            pid = ep.get("pmid") or ep.get("arxiv_id") or ep.get("doi") or ""
-            if pid:
-                seen.add(pid)
+            for k in (paper_key(ep), legacy_paper_key(ep)):
+                if k:
+                    seen.add(k)
         entries = []
         for p in papers:
-            pid = p.get("pmid") or p.get("arxiv_id") or p.get("doi") or ""
-            if pid and pid in seen:
+            key = paper_key(p)
+            legacy = legacy_paper_key(p)
+            if (key and key in seen) or (legacy and legacy in seen):
                 continue
-            if pid:
-                seen.add(pid)
+            for k in (key, legacy):
+                if k:
+                    seen.add(k)
             entries.append({
-                "id": f"{pid}@{label}",
+                "id": f"{key or legacy}@{label}",
                 "topic": label,
                 "added_at": now_iso,
                 "paper": p,
@@ -616,11 +651,11 @@ class ScoutManager(QObject):
             self._feed = entries + self._feed
             self._feed = self._feed[:MAX_FEED_ITEMS]
             save_feed(self._feed, self._dir)
-            pushed_ids = [
-                p.get("pmid") or p.get("arxiv_id") or p.get("doi")
-                for p in papers
-                if p.get("pmid") or p.get("arxiv_id") or p.get("doi")
-            ]
+            pushed_ids: list[str] = []
+            for p in papers:
+                for k in (paper_key(p), legacy_paper_key(p)):
+                    if k and k not in pushed_ids:
+                        pushed_ids.append(k)
             if pushed_ids:
                 mark_seen(pushed_ids, self._dir)
             self.results_ready.emit(label, entries)

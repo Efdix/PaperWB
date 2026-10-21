@@ -1474,6 +1474,9 @@ check("拉黑标题匹配", _bl.matches("", "Feather  Color, PAPER!"))
 check("未拉黑不误伤", not _bl.matches("10.9/other", "Different Title"))
 check("拉黑 matches_paper", _bl.matches_paper({"doi": "10.1002/ABC.123", "title": "x"}))
 check("重复拉黑幂等", _bl.add(doi="10.1002/abc.123") is not None and len(_bl) == 1)
+_e1b = _bl.add(doi="10.1002/abc.123", reason="更新后的原因")
+check("重复拉黑会更新原因", _e1b is not None and _e1b.reason == "更新后的原因"
+      and len(_bl) == 1, f"reason={getattr(_e1b, 'reason', '')}")
 _e2 = _bl.add(title="只按标题拉黑的文献")
 check("仅标题拉黑", _e2 is not None and _e2.key == _e2.title_norm)
 _bl2 = BlacklistStore(search_dir=_bl_dir)
@@ -1484,6 +1487,21 @@ check("移除不存在的 key 返回 False", not _bl2.remove_by_key("nope"))
 _bl2.clear()
 check("黑名单清空", len(_bl2) == 0)
 check("无效输入返回 None", _bl2.add() is None)
+
+# 裁剪后索引必须同步：被裁掉的条目不能再 matches
+import src.core.search_records as _sr
+_old_max = _sr.MAX_BLACKLIST_ITEMS
+_sr.MAX_BLACKLIST_ITEMS = 3
+try:
+    _trim_dir = tempfile.mkdtemp(prefix="paperwb_bl_trim_")
+    _trim = BlacklistStore(search_dir=_trim_dir)
+    for _i in range(5):
+        _trim.add(doi=f"10.9/trim{_i}", title=f"trim {_i}")
+    check("黑名单按上限裁剪", len(_trim) == 3, str(len(_trim)))
+    check("被裁条目不再匹配", not _trim.matches("10.9/trim0", "")
+          and _trim.matches("10.9/trim4", ""))
+finally:
+    _sr.MAX_BLACKLIST_ITEMS = _old_max
 
 append_history("AI 检索", "wing development", 5, search_dir=_bl_dir)
 append_history("定向巡视", "方向A", 2, search_dir=_bl_dir)

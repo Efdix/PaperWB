@@ -904,7 +904,8 @@ def test_app_wiring() -> None:
     window_idx = main_src.index("window = MainWindow()")
     check("selftest 在创建 MainWindow 之前返回", selftest_idx < window_idx)
     check("更新检查只在 MainWindow 内触发（非导入期副作用）",
-          "QTimer.singleShot(15_000, self._update_manager.start)" in src)
+          "QTimer.singleShot(15_000, self._start_update_manager)" in src
+          and "def _start_update_manager" in src)
 
     styles = (_ROOT / "src" / "ui" / "styles.py").read_text(encoding="utf-8")
     check("更新胶囊有样式", "QPushButton#updateChip" in styles)

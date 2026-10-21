@@ -1261,12 +1261,19 @@ def _table_fragment_ids(page_elems: list[dict]) -> set[str]:
     return frag
 
 
-def _is_table_fragment(e: dict, page_elems: list[dict]) -> bool:
-    """单个 body 是否属于表格碎片（供快速判定的单元素查询）。"""
-    return str(e.get("id", "")) in _table_fragment_ids(page_elems)
+def _is_table_fragment(e: dict, page_elems: list[dict],
+                       fragment_ids: set[str] | None = None) -> bool:
+    """单个 body 是否属于表格碎片（供快速判定的单元素查询）。
+
+    fragment_ids 可由调用方按页预先计算一次，避免对每个元素都跑
+    两两配对 + 传播的 O(n²) 检测。
+    """
+    ids = fragment_ids if fragment_ids is not None else _table_fragment_ids(page_elems)
+    return str(e.get("id", "")) in ids
 
 
-def _is_figure_caption_body(e: dict, elements: list[dict]) -> bool:
+def _is_figure_caption_body(e: dict, elements: list[dict],
+                            pos: int | None = None) -> bool:
     """紧跟「图题样式 subtitle」（Figure N / Table N）之后的 body 段 → 图注正文。
 
     Docling 常把图题标成 subtitle、图注正文标成 body（如 Annual Reviews 版式）。
@@ -1279,10 +1286,13 @@ def _is_figure_caption_body(e: dict, elements: list[dict]) -> bool:
         return False
     if not (e.get("text") or "").strip():
         return False
-    try:
-        idx = elements.index(e)
-    except ValueError:
-        return False
+    if pos is None:
+        try:
+            idx = elements.index(e)
+        except ValueError:
+            return False
+    else:
+        idx = pos
     for prev in reversed(elements[:idx]):
         if not isinstance(prev, dict):
             continue
@@ -1312,9 +1322,10 @@ def find_cross_page_seams(page_data: list[dict]) -> list[dict]:
             pn = int(page.get("page", 0))
         except (TypeError, ValueError):
             continue
+        page_elements = page.get("elements", [])
         elems = []
         figure_bboxes: list[list[float]] = []
-        for e in page.get("elements", []):
+        for e in page_elements:
             if not isinstance(e, dict) or not e.get("id"):
                 continue
             if e.get("type") in ("figure", "table") and e.get("bbox"):
@@ -1322,7 +1333,9 @@ def find_cross_page_seams(page_data: list[dict]) -> list[dict]:
                     figure_bboxes.append([float(v) for v in e["bbox"]])
                 except (TypeError, KeyError, ValueError):
                     pass
-        for e in page.get("elements", []):
+        # 每页只算一次表格碎片集合（内部是两两配对 + 传播，不能按元素重复跑）
+        frag_ids = _table_fragment_ids(page_elements)
+        for pos, e in enumerate(page_elements):
             if isinstance(e, dict) and e.get("id") \
                     and e.get("type") in _SEAM_TEXT_TYPES:
                 text = (e.get("text") or "").strip()
@@ -1332,9 +1345,9 @@ def find_cross_page_seams(page_data: list[dict]) -> list[dict]:
                     continue  # 首页模板区块（Highlights/Authors 等）
                 if _figure_internal_short_text(e, figure_bboxes):
                     continue  # 图内短标注（坐标轴/物种名等）
-                if _is_table_fragment(e, page.get("elements", [])):
+                if _is_table_fragment(e, page_elements, frag_ids):
                     continue  # Docling 漏识别成 table 的表格碎片
-                if _is_figure_caption_body(e, page.get("elements", [])):
+                if _is_figure_caption_body(e, page_elements, pos):
                     continue  # 图注正文
                 if _is_running_head(text):
                     continue  # 页眉/页脚许可与版权行
@@ -1528,6 +1541,12 @@ def build_document_fast(page_data: list[dict],
             e for e in page.get("elements", []) if isinstance(e, dict)
         ]
         for page in page_data
+    }
+    # 表格碎片检测内部是两两配对 + 传播；按页预计算一次，避免每个 body
+    # 元素重复跑，双栏/图表密集页会从 O(n³) 降到 O(n²)。
+    frag_ids_by_page = {
+        no: _table_fragment_ids(elems)
+        for no, elems in page_elements_by_no.items()
     }
     plate_primary_ids = {
         int(page.get("page", 0)): next(
@@ -1862,6 +1881,7 @@ def build_document_fast(page_data: list[dict],
             continue
         if etype == "body" and _is_table_fragment(
             e, page_elements_by_no.get(page_no, []),
+            frag_ids_by_page.get(page_no),
         ):
             continue
         if etype not in ("figure", "table"):

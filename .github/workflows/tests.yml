@@ -1,0 +1,31 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install lightweight test dependencies
+        run: pip install -r requirements-ci.txt
+
+      - name: Run logic + offscreen UI regression
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PAPERWB_DISABLE_PREPARSE: "1"
+        run: python test/run_all.py
+
+      - name: Selftest entry (imports/config/model checks)
+        run: python main.py --selftest

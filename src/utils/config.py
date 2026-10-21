@@ -188,8 +188,38 @@ def _resolve_data_dir(config: dict | None = None) -> Path:
 
 
 def _doc_id(file_path: str) -> str:
-    """基于文件路径生成短文档标识符（MD5 前 12 位）。"""
-    return hashlib.md5(file_path.encode()).hexdigest()[:12]
+    """基于规范化路径生成短文档标识符（MD5 前 12 位）。
+
+    Windows 大小写不敏感、斜杠/反斜杠混用、相对/绝对路径都应指向同一篇
+    文档。旧版本直接 hash 原始字符串，同一文件会生成多份缓存。
+    """
+    key = os.path.normcase(os.path.normpath(os.path.abspath(str(file_path))))
+    return hashlib.md5(key.encode("utf-8")).hexdigest()[:12]
+
+
+def _legacy_doc_id(file_path: str) -> str:
+    """旧版（未规范化）路径哈希，仅用于把既有缓存迁移到新键。"""
+    return hashlib.md5(str(file_path).encode("utf-8")).hexdigest()[:12]
+
+
+def _doc_paths(base: Path, file_path: str, suffix: str = ".json") -> list[Path]:
+    ids = list(dict.fromkeys([_doc_id(file_path), _legacy_doc_id(file_path)]))
+    return [base / f"{i}{suffix}" for i in ids]
+
+
+def _doc_file(base: Path, file_path: str, suffix: str = ".json") -> Path:
+    """返回新键路径；若只有旧键文件，先原地改名迁移。"""
+    paths = _doc_paths(base, file_path, suffix)
+    new = paths[0]
+    if not new.exists():
+        for old in paths[1:]:
+            if old.exists():
+                try:
+                    os.replace(old, new)
+                    return new
+                except OSError:
+                    return old
+    return new
 
 
 # ---- 子目录获取 ----
@@ -288,7 +318,15 @@ def get_watch_dir() -> Path:
 
 def get_page_cache_dir(pdf_path: str) -> Path:
     """单篇 PDF 逐页缓存：{data_root}/.paperwb/page_cache/{pdf_md5}/"""
-    d = get_page_cache_root_dir() / _doc_id(pdf_path)
+    root = get_page_cache_root_dir()
+    d = root / _doc_id(pdf_path)
+    if not d.exists():
+        old = root / _legacy_doc_id(pdf_path)
+        if old.exists():
+            try:
+                old.rename(d)  # 迁移旧缓存目录（含 manifest 与已解析页）
+            except OSError:
+                d = old
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -603,7 +641,7 @@ def get_library_folders(library: list[dict]) -> list[str]:
 # ========== 对话历史 ==========
 
 def load_chat_history(file_path: str) -> list[dict]:
-    f = get_chats_dir() / f"{_doc_id(file_path)}.json"
+    f = _doc_file(get_chats_dir(), file_path)
     if f.exists():
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
@@ -614,19 +652,21 @@ def load_chat_history(file_path: str) -> list[dict]:
 
 
 def save_chat_history(file_path: str, messages: list[dict]) -> None:
-    atomic_write_json(get_chats_dir() / f"{_doc_id(file_path)}.json", messages)
+    atomic_write_json(_doc_file(get_chats_dir(), file_path), messages)
 
 
 def delete_chat_history(file_path: str) -> None:
-    f = get_chats_dir() / f"{_doc_id(file_path)}.json"
-    if f.exists():
-        f.unlink()
+    for f in _doc_paths(get_chats_dir(), file_path):
+        try:
+            f.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # ========== 状态持久化 ==========
 
 def load_doc_state(file_path: str) -> dict:
-    f = get_states_dir() / f"{_doc_id(file_path)}.json"
+    f = _doc_file(get_states_dir(), file_path)
     if f.exists():
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
@@ -637,13 +677,15 @@ def load_doc_state(file_path: str) -> dict:
 
 
 def save_doc_state(file_path: str, state: dict) -> None:
-    atomic_write_json(get_states_dir() / f"{_doc_id(file_path)}.json", state)
+    atomic_write_json(_doc_file(get_states_dir(), file_path), state)
 
 
 def delete_doc_state(file_path: str) -> None:
-    f = get_states_dir() / f"{_doc_id(file_path)}.json"
-    if f.exists():
-        f.unlink()
+    for f in _doc_paths(get_states_dir(), file_path):
+        try:
+            f.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # ========== 逐页解析缓存（Stage 1） ==========

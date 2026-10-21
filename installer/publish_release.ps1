@@ -17,6 +17,7 @@ param(
     [string]$NotesFile,          # 更新说明 Markdown（会成为应用里显示的更新说明）
     [switch]$Draft,              # 传为草稿 Release（不触发 latest，稳妥发布用）
     [switch]$SkipTag,            # 跳过打 tag（tag 已存在时）
+    [switch]$AllowDirty,         # 明确允许在工作区脏时发布（不推荐）
     [string]$Repo = "Efdix/PaperWB"
 )
 
@@ -45,6 +46,34 @@ foreach ($f in @($Full, $Lite)) {
 }
 if (-not (Test-Path $NotesFile)) { Die "notes file not found: $NotesFile" }
 
+$ManifestPath = Join-Path $PSScriptRoot "Output\release-$Ver.json"
+if (-not (Test-Path $ManifestPath)) {
+    Die "release manifest missing: $ManifestPath`n 先运行 installer\build_installer.ps1 出包"
+}
+$Manifest = Get-Content -Raw -Encoding UTF8 $ManifestPath | ConvertFrom-Json
+$Expected = @{}
+foreach ($kind in @("full", "lite")) {
+    $asset = $Manifest.assets.$kind
+    if (-not $asset -or -not $asset.name -or -not $asset.sha256) {
+        Die "release manifest missing assets.$kind"
+    }
+    $assetPath = if ($kind -eq "full") { $Full } else { $Lite }
+    $Expected[$asset.name] = @{
+        Path = $assetPath
+        Size = [int64]$asset.size
+        Sha  = ([string]$asset.sha256).ToLower()
+    }
+}
+Step "Verify local installers against release-$Ver.json"
+foreach ($name in $Expected.Keys) {
+    $e = $Expected[$name]
+    $actual = (Get-FileHash -Path $e.Path -Algorithm SHA256).Hash.ToLower()
+    $size = (Get-Item $e.Path).Length
+    if ($actual -ne $e.Sha) { Die "sha256 mismatch for ${name}: local=$actual manifest=$($e.Sha)" }
+    if ($size -ne $e.Size) { Die "size mismatch for ${name}: local=$size manifest=$($e.Size)" }
+    Write-Host ("  OK {0}  {1:N1} MB  {2}" -f $name, ($size / 1MB), $actual)
+}
+
 # ---- 3. gh 可用性 ----
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
     Die "GitHub CLI (gh) not found. 安装: winget install -e --id GitHub.cli ，然后 gh auth login"
@@ -56,9 +85,18 @@ if ($LASTEXITCODE -ne 0) { Die "gh not authenticated. 运行: gh auth login" }
 Step "Check git working tree"
 $Dirty = & git status --porcelain
 if ($Dirty) {
-    Write-Host "  警告：工作区有未提交改动：" -ForegroundColor Yellow
+    Write-Host "  工作区有未提交改动：" -ForegroundColor Yellow
     $Dirty | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
-    Write-Host "  tag 会指向最后一次提交；若版本号尚未提交，请先 commit。" -ForegroundColor Yellow
+    if (-not $AllowDirty) {
+        Die "working tree dirty。请先提交，或显式传 -AllowDirty（不推荐，tag 会指向旧代码）"
+    }
+}
+$HeadVerLine = & git show "HEAD:src/utils/version.py" |
+    Select-String -Pattern 'APP_VERSION\s*=\s*"([^"]+)"'
+if (-not $HeadVerLine) { Die "cannot read APP_VERSION from HEAD" }
+$HeadVer = $HeadVerLine[0].Matches[0].Groups[1].Value
+if ($HeadVer -ne $Ver) {
+    Die "HEAD 的 APP_VERSION=$HeadVer，工作区=$Ver。请先提交版本号再发布"
 }
 
 # ---- 5. 打 tag 并推送 ----
@@ -66,7 +104,12 @@ if (-not $SkipTag) {
     Step "Tag $Tag and push"
     $exists = & git tag -l $Tag
     if ($exists) {
-        Write-Host "  tag $Tag 已存在，跳过创建" -ForegroundColor Yellow
+        $tagCommit = & git rev-list -n 1 $Tag
+        $headCommit = & git rev-parse HEAD
+        if ($tagCommit -ne $headCommit) {
+            Die "tag $Tag 已存在但指向 $tagCommit，不是当前 HEAD $headCommit。请删除旧 tag 或升版本号"
+        }
+        Write-Host "  tag $Tag 已存在且指向 HEAD，跳过创建"
     } else {
         $msg = "PaperWB $Ver"
         & git tag -a $Tag -m $msg
@@ -74,7 +117,7 @@ if (-not $SkipTag) {
         Write-Host "  created tag $Tag"
     }
     & git push origin $Tag
-    if ($LASTEXITCODE -ne 0) { Write-Host "  tag 推送失败（可能已存在于远端），继续" -ForegroundColor Yellow }
+    if ($LASTEXITCODE -ne 0) { Die "tag 推送失败；不要继续创建 Release（否则用户检查不到更新）" }
 }
 
 # ---- 6. 创建 Release 并上传两个安装包（顺序：先 lite 后 full，full 大传得久）----
@@ -93,20 +136,46 @@ if ($LASTEXITCODE -ne 0) { Die "gh release create failed" }
 # ---- 7. 回读校验：应用就是按这个接口取版本的 ----
 Step "Verify via API (this is what the app reads)"
 Start-Sleep -Seconds 3
-$json = & gh api "repos/$Repo/releases/latest" 2>&1 | Out-String
+$json = & gh api "repos/$Repo/releases/tags/$Tag" 2>&1 | Out-String
 try {
     $rel = $json | ConvertFrom-Json
-    Write-Host "  latest tag : $($rel.tag_name)"
-    Write-Host "  assets     :"
-    foreach ($a in $rel.assets) {
-        $sha = if ($a.digest) { $a.digest } else { "(no digest)" }
-        Write-Host ("    {0}  {1:N1} MB  {2}" -f $a.name, ($a.size / 1MB), $sha)
-    }
-    if ($rel.tag_name -ne $Tag) {
-        Write-Host "  提示：latest 仍是 $($rel.tag_name)（草稿不会成为 latest，或发布尚未生效）" -ForegroundColor Yellow
-    }
 } catch {
-    Write-Host "  API 回读解析失败（不影响发布）：$json" -ForegroundColor Yellow
+    Die "API 回读解析失败：$json"
+}
+Write-Host "  release tag: $($rel.tag_name)"
+$Uploaded = @{}
+foreach ($a in $rel.assets) { $Uploaded[$a.name] = $a }
+foreach ($name in $Expected.Keys) {
+    if (-not $Uploaded.ContainsKey($name)) { Die "API 上找不到 asset: $name" }
+    $a = $Uploaded[$name]
+    $e = $Expected[$name]
+    if ([int64]$a.size -ne $e.Size) {
+        Die "asset $name 体积不符：API=$($a.size) 本地=$($e.Size)"
+    }
+    if ($a.digest -and ([string]$a.digest).StartsWith("sha256:")) {
+        $remoteSha = ([string]$a.digest).Substring(7).ToLower()
+        if ($remoteSha -ne $e.Sha) {
+            Die "asset $name 的 API digest 与本地 sha256 不一致：remote=$remoteSha local=$($e.Sha)"
+        }
+        Write-Host ("    OK {0}  {1:N1} MB  sha256:{2}" -f $name, ($a.size / 1MB), $remoteSha)
+    } else {
+        Write-Host ("    警告：{0} 没有 digest，无法核对哈希" -f $name) -ForegroundColor Yellow
+    }
+}
+if (-not $Draft) {
+    $latestJson = & gh api "repos/$Repo/releases/latest" 2>&1 | Out-String
+    try {
+        $latest = $latestJson | ConvertFrom-Json
+        if ($latest.tag_name -ne $Tag) {
+            Write-Host "  提示：latest 仍是 $($latest.tag_name)（发布可能尚未生效）" -ForegroundColor Yellow
+        } else {
+            Write-Host "  latest tag 已指向 $Tag"
+        }
+    } catch {
+        Write-Host "  latest 回读失败（不影响已完成的 Release）：$latestJson" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  这是草稿 Release，不会出现在 releases/latest；确认后到 GitHub 手动发布" -ForegroundColor Yellow
 }
 
 Write-Host ""

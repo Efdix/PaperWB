@@ -1053,12 +1053,15 @@ class PDFViewerPanel(QWidget):
         self._update_font_btn_tips()
 
         from PySide6.QtGui import QShortcut, QKeySequence
-        QShortcut(QKeySequence("Ctrl+-"), self,
-                  activated=lambda: self._change_font_delta(-1))
-        QShortcut(QKeySequence("Ctrl++"), self,
-                  activated=lambda: self._change_font_delta(1))
-        QShortcut(QKeySequence("Ctrl+="), self,
-                  activated=lambda: self._change_font_delta(1))
+        # 只在阅读面板内生效：否则在写作/统计台按 Ctrl+- 会改看不见的阅读字号。
+        for seq, delta in (("Ctrl+-", -1), ("Ctrl++", 1), ("Ctrl+=", 1)):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(lambda d=delta: self._change_font_delta(d))
+        self._font_shortcuts = [
+            sc for sc in self.findChildren(QShortcut)
+            if sc.key().toString() in ("Ctrl+-", "Ctrl++", "Ctrl+=")
+        ]
 
         self.read_mark_btn = QPushButton("✓")
         self.read_mark_btn.setObjectName("paneToggle")

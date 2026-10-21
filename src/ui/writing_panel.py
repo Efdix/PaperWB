@@ -877,7 +877,13 @@ class WritingPanel(QWidget):
         from ..core.doc_diff import DocDiffController
         self._rev_controller = DocDiffController(self.editor)
         self._rev_controller.set_on_changed(self._on_rev_changed)
-        self.editor.textChanged.connect(self._rev_controller.on_text_changed)
+        # 用户每敲一个字符都全文扫描 charFormat 会随草稿长度线性变慢。
+        # 120ms 防抖只影响“用户输入后的锚点刷新”；程序性渲染修订仍直接
+        # recompute_anchors()，接受/拒绝不会读到旧锚点。
+        self._rev_recompute_timer = QTimer(self)
+        self._rev_recompute_timer.setSingleShot(True)
+        self._rev_recompute_timer.timeout.connect(self._run_rev_recompute)
+        self.editor.textChanged.connect(self._schedule_rev_recompute)
         self.editor.installEventFilter(self)  # 拦截拖入编辑器的 .docx/.txt/.md 文件
         self._refresh_kb_dropdown()
         self._load_draft()  # 恢复上次知识库的编辑器草稿（防止空文本覆盖磁盘）
@@ -2324,6 +2330,14 @@ class WritingPanel(QWidget):
 
     # ================= AI 修订（人机双写） =================
 
+    def _schedule_rev_recompute(self) -> None:
+        if self._rev_controller is not None:
+            self._rev_recompute_timer.start(120)
+
+    def _run_rev_recompute(self) -> None:
+        if self._rev_controller is not None:
+            self._rev_controller.on_text_changed()
+
     def _on_rev_changed(self):
         """修订锚点变化：刷新审阅工具栏状态。"""
         n = self._rev_controller.anchor_count if self._rev_controller else 0
@@ -3707,6 +3721,7 @@ class WritingPanel(QWidget):
             return False
         self._auto_save_draft()
         self._auto_save_timer.stop()
+        self._rev_recompute_timer.stop()
         if not self._cancel_all_workers():
             self._auto_save_timer.start(30_000)
             self._status_label.setText("仍有后台任务未退出，请稍后再关闭窗口")

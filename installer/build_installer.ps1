@@ -105,6 +105,32 @@ try {
         if ($LASTEXITCODE -ne 0) { Die "pip install pyinstaller failed" }
     }
 
+    # ---------- 0.4. source-level regression gate ----------
+    # dist 的 --selftest 只做导入/配置/模型检查，不跑业务逻辑测试。出包前先
+    # 跑纯逻辑回归，避免把数据安全/知识库/更新/Word 写回问题带进安装包。
+    if (-not $SkipSelftest) {
+        Step "Run source-level regression tests"
+        $LogicTests = @(
+            "selftest_safety.py",
+            "selftest_bugfixes.py",
+            "selftest_kb_sync.py",
+            "selftest_update.py",
+            "selftest_docx.py",
+            "selftest_docx_citations.py",
+            "selftest_docdiff.py",
+            "selftest_stats.py",
+            "selftest_ui_features.py",
+            "selftest_workbench.py"
+        )
+        foreach ($t in $LogicTests) {
+            Write-Host "  -> $t"
+            & $PythonExe "test\$t"
+            if ($LASTEXITCODE -ne 0) { Die "logic test failed: $t (exit $LASTEXITCODE)" }
+        }
+    } else {
+        Write-Host "skipped source-level regression tests (-SkipSelftest)"
+    }
+
     # ---------- 0.5. application icon ----------
     Step "Generate application icon from PaperWB.jpg"
     & $PythonExe installer\make_icon.py

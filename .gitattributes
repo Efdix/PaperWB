@@ -1,0 +1,11 @@
+# 只标记二进制资源，避免 Git 对 PDF/图标做文本转换。
+# 不强制统一 Python/PowerShell 行尾：仓库现有文件 CRLF/LF 混用，
+# 强制 renormalize 会产生整文件 diff，留待专门的一次性提交处理。
+*.pdf  binary
+*.jpg  binary
+*.jpeg binary
+*.png  binary
+*.ico  binary
+*.exe  binary
+*.dll  binary
+*.zip  binary

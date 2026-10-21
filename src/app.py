@@ -332,6 +332,7 @@ class MainWindow(QMainWindow):
 
         self._setup_ui()
         self._apply_styles()
+        self._apply_accessible_names()
         self._init_all_clients()
         self._init_stats()
         # Zotero 启动加载会复制整个 sqlite 并逐条查询，放在构造期会让窗口
@@ -755,6 +756,9 @@ class MainWindow(QMainWindow):
 
     def _toggle_fullscreen(self) -> None:
         """F11 全屏切换：与阅读工具栏「⛶ 全屏阅读」按钮共用同一条路径。"""
+        if self._main_tabs.currentIndex() != 0:
+            self.status_bar.showMessage("F11 沉浸阅读仅用于阅读工作台")
+            return
         self.pdf_viewer.toggle_fullscreen()
 
     def _on_fullscreen_toggled(self, entering: bool) -> None:
@@ -896,6 +900,23 @@ class MainWindow(QMainWindow):
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(STYLESHEET)
+
+    def _apply_accessible_names(self) -> None:
+        """图标/emoji 按钮补可读名称：屏幕阅读器不能只读出“垃圾桶”。
+
+        以 tooltip 作为首选描述；没有 tooltip 时至少给“操作”，避免空名称。
+        """
+        for btn in self.findChildren(QPushButton):
+            if btn.accessibleName():
+                continue
+            text = (btn.text() or "").strip()
+            tip = (btn.toolTip() or "").strip()
+            if not text:
+                btn.setAccessibleName(tip or "操作")
+            elif len(text) <= 2 and not any(ch.isalnum() for ch in text):
+                btn.setAccessibleName(tip or text)
+            if tip:
+                btn.setAccessibleDescription(tip)
 
     def _start_docling_warmup(self) -> None:
         """界面显示后再后台预热，避免拖慢窗口创建过程。

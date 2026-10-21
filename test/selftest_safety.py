@@ -164,6 +164,35 @@ def test_docx_atomic() -> None:
         check("失败后无临时文件", not list(Path(td).glob(".*.tmp")), str(list(Path(td).iterdir())))
 
 
+def test_doc_id_migration() -> None:
+    from src.utils import config as cfg
+    p1 = "C:/Papers/Paper.PDF"
+    p2 = "c:\\papers\\paper.pdf"
+    check("路径规范化后文档 ID 一致", cfg._doc_id(p1) == cfg._doc_id(p2),
+          f"{cfg._doc_id(p1)} != {cfg._doc_id(p2)}")
+
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        legacy = base / f"{cfg._legacy_doc_id(p1)}.json"
+        legacy.write_text('{"old": true}', encoding="utf-8")
+        f = cfg._doc_file(base, p1)
+        check("旧缓存键迁移到新键", f.exists() and not legacy.exists(), str(f))
+        check("迁移后内容不变",
+              json.loads(f.read_text(encoding="utf-8")) == {"old": True})
+
+
+def test_paper_identity() -> None:
+    from src.core.literature_scout import paper_key
+    a = {"doi": "https://doi.org/10.1000/ABC", "title": "A paper"}
+    b = {"doi": "10.1000/abc", "pmid": "12345", "title": "A paper"}
+    check("跨源 DOI 身份一致", paper_key(a) == paper_key(b) == "doi:10.1000/abc",
+          f"{paper_key(a)} / {paper_key(b)}")
+    c = {"title": "A  Paper!", "pmid": ""}
+    d = {"title": "a paper", "pmid": ""}
+    check("无 DOI 时标题兜底一致", paper_key(c) == paper_key(d) == "title:apaper",
+          f"{paper_key(c)} / {paper_key(d)}")
+
+
 def test_context_and_manifest() -> None:
     from src.core.context_manager import ContextManager
     from src.core.pdf_processor import PageManifest
@@ -185,7 +214,8 @@ def test_context_and_manifest() -> None:
 
 def main() -> int:
     for fn in (test_atomic, test_profile_names, test_kb_copy, test_zip_slip,
-               test_docx_atomic, test_context_and_manifest):
+               test_docx_atomic, test_doc_id_migration, test_paper_identity,
+               test_context_and_manifest):
         print(f"\n--- {fn.__name__} ---")
         fn()
     print(f"\n{COUNT - len(FAILS)} passed, {len(FAILS)} failed")

@@ -416,6 +416,7 @@ PaperWB/
 │       ├── layout.py            # 递归布局高度计算
 │       └── threads.py           # 运行中 QThread 全局保活注册表
 ├── test/                        # 测试数据 + 自测/验收脚本
+│   ├── run_all.py               #   统一测试入口（逻辑 + 离屏 UI；--no-ui 供 CI）
 │   ├── validate_zotero.py       #   Zotero 文献两阶段整合验收（--count 可调，输出 JSON 报告）
 │   ├── capture_zotero_screenshots.py  #   UI 截图验收（--count 可调，输出 PNG）
 │   ├── selftest_bugfixes.py     #   纯逻辑回归自测

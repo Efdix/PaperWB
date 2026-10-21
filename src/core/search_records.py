@@ -161,8 +161,16 @@ class BlacklistStore:
         )
         if not e.key:
             return None
-        if e.doi in self._dois or e.title_norm and e.title_norm in self._titles:
-            return e  # 已在黑名单
+        for old in self._entries:
+            if (e.doi and old.doi == e.doi) or (
+                    e.title_norm and old.title_norm == e.title_norm):
+                # 已存在：更新原因/来源，而不是静默返回旧条目
+                if e.reason:
+                    old.reason = e.reason
+                if e.source:
+                    old.source = e.source
+                self._save()
+                return old
         self._entries.append(e)
         if e.doi:
             self._dois.add(e.doi)
@@ -170,6 +178,7 @@ class BlacklistStore:
             self._titles.add(e.title_norm)
         if len(self._entries) > MAX_BLACKLIST_ITEMS:
             self._entries = self._entries[-MAX_BLACKLIST_ITEMS:]
+            self._reindex()  # 裁剪后必须重建索引，否则被裁条目仍参与匹配
         self._save()
         return e
 

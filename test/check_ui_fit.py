@@ -145,6 +145,17 @@ from PySide6.QtGui import QKeySequence  # noqa: E402
 acts = {a.shortcut().toString() for a in win.findChildren(type(win._app_menu.actions()[0]))}
 check("菜单快捷方式保留（Ctrl+,）", "Ctrl+," in acts, str(sorted(acts)))
 
+# ---- 6. 图标按钮必须有可访问名称（不能只靠 emoji/tooltip） ----
+from PySide6.QtWidgets import QPushButton  # noqa: E402
+icon_buttons = [
+    b for b in win.findChildren(QPushButton)
+    if (b.text() or "").strip()
+    and len((b.text() or "").strip()) <= 2
+    and not any(ch.isalnum() for ch in (b.text() or "").strip())
+]
+missing = [b.text() for b in icon_buttons if not b.accessibleName()]
+check("图标按钮有可访问名称", not missing, str(missing[:8]))
+
 win.close()
 app.processEvents()
 
