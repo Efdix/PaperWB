@@ -48,9 +48,12 @@ env/
 Thumbs.db
 desktop.ini
 
-# 临时测试脚本
-test/test_*.py
+# 临时生成脚本（模型预热脚本是构建所需，明确保留）
 _gen_*.py
+!_gen_prewarm_models.py
 
 # 废弃代码
 *.deprecated
+
+# 构建/运行日志（保留在工作区，不入库）
+*.log
