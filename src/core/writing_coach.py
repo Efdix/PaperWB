@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -797,7 +798,10 @@ class WritingCoach:
         pos = 0
         for s in sentences:
             if s:
-                start = joined.index(s, pos) if s in joined[pos:] else pos
+                # str.find 不切片，避免 `s in joined[pos:]` 在长综述上复制大字符串
+                start = joined.find(s, pos)
+                if start < 0:
+                    start = pos
                 end = start + len(s)
                 sent_spans.append((start, end))
                 pos = end
@@ -805,18 +809,20 @@ class WritingCoach:
         # 对每个引文标记，找到包含它的句子，然后取前后各 2 句作为上下文
         char_counts: list[int] = []
         sent_counts: list[int] = []
+        sent_starts = [ss for ss, _ in sent_spans]
+        marker_starts = [ms for ms, _ in marker_spans]
 
         def _has_other_marker(ss: int, se: int) -> bool:
-            return any(ss <= o_s < se for o_s, _ in marker_spans)
+            i = bisect_left(marker_starts, ss)
+            return i < len(marker_starts) and marker_starts[i] < se
 
         for ms, _me in marker_spans:
-            # 找到包含此标记的句子索引
-            sent_idx = -1
-            for si, (ss, se) in enumerate(sent_spans):
-                if ss <= ms < se:
-                    sent_idx = si
-                    break
+            # 二分定位包含此标记的句子（原实现每个标记线性扫全部句子）
+            sent_idx = bisect_right(sent_starts, ms) - 1
             if sent_idx < 0:
+                continue
+            ss, se = sent_spans[sent_idx]
+            if not (ss <= ms < se):
                 continue
 
             # 取前后各 2 句（但不超过前后引文标记边界或文章边界）

@@ -267,7 +267,8 @@ _hints = wp._get_comment_hints_for_span(0, 5)
 check("选区批注提示", "这里要改" in _hints, repr(_hints))
 wp.shutdown()
 check("仅核查入口", hasattr(wp, "_verify_btn") and not hasattr(wp, "_review_btn"))
-check("自动评价入口", hasattr(wp, "_start_auto_review"))
+check("整体评价入口（显式按钮，非打开即触发）",
+      hasattr(wp, "_auto_review_btn") and hasattr(wp, "_start_auto_review"))
 
 print()
 for name in PASS:

@@ -1338,6 +1338,14 @@ class WritingPanel(QWidget):
         self._polish_btn.clicked.connect(self._on_unified_polish)
         ai_layout.addWidget(self._polish_btn)
 
+        self._auto_review_btn = QPushButton("📊 整体评价当前稿")
+        self._auto_review_btn.setObjectName("secondaryBtn")
+        self._auto_review_btn.setToolTip(
+            "让 AI 只读当前草稿 + 知识库风格基准，生成逐项评价报告。\n"
+            "会消耗一次长上下文调用；不再在打开 Word 时自动触发。")
+        self._auto_review_btn.clicked.connect(self._start_auto_review)
+        ai_layout.addWidget(self._auto_review_btn)
+
         self._view_review_btn = QPushButton("📋 查看已保存评价")
         self._view_review_btn.setObjectName("secondaryBtn")
         self._view_review_btn.setToolTip(
@@ -1958,13 +1966,12 @@ class WritingPanel(QWidget):
         if self._coach and self._coach.current_profile:
             set_word_binding(self._coach.current_profile.name,
                              path, self._word_mtime)
+        # 不再打开即自动评价：那会在用户没同意时消耗一次长上下文 LLM 调用。
+        # 工具栏「整体评价当前稿」由用户显式触发。
+        base = (f"已打开 {os.path.basename(path)}")
         if content.has_revisions:
-            self._status_label.setText(
-                "文档含修订标记（track changes），已合并显示；保存时按当前文本写回")
-        else:
-            self._status_label.setText(f"已打开 {os.path.basename(path)}")
-        # 自动触发草稿整体评价（只读全文+风格指南，不读引用文献）
-        QTimer.singleShot(200, self._start_auto_review)
+            base = "文档含修订标记（track changes），已合并显示；保存时按当前文本写回"
+        self._status_label.setText(base + " · 可点「整体评价当前稿」生成评价")
 
     def _on_track_changes_toggled(self, checked: bool) -> None:
         from ..utils.config import set_word_track_changes
