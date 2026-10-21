@@ -1,4 +1,4 @@
-# PaperWB 发布脚本 —— 打 tag + 上传 GitHub Release（更新推送的数据来源）
+﻿# PaperWB 发布脚本 —— 打 tag + 上传 GitHub Release（更新推送的数据来源）
 #
 # 应用内「检查更新」读的是 https://api.github.com/repos/Efdix/PaperWB/releases/latest ：
 #   tag_name  → 版本号（须与 src/utils/version.py 的 APP_VERSION 一致，脚本会校验）

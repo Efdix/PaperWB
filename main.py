@@ -130,7 +130,6 @@ def _preload_heavy_libs(strict: bool = False) -> list[str]:
     for _mod in ("numpy", "numpy.random", "numpy.linalg",
                  "numpy.fft", "numpy.polynomial", "pandas",
                  "scipy", "scipy.ndimage", "scipy.signal", "scipy.optimize",
-                 "sklearn", "sklearn.cluster", "sklearn.metrics",
                  "PIL", "cv2"):
         try:
             __import__(_mod)

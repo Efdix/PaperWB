@@ -4,7 +4,7 @@
 # 说明：
 # - onedir：exe + _internal/ 文件夹，启动快、更新只换 exe，DLL 就近加载无 onefile 解压竞态
 # - docling/transformers/rapidocr 通过 collect_all 打入（含 OCR 模型数据文件）
-# - scipy/sklearn 交给 PyInstaller 官方 hook 自动收集（collect_all 遍历其数千子模块过慢）
+# - scipy 交给 PyInstaller 官方 hook 自动收集（collect_all 遍历其数千子模块过慢）
 # - upx=False：避免压缩 torch/PySide6 原生库导致损坏
 # - conda 的 sqlite3.dll 手动打入（_sqlite3 扩展依赖，PyInstaller 偶发遗漏）
 

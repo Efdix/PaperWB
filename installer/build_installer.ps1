@@ -1,4 +1,4 @@
-# PaperWB installer one-shot build script
+﻿# PaperWB installer one-shot build script
 # ---------------------------------------------------------------
 # Usage (from repo root or anywhere):
 #   powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1
@@ -364,7 +364,10 @@ try {
         assets     = $Assets
     }
     $ManifestPath = Join-Path $PSScriptRoot "Output\release-$Ver.json"
-    $Manifest | ConvertTo-Json -Depth 6 | Set-Content -Path $ManifestPath -Encoding UTF8
+    # 自建更新源由 Python json.loads 读取；UTF-8 BOM 会让它报 "Expecting value"。
+    $ManifestJson = $Manifest | ConvertTo-Json -Depth 6
+    [System.IO.File]::WriteAllText(
+        $ManifestPath, $ManifestJson, (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "  manifest: $ManifestPath" -ForegroundColor Green
 
     $Sw.Stop()
