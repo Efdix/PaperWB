@@ -395,6 +395,132 @@ check("已读：工具栏按钮恢复标记文案",
       panel.read_mark_btn.text() == "✓" and panel.read_mark_btn.isEnabled())
 
 # ============================================================
+# 8. 聊天框直接问图：图表引用解析 → 定位截图 → 多模态附图
+# ============================================================
+from src.core.figure_ref import (  # noqa: E402
+    MAX_ATTACH_IMAGES, caption_token, match_figure_entries, parse_figure_refs,
+)
+
+
+def _refs(text: str) -> list[tuple[str, str]]:
+    return [(k, t) for k, t, _d in parse_figure_refs(text)]
+
+
+check("图表引用：图1", _refs("图1讲了什么") == [("figure", "1")])
+check("图表引用：中文数字", _refs("图一和图二对比") == [("figure", "1"), ("figure", "2")])
+check("图表引用：图十一", _refs("看下图十一") == [("figure", "11")])
+check("图表引用：区间展开", _refs("图1-3分别是什么")
+      == [("figure", "1"), ("figure", "2"), ("figure", "3")])
+check("图表引用：Figure", _refs("What does Figure 2 show") == [("figure", "2")])
+check("图表引用：Fig. 带子面板", _refs("解释 Fig. 3A 的结果") == [("figure", "3")])
+check("图表引用：Fig 无点", _refs("Fig1 结果") == [("figure", "1")])
+check("图表引用：and 并列", _refs("Figures 1 and 2 compare")
+      == [("figure", "1"), ("figure", "2")])
+check("图表引用：中文顿号并列", _refs("图1、图2的差异") ==
+      [("figure", "1"), ("figure", "2")])
+check("图表引用：表", _refs("总结表2") == [("table", "2")])
+check("图表引用：Table S1", _refs("Table S1 details") == [("table", "s1")])
+check("图表引用：补充材料图", _refs("图S2 在哪") == [("figure", "s2")])
+check("图表引用：试图/地图不误报",
+      _refs("试图理解这段话") == [] and _refs("看这个地图") == [])
+check("图表引用：无编号不误报", _refs("如图所示") == [])
+
+check("图注标签：Figure", caption_token("figure", "Figure 1. Growth rates.") == "1")
+check("图注标签：Fig.", caption_token("figure", "Fig. 2: design") == "2")
+check("图注标签：中文图注", caption_token("figure", "图3 实验流程") == "3")
+check("图注标签：表S2", caption_token("table", "表S2 汇总") == "s2")
+check("图注标签：类型不符拒绝", caption_token("table", "Figure 1. xxx") is None)
+check("图注标签：非标签开头拒绝", caption_token("figure", "Effect of X on Y") is None)
+
+_entries = [
+    {"kind": "figure", "caption": "Figure 1. Foo.", "path": "f1.png"},
+    {"kind": "figure", "caption": "Figure 2. Bar.", "path": "f2.png"},
+    {"kind": "table", "caption": "Table 1. Summary.", "path": "t1.png"},
+]
+_m, _miss = match_figure_entries(parse_figure_refs("图1和表1"), _entries)
+check("图表匹配：图与表各自命中",
+      [it["display"] for it in _m] == ["图1", "表1"] and not _miss)
+_m, _miss = match_figure_entries(parse_figure_refs("图9讲了什么"), _entries)
+check("图表匹配：未命中提示", not _m and _miss == ["图9"])
+_many = [{"kind": "figure", "caption": f"Figure {i}. X.", "path": f"f{i}.png"}
+         for i in range(1, 6)]
+_m, _miss = match_figure_entries(parse_figure_refs("图1-5"), _many)
+check("图表匹配：附图上限",
+      len(_m) == MAX_ATTACH_IMAGES
+      and _miss == ["图4（超出附图上限）", "图5（超出附图上限）"])
+
+# 面板级：结构化文档 + 截图目录 → find_figure_images
+import tempfile as _tf
+import shutil as _sh
+_img_dir = Path(_tf.mkdtemp(prefix="paperwb_figref_"))
+try:
+    for name in ("fig_a.png", "fig_b.png", "tab_a.png"):
+        (_img_dir / name).write_bytes(b"\x89PNG-not-real")
+
+    _fdoc = StructuredDocument(title="Fig Paper")
+    _fdoc.display_elements = [
+        StructuredElement(element_type="figure", page=1, element_id="fig_a",
+                          image_caption="Figure 1. Overview of the design.",
+                          image_path="fig_a.png"),
+        StructuredElement(element_type="figure", page=2, element_id="fig_b",
+                          image_caption="Figure 2. Results of the trial.",
+                          image_path="fig_b.png"),
+        StructuredElement(element_type="table", page=3, element_id="tab_a",
+                          image_caption="Table 1. Baseline characteristics.",
+                          image_path="tab_a.png"),
+        StructuredElement(element_type="figure", page=4, element_id="fig_c",
+                          image_caption="Effect of temperature.", image_path=""),
+    ]
+    _fpanel = PDFViewerPanel()
+    _fpanel._current_path = r"C:\fake\paper.pdf"
+    _fpanel._render_image_base_dir = str(_img_dir)
+    _fpanel._structured_doc = _fdoc
+    _fm, _fmiss = _fpanel.find_figure_images("图1和图2分别讲了什么？表1呢？")
+    check("面板定位：三张图表命中",
+          [it["display"] for it in _fm] == ["图1", "图2", "表1"]
+          and all(Path(it["path"]).exists() for it in _fm))
+    _fm, _fmiss = _fpanel.find_figure_images("图4讲了什么")
+    check("面板定位：无标签图注不命中",
+          not _fm and _fmiss == ["图4"])
+    _fpanel.deleteLater()
+finally:
+    _sh.rmtree(_img_dir, ignore_errors=True)
+
+# 多模态消息组装：多图 + 图注注入（MainWindow 静态方法，无窗口依赖）
+from src.app import MainWindow  # noqa: E402
+
+_mdir = Path(_tf.mkdtemp(prefix="paperwb_vismsg_"))
+try:
+    _p1, _p2 = _mdir / "a.png", _mdir / "b.png"
+    _p1.write_bytes(b"img-a")
+    _p2.write_bytes(b"img-b")
+    _msgs = [{"role": "system", "content": "s"},
+             {"role": "user", "content": "旧问题"}]
+    _meta = [{"display": "图1", "caption": "Figure 1. Foo.", "path": str(_p1)},
+             {"display": "图2", "caption": "Figure 2. Bar.", "path": str(_p2)}]
+    _out = MainWindow._attach_vision_message(
+        _msgs, "图1和图2讲了什么", [str(_p1), str(_p2)], _meta)
+    _last = _out[-1]["content"]
+    check("多模态消息：结构为分段列表", isinstance(_last, list) and len(_last) == 3)
+    check("多模态消息：图注注入文字段",
+          _last[0]["type"] == "text" and "Figure 1. Foo." in _last[0]["text"]
+          and "图1和图2讲了什么" in _last[0]["text"])
+    check("多模态消息：两张图按序附加",
+          all(p["type"] == "image_url"
+              and p["image_url"]["url"].startswith("data:image/png;base64,")
+              for p in _last[1:]))
+    check("多模态消息：原消息未被篡改", _msgs[-1]["content"] == "旧问题")
+    _out1 = MainWindow._attach_vision_message(
+        [{"role": "user", "content": "q"}], "q", str(_p1))
+    check("多模态消息：单路径兼容", isinstance(_out1[-1]["content"], list)
+          and len(_out1[-1]["content"]) == 2)
+    _out0 = MainWindow._attach_vision_message(
+        [{"role": "user", "content": "q"}], "q", str(_mdir / "none.png"))
+    check("多模态消息：路径缺失原样返回", _out0[-1]["content"] == "q")
+finally:
+    _sh.rmtree(_mdir, ignore_errors=True)
+
+# ============================================================
 # 汇总
 # ============================================================
 failed = [name for ok, name in RESULTS if not ok]

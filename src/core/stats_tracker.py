@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import time
 import uuid
@@ -18,7 +17,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from ..utils.atomic import atomic_write_json
+from ..utils.atomic import atomic_write_json, read_json_safe
 from ..utils.config import get_stats_dir
 
 # 热力图展示的字段（与 stats.json 的 days 键一一对应）
@@ -81,42 +80,35 @@ class StatsTracker(QObject):
     def _load(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
         stats_f = self._dir / "stats.json"
-        if stats_f.exists():
-            try:
-                data = json.loads(stats_f.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                data = {}
-            if isinstance(data, dict):
-                days = data.get("days", {})
-                self._days = {k: dict(_EMPTY_DAY, **v) for k, v in days.items()
-                              if isinstance(v, dict)}
-                papers = data.get("papers", {})
-                self._papers = {k: v for k, v in papers.items()
-                                if isinstance(v, dict)}
+        data = read_json_safe(stats_f, {})
+        if isinstance(data, dict):
+            days = data.get("days", {})
+            self._days = {k: dict(_EMPTY_DAY, **v) for k, v in days.items()
+                          if isinstance(v, dict)}
+            papers = data.get("papers", {})
+            self._papers = {k: v for k, v in papers.items()
+                            if isinstance(v, dict)}
         plans_f = self._dir / "plans.json"
-        if plans_f.exists():
-            try:
-                data = json.loads(plans_f.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                data = {}
-            if isinstance(data, dict):
-                for scope in self._plans:
-                    items = data.get(scope, [])
-                    self._plans[scope] = [p for p in items
-                                          if isinstance(p, dict) and p.get("id")]
+        data = read_json_safe(plans_f, {})
+        if isinstance(data, dict):
+            for scope in self._plans:
+                items = data.get(scope, [])
+                self._plans[scope] = [p for p in items
+                                      if isinstance(p, dict) and p.get("id")]
 
     def flush(self) -> None:
         """落盘当前内存状态；无变更时跳过（不重写文件）。"""
         if not self._dirty:
             return
-        self._dirty = False
         try:
             atomic_write_json(
                 self._dir / "stats.json",
                 {"days": self._days, "papers": self._papers}, indent=1)
             atomic_write_json(self._dir / "plans.json", self._plans, indent=1)
-        except OSError:
-            pass
+            self._dirty = False
+        except OSError as e:
+            # 保留 _dirty：下一轮定时器自动重试，失败不丢数据只延后落盘
+            print(f"[Stats] 落盘失败（将自动重试）: {e}")
 
     def reload(self) -> None:
         """数据根目录切换后重读磁盘（先落盘旧目录状态）。"""
@@ -183,8 +175,16 @@ class StatsTracker(QObject):
         minutes = math.ceil(elapsed / 60)
         day = self._day(_now().date())
         day["read_minutes"] = day.get("read_minutes", 0) + minutes
-        day["read_papers"] = day.get("read_papers", 0) + 1
+        # 「阅读篇数」按日去重：同一 PDF 反复打开只算 1 篇（pid 随天数落盘，
+        # 重启后也不重复计数；list 长度随 _trim_days 一起被裁剪）
         pid = _paper_id(path)
+        pids = day.get("paper_ids")
+        if not isinstance(pids, list):
+            pids = []
+        if pid not in pids:
+            day["read_papers"] = day.get("read_papers", 0) + 1
+            pids.append(pid)
+            day["paper_ids"] = pids
         paper = self._papers.get(pid)
         if paper is None:
             paper = {"title": title, "minutes": 0, "opens": 0}

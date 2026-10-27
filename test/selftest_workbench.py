@@ -356,7 +356,7 @@ try:
     class FakeMultiSource:
         """假多源检索器：按 plan 返回 PubMed + arXiv 混合结果。"""
 
-        def search(self, plan, limit=10):
+        def search(self, plan, limit=10, log=None):
             return [
                 PubMedPaper(pmid="90002", title="Feather color development in birds",
                             authors="Old A", year="2020", journal="J2", doi="",
@@ -643,7 +643,7 @@ try:
                     '[{"source": "openalex", "query": "feather development"}]}')
 
     class FakeMS2:
-        def search(self, plan, limit=10):
+        def search(self, plan, limit=10, log=None):
             return [PubMedPaper(title="Profile hit paper", year="2024",
                                 doi="10.9/p1")]
 
@@ -1520,7 +1520,7 @@ from src.core.pubmed_searcher import PubMedPaper
 
 
 class FakeBLSearcher:
-    def search(self, plan, limit=10):
+    def search(self, plan, limit=10, log=None):
         return [
             PubMedPaper(pmid="1", title="Blocked paper X", authors="A",
                         year="2024", journal="J", doi="10.5/blocked"),
@@ -1751,8 +1751,8 @@ check("写作面板续写按钮", hasattr(_wpanel, "_continue_btn")
 check("写作面板大纲按钮", hasattr(_wpanel, "_outline_btn")
       and _wpanel._outline_btn.text() == "生成大纲")
 check("续写取消纳入统一取消",
-      any("_compose_worker" in str(c)
-          for c in _wpanel._cancel_all_workers.__code__.co_consts))
+      "_compose_worker" in WritingPanel._AI_WORKER_ATTRS
+      and "_AI_WORKER_ATTRS" in _wpanel._cancel_all_workers.__code__.co_names)
 check("写作面板内联风格指南视图", hasattr(_wpanel, "_style_guide_view")
       and not hasattr(_wpanel, "_view_style_btn"))
 check("写作面板 Zotero 检测入口", hasattr(_wpanel, "_zotero_check_btn")

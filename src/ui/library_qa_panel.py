@@ -171,6 +171,7 @@ class LibraryQAPanel(QWidget):
 
         self._qa_worker: LibraryQAWorker | None = None
         self._index_worker: IndexBuildWorker | None = None
+        self._index_rebuild_pending = False  # 构建在途时收到 Zotero 变更 → 收尾后补建
         self._shutting_down = False
         self._qa_busy = False
         self._qa_history: list[dict] = []
@@ -352,6 +353,7 @@ class LibraryQAPanel(QWidget):
         self._qa_busy = False
         self._engine = LibraryQAEngine()
         self._engine_ready = False
+        self._index_rebuild_pending = False
         self._on_clear_chat()
         if self._library is not None:
             self._start_index_build()
@@ -375,7 +377,10 @@ class LibraryQAPanel(QWidget):
         if self._shutting_down:
             return
         if self._index_worker is not None and self._index_worker.isRunning():
-            self._qa_status.setText("索引：正在构建中，请稍候…")
+            # 在途构建持有的是旧 items 快照：本次 Zotero 变更的条目必须等它
+            # 收尾后再补一次构建，否则要等下一次变更/手动重建才会进索引
+            self._index_rebuild_pending = True
+            self._qa_status.setText("索引：正在构建中，最新变更将在收尾后自动纳入…")
             return
         if not self._items_snapshot:
             self._engine_ready = False
@@ -406,6 +411,9 @@ class LibraryQAPanel(QWidget):
         self._qa_status.setText(f"索引就绪 · {items} 篇全文 / {chunks} 段")
         self._apply_ask_state()
         self.index_built.emit()
+        if self._index_rebuild_pending:
+            self._index_rebuild_pending = False
+            self._start_index_build()  # 把构建期间到达的 Zotero 变更补进索引
 
     # ---- 后台预解析协作（主窗口接线） ----
 
@@ -441,6 +449,9 @@ class LibraryQAPanel(QWidget):
             f"全文索引构建失败（{err}）"
             + ("；元数据问答可用" if self._engine_ready else ""))
         self._apply_ask_state()
+        if self._index_rebuild_pending:
+            self._index_rebuild_pending = False
+            self._start_index_build()  # 失败也补跑：变更不能因一次构建失败丢失
 
     # ================= 库内问答 =================
 
@@ -574,6 +585,11 @@ class LibraryQAPanel(QWidget):
         self._qa_history.append({"role": "assistant", "content": content})
 
     def _on_clear_chat(self) -> None:
+        # 先打断在途回答：否则旧 worker 继续消耗 token，迟到的流式结果
+        # 与参考文献卡会弹进刚清空的会话，且再提问会叠出并发双 worker
+        if self._qa_worker is not None:
+            self._qa_worker.requestInterruption()
+            self._qa_worker = None
         self._qa_history.clear()
         self._current_ai_bubble = None
         self._qa_busy = False

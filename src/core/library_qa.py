@@ -322,8 +322,9 @@ class LibraryQAEngine:
                 break
             try:
                 mtime = os.path.getmtime(pdf)
+                size = os.path.getsize(pdf)
             except OSError:
-                mtime = -1.0
+                mtime, size = -1.0, -1
             entry = items_map.get(key) or {}
 
             if mtime <= 0:
@@ -332,7 +333,11 @@ class LibraryQAEngine:
                     changed = True
                 items_map[key] = {"pdf": pdf, "mtime": 0.0, "error": True}
                 chunks_by_key.pop(key, None)
-            elif force or entry.get("mtime") != mtime:
+            elif (force or entry.get("mtime") != mtime
+                    # 指纹除 mtime 外必须带 size：copy -p / 同步工具保留 mtime
+                    # 换文件时只比 mtime 会把旧 PDF 的陈旧证据继续喂给问答
+                    # （旧条目无 size 字段 → 首轮自动判失效重抽升级）
+                    or entry.get("size") != size):
                 chs = extract_chunks(pdf, interrupt_cb=interrupt_cb)
                 if interrupt_cb is not None and interrupt_cb():
                     break  # 中断：这一篇保持旧状态，下次继续
@@ -340,10 +345,12 @@ class LibraryQAEngine:
                     # 抽取失败必须记成 error，否则下次启动不会重试，界面还会
                     # 把这篇算进“已索引”的全文篇数。
                     chunks_by_key.pop(key, None)
-                    items_map[key] = {"pdf": pdf, "mtime": mtime, "error": True}
+                    items_map[key] = {"pdf": pdf, "mtime": mtime,
+                                      "size": size, "error": True}
                 else:
                     chunks_by_key[key] = chs
-                    items_map[key] = {"pdf": pdf, "mtime": mtime, "error": False}
+                    items_map[key] = {"pdf": pdf, "mtime": mtime,
+                                      "size": size, "error": False}
                 changed = True
             # else: 缓存仍有效，跳过
 
@@ -359,15 +366,18 @@ class LibraryQAEngine:
             entry = items_map.get(key) or {}
             try:
                 mtime = os.path.getmtime(pdf)
+                size = os.path.getsize(pdf)
             except OSError:
                 continue
-            if entry.get("mtime") == mtime and not entry.get("error"):
+            if (entry.get("mtime") == mtime and entry.get("size") == size
+                    and not entry.get("error")):
                 chs = extract_chunks(pdf, interrupt_cb=interrupt_cb)
                 if interrupt_cb is not None and interrupt_cb():
                     break
                 if chs is None:
                     chunks_by_key.pop(key, None)
-                    items_map[key] = {"pdf": pdf, "mtime": mtime, "error": True}
+                    items_map[key] = {"pdf": pdf, "mtime": mtime,
+                                      "size": size, "error": True}
                 else:
                     chunks_by_key[key] = chs
                 changed = True
@@ -402,41 +412,57 @@ class LibraryQAEngine:
 
         只更新内存 state 并置脏；落盘与检索器重建由 flush() 批量收口，
         避免逐篇重写 15MB 状态文件和重建全库 BM25。构建进行中时转入
-        待办队列（由 refresh_fulltext 收尾补抽）。PDF 有变化（mtime 不符）
-        时不处理，留给下次全量刷新。
+        待办队列（由 refresh_fulltext 收尾补抽）。PDF 有变化（mtime/size
+        不符）时不处理，留给下次全量刷新。
 
         Returns:
             是否实际更新（False = 转待办/条目缺失/PDF 已变）。
         """
-        with self._lock:
-            if self._building:
-                self._refresh_pending.add(key)
+        extracted: list | None = None
+        extracted_for: tuple[str, float, int] | None = None
+        for _attempt in range(3):
+            with self._lock:
+                if self._building:
+                    self._refresh_pending.add(key)
+                    return False
+                d = self._items.get(key) or {}
+                state = self._ft_state
+            pdf = (d.get("pdf_path") or "").strip()
+            if not pdf:
                 return False
-            d = self._items.get(key) or {}
-            state = self._ft_state
-        pdf = (d.get("pdf_path") or "").strip()
-        if not pdf:
-            return False
-        try:
-            mtime = os.path.getmtime(pdf)
-        except OSError:
-            return False
-        items_map = state.get("items", {})
-        entry = items_map.get(key) or {}
-        if entry.get("mtime") != mtime or entry.get("error"):
-            return False
-        chs = extract_chunks(pdf)
-        with self._lock:
-            chunks = [c for c in state.get("chunks", []) if c.get("k") != key]
-            if chs is None:
-                items_map[key] = {"pdf": pdf, "mtime": mtime, "error": True}
-            else:
-                chunks.extend(
-                    {"k": key, "p": c["p"], "s": c.get("s", ""), "t": c["t"]}
-                    for c in chs)
-            state["chunks"] = chunks
-            self._ft_dirty = True
-        return chs is not None
+            try:
+                mtime = os.path.getmtime(pdf)
+                size = os.path.getsize(pdf)
+            except OSError:
+                return False
+            items_map = state.get("items", {})
+            entry = items_map.get(key) or {}
+            if (entry.get("mtime") != mtime or entry.get("size") != size
+                    or entry.get("error")):
+                return False
+            fp = (pdf, mtime, size)
+            if extracted_for != fp:
+                extracted = extract_chunks(pdf)
+                extracted_for = fp
+            chs = extracted
+            with self._lock:
+                if self._ft_state is not state:
+                    # 抽取期间全量构建整体换掉了状态：在旧引用上改会静默
+                    # 丢失（flush 落盘的是新 state）。换最新状态重试合并，
+                    # 抽取结果按指纹复用，不重复做 IO。
+                    continue
+                chunks = [c for c in state.get("chunks", []) if c.get("k") != key]
+                if chs is None:
+                    items_map[key] = {"pdf": pdf, "mtime": mtime,
+                                      "size": size, "error": True}
+                else:
+                    chunks.extend(
+                        {"k": key, "p": c["p"], "s": c.get("s", ""), "t": c["t"]}
+                        for c in chs)
+                state["chunks"] = chunks
+                self._ft_dirty = True
+            return chs is not None
+        return False
 
     def flush(self, reindex: bool = True) -> None:
         """把 refresh_item 累积的变更落盘；reindex 时同步重建全文检索器。

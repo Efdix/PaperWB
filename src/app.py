@@ -1097,7 +1097,10 @@ class MainWindow(QMainWindow):
         try:
             os.remove(path)
         except OSError as e:
-            print(f"[Library] 删除文件失败: {e}")
+            # 条目与缓存已删，但文件本体删除失败（被占用/权限）必须告知，
+            # 否则用户以为已删而磁盘残留孤儿文件
+            self.status_bar.showMessage(
+                f"文献已移出列表，但文件删除失败（可手动删除）：{os.path.basename(path)} — {e}")
         self.pdf_list._refresh()
 
     def _on_pdf_imported(self, path: str):
@@ -1372,36 +1375,53 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _attach_vision_message(messages: list[dict], question: str,
-                               image_path: str) -> list[dict]:
+                               image_paths, images_meta=None) -> list[dict]:
         """把最后一条 user 消息替换为多模态内容（图片 base64 data URI + 问题）。
 
+        image_paths 接受单路径或路径列表；images_meta（find_figure_images 的
+        匹配结果）提供时把图注一并写进文字部分，帮助模型对上编号与图片。
         对话历史仍保存纯文本问题，视觉内容只随本次请求发送。
         """
         import base64
-        if not image_path or not os.path.exists(image_path):
+        if isinstance(image_paths, str):
+            image_paths = [image_paths]
+        content_text = question
+        if images_meta:
+            cap_lines = [f"{it.get('display', '图')}：{(it.get('caption') or '')[:160]}"
+                         for it in images_meta]
+            if cap_lines:
+                content_text = (question + "\n\n【已附图表的原文图注】\n"
+                                + "\n".join(cap_lines))
+        parts: list[dict] = [{"type": "text", "text": content_text}]
+        attached = 0
+        for image_path in image_paths:
+            if not image_path or not os.path.exists(image_path):
+                continue
+            try:
+                with open(image_path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("ascii")
+            except OSError:
+                continue
+            ext = os.path.splitext(image_path)[1].lower()
+            mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                    "webp": "image/webp"}.get(ext.lstrip("."), "image/png")
+            parts.append({"type": "image_url",
+                          "image_url": {"url": f"data:{mime};base64,{b64}"}})
+            attached += 1
+        if not attached:
             return messages
-        try:
-            with open(image_path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode("ascii")
-        except OSError:
-            return messages
-        ext = os.path.splitext(image_path)[1].lower()
-        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}.get(
-            ext.lstrip("."), "image/png")
         msgs = [dict(m) for m in messages]
-        msgs[-1] = {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": question},
-                {"type": "image_url",
-                 "image_url": {"url": f"data:{mime};base64,{b64}"}},
-            ],
-        }
+        msgs[-1] = {"role": "user", "content": parts}
         return msgs
 
     def _on_user_message(self, text: str):
-        if not self._llm_text:
-            QMessageBox.warning(self, "未配置纯文本接口", "请先在设置中配置纯文本接口。")
+        from .core.figure_ref import parse_figure_refs
+        refs = parse_figure_refs(text)
+        if not self._llm_text and not (refs and self._llm_vision):
+            QMessageBox.warning(
+                self, "未配置接口",
+                "请先在设置中配置纯文本接口"
+                + ("或多模态接口（图表问题）。" if refs else "。"))
             self.chat_panel.set_input_enabled(False)
             return
         if not self._context_manager.has_pdf:
@@ -1416,10 +1436,40 @@ class MainWindow(QMainWindow):
         self.chat_panel.add_user_message(text)
         self._context_manager.add_to_history("user", text)
         messages = self._context_manager.build_messages(text)
+        # 直接问图：问题里出现「图1 / 图一 / Figure 2 / 表3」等引用且能在
+        # 当前文献中定位到截图时，自动改走多模态接口附图回答——不必再到
+        # 图片卡片下方点「解读图片」再输入问题
+        client = self._llm_text
+        if refs:
+            if self._llm_vision is None:
+                self.status_bar.showMessage(
+                    "未配置多模态接口，图表问题将按纯文本回答（模型看不到图片内容）")
+            else:
+                matched, missed = self.pdf_viewer.find_figure_images(text)
+                if matched:
+                    client = self._llm_vision
+                    messages = self._attach_vision_message(
+                        messages, text, [it["path"] for it in matched], matched)
+                    self.status_bar.showMessage(
+                        f"已附加 {len(matched)} 张图表截图（"
+                        + "、".join(it["display"] for it in matched)
+                        + "），用多模态接口回答")
+                elif missed:
+                    fallback = ("按纯文本回答" if self._llm_text
+                                else "直接用多模态接口文字回答")
+                    self.status_bar.showMessage(
+                        "未在文中定位到 " + "、".join(missed)
+                        + f" 对应的截图，{fallback}")
+        if client is None:
+            # 仅多模态可用但没定位到图的提问：直接走多模态纯文字兜底
+            client = self._llm_vision
+        if client is None:
+            # 理论不可达（顶部守卫已保证至少一个接口可用），仅作类型收窄
+            return
         self.chat_panel.start_ai_response()
         self.status_bar.showMessage("AI 正在思考...")
         self._cancel_llm_worker()
-        self._llm_worker = LLMWorker(self._llm_text, messages)
+        self._llm_worker = LLMWorker(client, messages)
         track(self._llm_worker)  # 运行期间保活，杜绝运行中 QThread 被 GC 销毁
         self._llm_worker.chunk_received.connect(self._on_ai_chunk)
         self._llm_worker.finished.connect(self._on_ai_finished)
@@ -1675,6 +1725,8 @@ class MainWindow(QMainWindow):
 
     def _on_zotero_load_failed(self, message: str) -> None:
         print(f"[Zotero] 后台加载失败: {message}")
+        # 各面板只会显示空列表，用户无从得知真正原因：状态栏补一句失败提示
+        self.status_bar.showMessage(f"Zotero 文献库加载失败：{message[:80]}")
         if self._zotero is not None:
             self._writing_panel.set_zotero_library(self._zotero)
             self.pdf_list.zotero_panel.set_library(self._zotero)
@@ -1701,24 +1753,3 @@ class MainWindow(QMainWindow):
         if self._preparser is not None and self._preparser.state == "idle":
             self._maybe_start_preparse()
 
-    def _validate_data_root(self) -> None:
-        """启动时校验缓存文件存储路径是否可访问。"""
-        dr = self._config.get("data_root", "")
-        if not dr:
-            return
-        from pathlib import Path
-        p = Path(dr)
-        if not p.exists():
-            try:
-                p.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                QMessageBox.warning(
-                    self, "缓存文件存储路径不可用",
-                    f"存储路径无法创建：\n{dr}\n\n请在菜单「设置 → 缓存文件存储路径设置...」中重新设置。"
-                )
-                return
-        if not os.access(str(p), os.W_OK):
-            QMessageBox.warning(
-                self, "缓存文件存储路径无写入权限",
-                    f"存储路径无写入权限：\n{dr}\n\n请检查权限或在菜单「设置 → 缓存文件存储路径设置...」中重新设置。"
-            )

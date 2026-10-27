@@ -994,7 +994,6 @@ class PDFViewerPanel(QWidget):
         self._auto_translate: bool = False
         self._stage1_complete: bool = False
         self._stage1_errors: int = 0
-        self._pending_integrate: bool = False
         self._stage2_timer: QTimer | None = None
         self._stage2_start_time: float = 0.0
         # 阅读字号偏移（全局偏好，持久化到 config.reader_font_delta）
@@ -1014,11 +1013,6 @@ class PDFViewerPanel(QWidget):
     def set_text_client(self, client: "LLMClient | None"):
         """设置纯文本接口客户端（跨页接缝合并与段落翻译共用）。"""
         self._text_client = client
-        # 兼容旧状态：如果此前等待过整合，配置变更后继续触发。
-        if (self._pending_integrate and self._stage1_complete
-                and self._current_path and self._structured_doc is None
-                ):
-            self._auto_start_stage2()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -1395,7 +1389,6 @@ class PDFViewerPanel(QWidget):
             return
         if self._stage2_timer is not None:
             return  # 已有整合等待定时器在跑（stage2 尚未结束），不重复启动
-        self._pending_integrate = False
         self.info_label.setText("正在构建结构化文档...")
         self.info_label.setStyleSheet("color: #a76d2b;")
         self._stage2_start_time = time.monotonic()
@@ -1491,7 +1484,6 @@ class PDFViewerPanel(QWidget):
         if pdf_path != self._current_path:
             return
         self._stop_stage2_timer()
-        self._pending_integrate = False
         self.info_label.setText(
             f"⚠️ 整合失败：{error_msg}（可在左侧文献列表右键 →「重新解析整合」重试）"
         )
@@ -1501,7 +1493,6 @@ class PDFViewerPanel(QWidget):
         self._structured_doc = None
         self._stage1_complete = False
         self._stage1_errors = 0
-        self._pending_integrate = False
         self._stop_stage2_timer()
         self._doc_generation += 1  # 使旧线程的迟到结果（翻译/整合）全部失效
         for worker in self._trans_workers.values():
@@ -1768,6 +1759,17 @@ class PDFViewerPanel(QWidget):
         if self._structured_doc is None or not self._current_path:
             return
         state = load_doc_state(self._current_path)
+        # 拆分/合并同样会移位后续元素的索引：先作废所有在途翻译（按旧索引
+        # 回调会把 A 段译文写到 B 段卡片并错误持久化），再写回重渲染
+        self._doc_generation += 1
+        for worker in self._trans_workers.values():
+            if worker.isRunning():
+                worker.requestInterruption()
+            self._retired_trans_workers.append(worker)
+        self._trans_workers.clear()
+        self._retired_trans_workers = [
+            w for w in self._retired_trans_workers if w.isRunning()
+        ]
         # 无论缓存是否已含 structured_document 都写回：保证 UI 与磁盘一致
         state["structured_document"] = self._structured_doc.to_dict()
         save_doc_state(self._current_path, state)
@@ -1848,8 +1850,39 @@ class PDFViewerPanel(QWidget):
                 return p
         return ""
 
+    def find_figure_images(self, text: str) -> tuple[list[dict], list[str]]:
+        """提问文本 → (匹配的图表条目, 未命中引用标签)。
+
+        条目含 display/caption/path（绝对路径）。聊天框直接问「图一讲了
+        什么」时由主窗口调用，自动把对应截图作为多模态内容附上——不必再
+        滚动到图片卡片下方点「解读图片」。
+        """
+        from ..core.figure_ref import match_figure_entries, parse_figure_refs
+        refs = parse_figure_refs(text)
+        if not refs or self._structured_doc is None:
+            return [], []
+        from ..utils.config import get_page_cache_dir
+        base = self._render_image_base_dir or str(
+            get_page_cache_dir(self._current_path))
+        entries: list[dict] = []
+        for elem in self._structured_doc.display_elements:
+            if elem.element_type not in ("figure", "table"):
+                continue
+            entries.append({
+                "kind": elem.element_type,
+                "caption": (elem.image_caption or elem.text or "").strip(),
+                "path": self._resolve_image_path(elem, base),
+            })
+        return match_figure_entries(refs, entries)
+
     def _on_translate_request(self, idx: int, text: str):
         if not self._text_client:
+            # 卡片按钮已置「翻译中」，必须显式复位，否则永久卡死且无提示
+            for card in self._cards:
+                if isinstance(card, ParagraphCard) and getattr(card, "_index", None) == idx:
+                    card.show_translation_error(
+                        "未配置纯文本接口，请先在「设置 → API 接口设置」中配置后再翻译")
+                    break
             return
         worker = self._trans_workers.get(idx)
         if worker and worker.isRunning():

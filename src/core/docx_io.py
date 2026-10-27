@@ -252,9 +252,13 @@ _ANCHOR_TAGS = frozenset({
 _START_ANCHOR_TAGS = frozenset({
     qn("w:commentRangeStart"), qn("w:bookmarkStart"), qn("w:permStart"),
 })
-# 透明容器：其内部 run 递归索引（超链接/内容控件/智能标记等）
+# 透明容器：其内部 run 递归索引（超链接/内容控件/智能标记/简单域等）。
+# w:fldSimple 必须在此：其结果文本参与读入口径（_para_text 含之），若当
+# 不透明锚点则 run 级合并的两套文本口径不一致——段落被编辑时域结果会被
+# 当作"新增"再写一遍，Word 中该段文本重复。
 _CONTAINER_TAGS = frozenset({
     qn("w:hyperlink"), qn("w:sdt"), qn("w:smartTag"), qn("w:customXml"),
+    qn("w:fldSimple"),
 })
 # 文本 run 被删除时需抢救到新 run 的零宽内容
 _ANCHOR_CONTENT_TAGS = frozenset({
@@ -895,8 +899,23 @@ def _merge_para_text(p, new_text: str, reviser: _Reviser | None,
                     ins = reviser.new_ins()
                     ins.append(r)
                     r = ins
-                _place(r, prev_elem)
-                prev_elem = r
+                    _place(r, prev_elem)
+                    prev_elem = r
+                elif sp is not None and sp.container is not None:
+                    # 非修订模式：容器内（超链接/简单域/内容控件）被改写的
+                    # 文本放回容器内被替换 run 的位置，否则链接还在、文本
+                    # 却全部脱到段落层级（格式与语义静默丢失）
+                    ref = next((t.run for t in idx.spans
+                                if s < t.end and e > t.start
+                                and t.container is sp.container), None)
+                    if ref is not None:
+                        _place(r, ref)  # ref 在容器内 → addnext 落进容器
+                    else:
+                        _place(r, prev_elem)
+                    prev_elem = r
+                else:
+                    _place(r, prev_elem)
+                    prev_elem = r
             del_open = None  # 插入内容隔断删除组
             last_was_del = False
         if sp is not None and sp.rpr is not None:

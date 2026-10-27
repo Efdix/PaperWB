@@ -302,7 +302,9 @@ class WebWatchPanel(QWidget):
     # ---- 内部 ----
 
     def _on_pages_changed(self) -> None:
-        self._sync_cards()
+        # 走 _render_pages 而非裸 _sync_cards：首个新增/最后一个删除时
+        # 空态占位的增删也要同步，否则占位残留或面板全空白
+        self._render_pages()
 
     def _on_check_finished(self, page_id: str, *_args) -> None:
         """单页检查结束（成功或失败）：恢复卡片按钮态。"""

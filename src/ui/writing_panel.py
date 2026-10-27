@@ -160,7 +160,7 @@ class CommentFixWorker(QThread):
 逐条处理批注：根据批注要求修改对应段落。如果批注只是表扬或无需修改（如"很好"），保持段落不变。
 
 ## 输出（严格 JSON，不要加解释）
-{{"changes": [{{"paragraph_index": 段落编号, "new_text": "修改后的完整段落文本"}}]}}
+{"changes": [{"paragraph_index": 段落编号, "new_text": "修改后的完整段落文本"}]}
 
 要求：
 - paragraph_index 必须与输入一致
@@ -861,6 +861,7 @@ class WritingPanel(QWidget):
         self._rev_worker: "InlinePolishWorker | None" = None
         self._comment_worker: "CommentFixWorker | None" = None
         self._compose_worker: "ComposeWorker | None" = None
+        self._compose_cursor_pos: int = -1  # 续写/大纲的发起光标位置
         self._zotero_refs_worker: "ZoteroRefCheckWorker | None" = None
         self._ai_bar: QFrame | None = None   # 浮动 AI 操作条
         self._ai_bar_anchor: tuple[int, int] = (-1, -1)  # 操作条对应的选区
@@ -921,7 +922,8 @@ class WritingPanel(QWidget):
                   getattr(self, "_lit_search_btn", None),
                   getattr(self, "_comment_ai_btn", None),
                   getattr(self, "_continue_btn", None),
-                  getattr(self, "_outline_btn", None)):
+                  getattr(self, "_outline_btn", None),
+                  getattr(self, "_auto_review_btn", None)):
             if b is not None:
                 b.setEnabled(not busy)
         if not busy and getattr(self, "_comment_ai_btn", None) is not None:
@@ -1700,6 +1702,9 @@ class WritingPanel(QWidget):
             self._clear_word_binding()
             self._last_kb_index = self._kb_combo.currentIndex()
             self._on_chat_clear()
+            # 无知识库时草稿不落盘：明确告知，避免之后的编辑被静默丢弃
+            self._status_label.setText(
+                "未选择知识库：编辑内容不会自动保存，请先选择或新建知识库")
         self._update_kb_status()
 
     def _on_kb_context_menu(self, pos):
@@ -1945,6 +1950,9 @@ class WritingPanel(QWidget):
             QMessageBox.warning(self, "请稍候", "当前 AI 任务尚未退出，请稍后再打开 Word 文档。")
             return
 
+        # 换文前先落盘当前草稿：未绑定 Word 时编辑器内容就是唯一副本，
+        # 直接替换会让最近一次自动保存之后的编辑静默丢失
+        self._auto_save_draft()
         self._word_path = path
         try:
             self._word_mtime = os.path.getmtime(path)
@@ -2268,6 +2276,7 @@ class WritingPanel(QWidget):
                 # 否则之后的「保存到 Word」会把 txt 内容写回旧 docx
                 if not self._confirm_save_if_dirty():
                     return
+                self._auto_save_draft()  # 换文前落盘旧草稿，防未保存编辑丢失
                 self._clear_word_binding()
                 self._swap_editor_text(text)
                 self._draft_dirty = True  # 交给 30 秒自动保存落盘
@@ -2374,8 +2383,8 @@ class WritingPanel(QWidget):
         if not self._text_client:
             QMessageBox.warning(self, "提示", "请先配置写作 API")
             return
-        if self._compose_worker is not None and self._compose_worker.isRunning():
-            QMessageBox.information(self, "提示", "AI 正在生成，请稍候。")
+        if self._has_running_ai_worker():
+            QMessageBox.information(self, "提示", "已有 AI 任务正在处理，请稍候。")
             return
         plain = self.editor.toPlainText().replace("\u2029", "\n")
         pos = self.editor.textCursor().position()
@@ -2386,6 +2395,7 @@ class WritingPanel(QWidget):
                 "光标前没有可参考的正文。请先写一些内容再续写；"
                 "空白草稿建议先用「生成大纲」。")
             return
+        self._compose_cursor_pos = pos  # 生成期间光标可能被移动，插入点以发起时为准
         self._set_ai_buttons_busy(True)
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)
@@ -2404,8 +2414,8 @@ class WritingPanel(QWidget):
         if not self._text_client:
             QMessageBox.warning(self, "提示", "请先配置写作 API")
             return
-        if self._compose_worker is not None and self._compose_worker.isRunning():
-            QMessageBox.information(self, "提示", "AI 正在生成，请稍候。")
+        if self._has_running_ai_worker():
+            QMessageBox.information(self, "提示", "已有 AI 任务正在处理，请稍候。")
             return
         topic, ok = QInputDialog.getMultiLineText(
             self, "生成大纲",
@@ -2414,6 +2424,7 @@ class WritingPanel(QWidget):
             "已有数据：…（可选）\n目标期刊：…（可选）")
         if not ok or not topic.strip():
             return
+        self._compose_cursor_pos = self.editor.textCursor().position()
         self._set_ai_buttons_busy(True)
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)
@@ -2438,12 +2449,15 @@ class WritingPanel(QWidget):
         if not text.strip():
             self._status_label.setText("AI 未生成内容")
             return
-        cursor = self.editor.textCursor()
-        if cursor.hasSelection():
-            cursor.removeSelectedText()
-        insert = text
         plain = self.editor.toPlainText().replace("\u2029", "\n")
-        pos = cursor.position()
+        pos = getattr(self, "_compose_cursor_pos", -1)
+        self._compose_cursor_pos = -1
+        if not (0 <= pos <= len(plain)):
+            # 发起位置已失效（文档被改），退回当前光标
+            pos = self.editor.textCursor().position()
+        cursor = self.editor.textCursor()
+        cursor.setPosition(min(pos, len(plain)))
+        insert = text
         # 续写排版：光标前有非空文字且本行未结束时先换行；段落之间空行
         before = plain[:pos]
         if before.strip() and not before.endswith("\n"):
@@ -2473,7 +2487,7 @@ class WritingPanel(QWidget):
         if not self._text_client:
             QMessageBox.warning(self, "提示", "请先配置写作 API")
             return
-        if self._rev_worker is not None and self._rev_worker.isRunning():
+        if self._has_running_ai_worker():
             QMessageBox.information(self, "提示", "已有 AI 修改正在处理，请稍候。")
             return
         from ..core.unified_writer import UnifiedWriter
@@ -3038,6 +3052,7 @@ class WritingPanel(QWidget):
         self._sample_btn.setEnabled(True)
         self._journal_btn.setEnabled(True)
         self._update_kb_status()
+        self._refresh_kb_dropdown()  # tooltip 里的习惯/期刊统计同步更新
         self._status_label.setText("风格分析完成，指南已显示在知识库页签")
 
     def _on_style_guide_error(self, err: str):
@@ -3097,6 +3112,12 @@ class WritingPanel(QWidget):
         if not self._text_client:
             self._verify_only = False
             QMessageBox.warning(self, "提示", "请先配置写作 API")
+            return
+        if self._has_running_ai_worker():
+            # 共用进度条与停止按钮：并发任务会互相收场，且旧 worker 引用被
+            # 覆盖后失去取消入口，只能等超时自灭
+            self._verify_only = False
+            QMessageBox.information(self, "提示", "已有 AI 任务正在处理，请稍候。")
             return
 
         text = cursor.selectedText().strip()
@@ -3478,7 +3499,8 @@ class WritingPanel(QWidget):
         if not self._text_client:
             self._status_label.setText("未配置写作 API，跳过整体评价")
             return
-        if self._review_worker is not None and self._review_worker.isRunning():
+        if self._has_running_ai_worker():
+            self._status_label.setText("已有 AI 任务正在处理，整体评价已跳过")
             return
 
         hint = ""
@@ -3714,13 +3736,23 @@ class WritingPanel(QWidget):
 
     # ---- 生命周期 ----
 
+    # 所有后台 AI worker 的属性名清单：互斥启动、统一取消共用同一口径
+    _AI_WORKER_ATTRS = ("_citation_worker", "_evidence_worker", "_unified_worker",
+                        "_review_worker", "_style_worker", "_rev_worker",
+                        "_comment_worker", "_compose_worker", "_zotero_refs_worker")
+
+    def _has_running_ai_worker(self) -> bool:
+        """任一后台 AI 任务在途即互斥（共用进度条/停止按钮，并发会互相收场）。"""
+        for attr in self._AI_WORKER_ATTRS:
+            w = getattr(self, attr, None)
+            if w is not None and w.isRunning():
+                return True
+        return False
+
     def _cancel_all_workers(self, wait_ms: int = 3000) -> bool:
         """协作式取消所有后台 AI 处理线程，不强杀正在执行网络请求的线程。"""
-        attrs = ("_citation_worker", "_evidence_worker", "_unified_worker",
-                 "_review_worker", "_style_worker", "_rev_worker",
-                 "_comment_worker", "_compose_worker", "_zotero_refs_worker")
         all_stopped = True
-        for attr in attrs:
+        for attr in self._AI_WORKER_ATTRS:
             w = getattr(self, attr)
             if w is None:
                 continue

@@ -244,11 +244,23 @@ class MultiSourceSearcher:
         self._pubmed = pubmed  # 测试可注入假检索器（含 search(queries, limit) 即可）
         self._arxiv = arxiv
         self._openalex = openalex
+        # 每次 search() 后的整源失败记录（"源: 原因"）：
+        # 断网与"真没有结果"必须可区分，否则 UI 只会显示 0 篇
+        self.last_source_errors: list[str] = []
 
-    def search(self, plan: list[dict], limit: int = 10) -> list[PubMedPaper]:
+    def search(self, plan: list[dict], limit: int = 10,
+               log=None) -> list[PubMedPaper]:
         """执行检索方案并跨源合并去重，按年份降序。"""
         if not plan:
             return []
+        self.last_source_errors = []
+
+        def _fail(source: str, err: BaseException) -> None:
+            msg = f"{source}: {str(err)[:80]}"
+            self.last_source_errors.append(msg)
+            if log is not None:
+                log(f"⚠ {source} 检索失败：{str(err)[:80]}")
+
         pubmed_queries: list[str] = []
         arxiv_queries: list[str] = []
         openalex_items: list[dict] = []
@@ -273,14 +285,14 @@ class MultiSourceSearcher:
             searcher = self._pubmed if self._pubmed is not None else PubMedSearcher()
             try:
                 papers.extend(searcher.search(pubmed_queries, limit=limit))
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001
+                _fail("pubmed", e)
         if arxiv_queries:
             searcher = self._arxiv if self._arxiv is not None else ArxivSearcher()
             try:
                 papers.extend(searcher.search(arxiv_queries, limit=limit))
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001
+                _fail("arxiv", e)
         if openalex_items:
             searcher = (self._openalex if self._openalex is not None
                         else OpenAlexSearcher())
@@ -291,8 +303,8 @@ class MultiSourceSearcher:
                     papers.extend(searcher.search(
                         [str(i.get("query", "")) for i in openalex_items],
                         limit=limit))
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001
+                _fail("openalex", e)
 
         merged = merge_papers(papers)
         merged.sort(key=lambda p: p.year, reverse=True)
@@ -564,9 +576,13 @@ def run_paper_search(request_text: str, client=None, pool: list[dict] | None = N
 
     s = searcher if searcher is not None else MultiSourceSearcher()
     round1_limit = max(5, limit // 2) if two_rounds else limit
-    papers = s.search(plan, limit=round1_limit)
+    papers = s.search(plan, limit=round1_limit, log=log_cb)
     if interrupt_cb():
         return []
+    if not papers and getattr(s, "last_source_errors", None):
+        # 全部源失败且零命中 ≠ "没有符合条件的文献"：明确提示检索源不可达
+        log_cb("⚠ 所有检索源均失败——请检查网络连接后重试；"
+               "以下源报告错误：" + "；".join(s.last_source_errors)[:120])
 
     if two_rounds and papers:
         log_cb(f"第 1 轮命中 {len(papers)} 篇 · 缺口分析中…")
@@ -585,7 +601,7 @@ def run_paper_search(request_text: str, client=None, pool: list[dict] | None = N
                 for item in plan2:
                     log_cb(f"第 2 轮补充 {item['source']}："
                            f"{item['query']}{_filter_note(item)}")
-                papers.extend(s.search(plan2, limit=limit))
+                papers.extend(s.search(plan2, limit=limit, log=log_cb))
                 if interrupt_cb():
                     return []
 

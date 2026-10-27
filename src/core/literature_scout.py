@@ -562,6 +562,7 @@ class ScoutManager(QObject):
         entries = [{
             "id": f"{paper_key(p) or legacy_paper_key(p)}@{topic.name}",
             "topic": topic.name,
+            "topic_id": topic.id,  # 邮件提醒按 id 反查：重名方向/巡视中途改名都不会取错设置
             "added_at": now_iso,
             "paper": p,
         } for p in papers]

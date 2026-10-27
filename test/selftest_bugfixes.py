@@ -29,6 +29,14 @@ check("水印剥离", "ARTICLE" not in t2, t2)
 check("连字修复", "profiling" in t2, t2)
 check("G protein 保留", "G protein" in t2, t2)
 
+# 断词续文：上段以连字符结尾时豁免短段长度门槛（此前门槛在前，豁免形同虚设）
+from src.core.pdf_processor import _looks_like_continuation
+
+check("断词续文豁免短段门槛",
+      _looks_like_continuation("the cells prolif-", "eration") is True)
+check("短段非断词仍拒接",
+      _looks_like_continuation("This sentence ended.", "tiny") is False)
+
 # ---------- 2. parse_json_response 顶层数组/字符串返回 None ----------
 from src.core.json_utils import parse_json_response
 
@@ -79,6 +87,15 @@ check("评价解析带 _truncated", "error" not in _r and _r.get("_truncated") i
 # _truncated 不能污染润色指令生成
 check("_truncated 不进润色指令",
       DraftReviewer.format_review_for_polish({"_truncated": True}) == "")
+
+# 历史 bug：批注修改提示词的 JSON 示例用了双花括号，填充走 .replace() 会把
+# {{ 原样发给模型，模型照抄后 JSON 必然解析失败且无任何报错
+from src.ui.writing_panel import CommentFixWorker
+
+check("批注修改提示词无 {{", "{{" not in CommentFixWorker.PROMPT)
+check("批注修改提示词无 }}", "}}" not in CommentFixWorker.PROMPT)
+check("批注修改提示词单花括号示例",
+      '{"changes": [{' in CommentFixWorker.PROMPT)
 
 # ---------- 2d. 输出上限配置 ----------
 from src.utils.config import get_max_output_tokens

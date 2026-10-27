@@ -155,7 +155,7 @@ class OpenAlexSearcher:
                     seen_ids.add(wid)
                     papers.append(p)
             except Exception as e:  # noqa: BLE001
-                logger.debug("OpenAlex 查询失败(%s): %s", q, e)
+                logger.debug("OpenAlex 查询失败(%s): %s", q, _redact(e))
                 continue
         papers.sort(key=lambda p: p.year, reverse=True)
         return papers
@@ -201,7 +201,7 @@ def resolve_openalex_works(
                 if results:
                     wid = str(results[0].get("id") or "")
         except Exception as e:  # noqa: BLE001
-            logger.debug("种子解析失败(%s): %s", title[:40], e)
+            logger.debug("种子解析失败(%s): %s", title[:40], _redact(e))
         out.append(wid)
         if log_cb:
             mark = "✓" if wid else "✗"
@@ -260,7 +260,7 @@ def recommend_by_citations(
             if log_cb:
                 log_cb(f"引文扩展 {pos + 1}/{len(valid_ids)} · 候选累计 {len(counts)}")
         except Exception as e:  # noqa: BLE001
-            logger.debug("引文扩展失败(%s): %s", wid, e)
+            logger.debug("引文扩展失败(%s): %s", wid, _redact(e))
         time.sleep(REQUEST_DELAY)
 
     if not counts:
@@ -286,6 +286,6 @@ def recommend_by_citations(
                 if p is not None and p.title:
                     papers.append((p, cnt))
         except Exception as e:  # noqa: BLE001
-            logger.debug("批量详情失败: %s", e)
+            logger.debug("批量详情失败: %s", _redact(e))
         time.sleep(REQUEST_DELAY)
     return papers

@@ -700,6 +700,8 @@ class SettingsDialog(QDialog):
         if not cfg.get("base_url"):
             QMessageBox.warning(self, "缺少服务地址", "请先填写服务地址。")
             return
+        if self._test_worker is not None and self._test_worker.isRunning():
+            return  # 与其余测试入口一致：连点不叠多个测试线程
         self._test_btn.setEnabled(False)
         self._test_btn.setText("测试中...")
         self._test_worker = _TestConnectionWorker(cfg)

@@ -1205,7 +1205,9 @@ class WorkbenchPanel(QWidget):
         self._ai_worker = None
         self._ai_search_btn.setEnabled(self._text_client is not None)
         self._ai_search_btn.setText("开始检索 ✈")
-        self._rec_btn.setEnabled(self._library is not None)
+        # 口径与 _refresh_rec_controls 一致：库连上但快照为空（空库/加载失败）
+        # 时按钮不可点，否则点击必弹「无可用种子」
+        self._rec_btn.setEnabled(bool(self._items_snapshot))
 
     def _on_library_recommend(self) -> None:
         """按库推荐：以所选集合（含子集合）文献为种子的两路推荐。"""
@@ -1257,7 +1259,7 @@ class WorkbenchPanel(QWidget):
             return
         self._rec_worker = None
         self._rec_btn.setText("📚 按库推荐")
-        self._rec_btn.setEnabled(self._library is not None)
+        self._rec_btn.setEnabled(bool(self._items_snapshot))
         self._ai_search_btn.setEnabled(self._text_client is not None)
 
     def _render_search_papers(self, papers: list, chip_fallback: str) -> None:
@@ -1358,8 +1360,15 @@ class WorkbenchPanel(QWidget):
         """方向开启邮件提醒且邮箱已配置时，推送新文献摘要邮件。"""
         if not entries:
             return
-        topic = next((t for t in self._manager.topics()
-                      if t.name == topic_name), None)
+        # 优先按 topic_id 反查（重名方向取不错、巡视中途改名也不断链），
+        # 旧 feed 条目无 id 时退回按名称匹配
+        tid = str(entries[0].get("topic_id", "") or "")
+        topic = None
+        if tid:
+            topic = next((t for t in self._manager.topics() if t.id == tid), None)
+        if topic is None:
+            topic = next((t for t in self._manager.topics()
+                          if t.name == topic_name), None)
         if topic is None or not topic.email_notify:
             return
         cfg = EmailConfig.from_config()

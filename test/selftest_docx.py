@@ -29,7 +29,9 @@ from docx.opc.packuri import PackURI
 from docx.oxml import parse_xml
 from lxml import etree
 
-from src.core.docx_io import DocxComment, read_docx, write_docx, has_unsaved_changes
+from src.core.docx_io import (  # noqa: F401
+    DocxComment, _para_text, read_docx, write_docx, has_unsaved_changes,
+)
 
 
 def make_docx_with_comments(path: str, paragraphs: list[str],
@@ -385,8 +387,15 @@ try:
     check("简单域：元素保留", fld2 is not None)
     check("简单域：指令保留",
           fld2 is not None and fld2.get(qn("w:instr")) == " DATE ")
-    check("简单域：整段文本", sdoc2.paragraphs[0].text == "日期（更新）：2026-09-10",
+    # 域结果 run 原样保留在 fldSimple 内（未变片段零改动），不重复写到段落层
+    check("简单域：结果 run 原位保留",
+          fld2 is not None and fld2.find(f".//{qn('w:t')}").text == "2026-09-10")
+    check("简单域：段内直接文本不再重复域结果",
+          sdoc2.paragraphs[0].text == "日期（更新）：",
           repr(sdoc2.paragraphs[0].text))
+    check("简单域：全文恰好一次（无双写）",
+          _para_text(sdoc2.paragraphs[0]) == "日期（更新）：2026-09-10",
+          repr(_para_text(sdoc2.paragraphs[0])))
 
     # ---------- 14. 复杂域（Zotero 引用域形态）保留 ----------
     def _add_complex_field(p_el, instr: str, result: str) -> None:

@@ -780,13 +780,26 @@ class StatsPanel(QWidget):
 
     def _refresh(self) -> None:
         summary = self._tracker.today_summary()
-        # 今日概览格子
-        while self._today_grid.count():
-            item = self._today_grid.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
-                w.deleteLater()
+        # 今日概览格子：清掉所有行里的旧格子。折行后 _today_grid 只指向首行，
+        # 只清首行会让其余行的旧格子变成无布局的孤儿控件，与新建格子重叠显示
+        host_layout = self._today_host.layout()
+        if host_layout is not None:
+            while host_layout.count():
+                item = host_layout.takeAt(0)
+                lay = item.layout()
+                if lay is not None:
+                    while lay.count():
+                        sub = lay.takeAt(0)
+                        w = sub.widget()
+                        if w is not None:
+                            w.setParent(None)
+                            w.deleteLater()
+                    lay.deleteLater()
+                else:
+                    w = item.widget()
+                    if w is not None:
+                        w.setParent(None)
+                        w.deleteLater()
         self._today_cells = []
         for f in FIELDS:
             cell = QFrame()
@@ -850,6 +863,10 @@ class StatsPanel(QWidget):
     def reload_storage(self) -> None:
         self._tracker.reload()
         self._refresh()
+        # 计划页不监听 tracker.changed（避免每次活动计数都重排列表），
+        # 数据根目录切换后须显式刷新，否则继续显示旧目录的任务
+        for page in self._plan_pages.values():
+            page._refresh()
 
     def shutdown(self) -> None:
         self._tracker.flush()

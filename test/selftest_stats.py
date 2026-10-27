@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """统计工作台核心逻辑自测（无 LLM、无真实网络；UI 用 offscreen 模式构造）。
 
-覆盖：阅读时长结算与去重 / 事件按天聚合 / flush-reload 往返（tempfile 注入目录）/
+覆盖：阅读时长结算 / 阅读篇数按日去重（跨重启持久）/ 事件按天聚合 /
+flush-reload 往返与 flush 失败保留脏标记（tempfile 注入目录）/ 损坏 stats.json 备份降级 /
 400 天与 Top100 裁剪 / streak 连续活跃 / 计划 CRUD 与完成率 / 热力图数据映射 /
 StatsPanel 离屏构建。
 """
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import time
 from datetime import date, timedelta
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -45,13 +47,14 @@ try:
     check("Top 榜记录标题", len(top) == 1 and top[0]["title"] == "Paper A", repr(top))
     check("Top 榜分钟数", top[0]["minutes"] == 1 and top[0]["opens"] == 1, repr(top))
 
-    # 同一 PDF 连续 start 幂等：不重置计时，一次 stop 只结算一次
+    # 同一 PDF 连续 start 幂等：不重置计时，一次 stop 只结算一次；
+    # 「阅读篇数」按日去重：同篇当天重开只算 1 篇，时长与 opens 仍累加
     t.start_reading(r"C:\papers\a.pdf", "Paper A")
     t.start_reading(r"C:\papers\a.pdf", "Paper A")
     time.sleep(1.2)
     t.stop_reading()
     day = t.today_summary()
-    check("同篇连续 start 幂等", day["read_papers"] == 2, repr(day))
+    check("同篇当日重开不重复计数", day["read_papers"] == 1, repr(day))
     check("同篇时长累加", day["read_minutes"] == 2, repr(day))
     top = t.top_papers(10)
     check("同篇 opens 累加", top[0]["opens"] == 2, repr(top))
@@ -59,13 +62,13 @@ try:
     # 短于 1 秒不结算
     t.start_reading(r"C:\papers\b.pdf", "Paper B")
     t.stop_reading()
-    check("短阅读不结算", t.today_summary()["read_papers"] == 2, repr(t.today_summary()))
+    check("短阅读不结算", t.today_summary()["read_papers"] == 1, repr(t.today_summary()))
 
     # 切换文献自动结算上一篇
     t.start_reading(r"C:\papers\c.pdf", "Paper C")
     time.sleep(1.2)
     t.start_reading(r"C:\papers\d.pdf", "Paper D")
-    check("切换自动结算", t.today_summary()["read_papers"] == 3, repr(t.today_summary()))
+    check("切换自动结算", t.today_summary()["read_papers"] == 2, repr(t.today_summary()))
     t.stop_reading()
 
     # ---------- 2. 事件聚合 ----------
@@ -93,6 +96,46 @@ try:
     check("reload 后 Top 榜一致", len(t2.top_papers(10)) == 2, repr(t2.top_papers(10)))
     check("reload 后计划一致", t2.plans_for("daily", date.today().isoformat()) ==
           t.plans_for("daily", date.today().isoformat()))
+
+    # ---------- 3b. 阅读篇数按日去重：跨重启持久（paper_ids 随天数落盘） ----------
+
+    t2.start_reading(r"C:\papers\a.pdf", "Paper A")
+    time.sleep(1.2)
+    t2.stop_reading()
+    day2 = t2.today_summary()
+    check("重启后同篇仍去重", day2["read_papers"] == 2, repr(day2))
+    check("重启后时长仍累加", day2["read_minutes"] == 4, repr(day2))
+    top2 = t2.top_papers(10)
+    check("重启后 opens 累加",
+          next(p for p in top2 if p["title"] == "Paper A")["opens"] == 3, repr(top2))
+
+    # ---------- 3c. flush 失败保留脏标记（下一轮自动重试，不静默丢数据） ----------
+
+    import src.core.stats_tracker as _st_mod
+    _orig_write = _st_mod.atomic_write_json
+
+    def _disk_full(*_a, **_k):
+        raise OSError("disk full")
+
+    t2.record_qa(1)
+    _st_mod.atomic_write_json = _disk_full
+    t2.flush()
+    check("flush 失败保留 _dirty", t2._dirty is True)
+    _st_mod.atomic_write_json = _orig_write
+    t2.flush()
+    check("恢复后重试成功清脏", t2._dirty is False)
+
+    # ---------- 3d. 损坏 stats.json 备份后降级为空 ----------
+
+    tmp3 = tempfile.mkdtemp(prefix="paperwb_stats_corrupt_")
+    try:
+        (Path(tmp3) / "stats.json").write_text("{broken json", encoding="utf-8")
+        t7 = StatsTracker(stats_dir=tmp3)
+        check("损坏 stats.json 降级为空", t7.today_summary()["qa_count"] == 0)
+        backed = list(Path(tmp3).glob("stats.json.corrupt-*"))
+        check("损坏文件已备份保留", len(backed) == 1, repr([p.name for p in backed]))
+    finally:
+        shutil.rmtree(tmp3, ignore_errors=True)
 
     # ---------- 4. 计划 CRUD 与完成率 ----------
 

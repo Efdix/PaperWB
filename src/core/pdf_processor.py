@@ -1119,7 +1119,6 @@ def _looks_like_continuation(text_a: str, text_b: str) -> bool:
     - 英文：a 未以真句终标点结尾，且 b 以小写字母/引号/括号/数字开头
       （大写开头的续文如 RNA-seq、专有名词同样常见）
     - a 无任何终止标点时接受大写开头的 b（句子明显未写完）
-    - a 无任何终止标点时接受大写开头的 b（句子明显未写完）
     - 中文：a 不以句号/问号/感叹号/分号结尾（中文无大小写，20 字以上即接）
     - b 是参考文献条目开头 → 不合并
     - b 是图注占位/分段标签（(legend on next page) / (A) Blood feeding…）→ 不合并
@@ -1127,8 +1126,6 @@ def _looks_like_continuation(text_a: str, text_b: str) -> bool:
     a = text_a.rstrip()
     b = text_b.lstrip()
     if not a or not b:
-        return False
-    if len(b) < 12:
         return False
     # 图注占位行与图注分段标签（Figure N. 引出的 (A)/(B)… 面板说明）是版式
     # 元素而非续文，规则层直接拒接，避免无 LLM 路径把图注并进正文
@@ -1142,10 +1139,12 @@ def _looks_like_continuation(text_a: str, text_b: str) -> bool:
     # 也不能把一条新文献并进正文。
     if _looks_like_reference_entry(b):
         return False
-    # 连字符结尾是断词强信号（prolif- + erating），豁免短段长度门槛。
+    # 连字符结尾是断词强信号（prolif- + erating），豁免下面的短段长度门槛。
     # 要求连字符前是字母，避免把 “10 -” 或破折号误判为断词。
     if re.search(r"[A-Za-z]-$", a):
         return True
+    if len(b) < 12:
+        return False
     cjk_a = any("\u4e00" <= ch <= "\u9fff" for ch in a[:20])
     cjk_b = any("\u4e00" <= ch <= "\u9fff" for ch in b[:20])
     if cjk_a or cjk_b:
@@ -1153,8 +1152,6 @@ def _looks_like_continuation(text_a: str, text_b: str) -> bool:
         return len(a) > 20 \
             and not a.endswith(_CJK_TERMINAL_ENDS) and not a.endswith(".")
     if len(a) < 30:
-        return False
-    if _looks_like_reference_entry(b):
         return False
     if b[0].islower() or b[0] in "([\"'“‘" or b[0].isdigit():
         # 小写/括号/数字开头：只要上一段不是真正句终就接上
@@ -2511,6 +2508,8 @@ class PDFProcessor(QObject):
                         or self._manifest.pdf_mtime_ns != st.st_mtime_ns)
                 if changed or self._manifest.parser != parser_now:
                     self._manifest = self._create_fresh_manifest()
+                    if changed:
+                        self._purge_stale_doc_state()
                 elif not (self._manifest.pdf_size and self._manifest.pdf_mtime_ns):
                     # 旧缓存升级：补上指纹并落盘，下一次替换即可精确失效。
                     self._manifest.pdf_size = st.st_size
@@ -2526,6 +2525,30 @@ class PDFProcessor(QObject):
     @staticmethod
     def _current_parser() -> str:
         return DOCLING_PARSER_VERSION
+
+    def _purge_stale_doc_state(self) -> None:
+        """PDF 内容已变化：按位置性元素 id 存的接缝/整合/译文缓存属于旧文档。
+
+        Docling 元素 id（p{page}_e{idx}）跨解析稳定，同路径替换 PDF 后重解析，
+        新元素会命中旧接缝缓存——旧版 merged_text 直接顶替新段落文本，
+        且这些陈旧键会让接缝永远不被送 LLM 复核。必须一并剔除。
+        """
+        from ..utils.config import load_doc_state, save_doc_state
+        try:
+            state = load_doc_state(self._pdf_path)
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(state, dict):
+            return
+        stale = ("merged_seams", "merged_seams_prelim", "seams_final",
+                 "structured_document", "translations")
+        if any(k in state for k in stale):
+            for k in stale:
+                state.pop(k, None)
+            try:
+                save_doc_state(self._pdf_path, state)
+            except OSError:
+                pass
 
     def _create_fresh_manifest(self) -> PageManifest:
         """创建全新的 manifest（通过 PyMuPDF 获取总页数）。"""
@@ -2614,6 +2637,10 @@ class PDFProcessor(QObject):
         manifest = self._manifest
         if manifest is None:
             self.stage1_error.emit(self._pdf_path, 0, "Manifest 初始化失败")
+            return
+        # 重入防护：旧线程还在写缓存目录时再起一个会交替覆盖 _manifest.json，
+        # 页状态回退导致反复整篇重解析（重跑/删缓存路径依赖先 cancel 再重建）
+        if self.is_stage1_running:
             return
 
         # 如果全部已完成，直接发信号
